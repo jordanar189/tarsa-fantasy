@@ -1,0 +1,40 @@
+<svg width="1290" height="2796" viewBox="0 0 1290 2796" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0e1535"/>
+      <stop offset="1" stop-color="#020412"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.18" r="0.7">
+      <stop offset="0" stop-color="#46e4ff" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#46e4ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="0.85" cy="0.8" r="0.5">
+      <stop offset="0" stop-color="#7c5cff" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#7c5cff" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="iconClip">
+      <rect x="495" y="380" width="300" height="300" rx="66" ry="66"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1290" height="2796" fill="url(#bg)"/>
+  <rect width="1290" height="2796" fill="url(#glow)"/>
+  <rect width="1290" height="2796" fill="url(#glow2)"/>
+
+  <image href="../Fantasy Football App/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+         x="495" y="380" width="300" height="300"
+         clip-path="url(#iconClip)"/>
+
+  <rect x="540" y="780" width="210" height="8" fill="#46e4ff" rx="4"/>
+
+  <text x="645" y="1290" text-anchor="middle"
+        font-family="Helvetica" font-weight="bold" font-size="170" fill="#ffffff">Your team.</text>
+  <text x="645" y="1470" text-anchor="middle"
+        font-family="Helvetica" font-weight="bold" font-size="170" fill="#46e4ff">Your call.</text>
+
+  <text x="645" y="1660" text-anchor="middle"
+        font-family="Helvetica" font-size="62" fill="#ffffff" opacity="0.72">Custom rosters. Your scoring.</text>
+
+  <text x="645" y="2650" text-anchor="middle"
+        font-family="Helvetica" font-weight="bold" font-size="44" fill="#ffffff" opacity="0.55">FANTASY FOOTBALL</text>
+</svg>

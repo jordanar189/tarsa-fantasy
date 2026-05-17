@@ -8,21 +8,21 @@ iOS app, Xcode project (no Swift Package, no test target). The project root and 
 
 ```bash
 # Build for simulator
-xcodebuild -project "Fantasy Football App.xcodeproj" \
-  -scheme "Fantasy Football App" \
+xcodebuild -project "Tarsa Fantasy.xcodeproj" \
+  -scheme "Tarsa Fantasy" \
   -destination 'platform=iOS Simulator,name=iPhone 16' \
   build
 
 # Clean
-xcodebuild -project "Fantasy Football App.xcodeproj" \
-  -scheme "Fantasy Football App" clean
+xcodebuild -project "Tarsa Fantasy.xcodeproj" \
+  -scheme "Tarsa Fantasy" clean
 ```
 
 Day-to-day development is in Xcode (⌘R to run, ⌘B to build, SwiftUI previews via `#Preview`). Deployment target is iOS 26.4 — use `xcodebuild -showsdks` to confirm an SDK that supports it before scripted builds.
 
 ## Adding files
 
-The Xcode target uses `PBXFileSystemSynchronizedRootGroup` — every file inside `Fantasy Football App/` is compiled automatically. **Do not edit `project.pbxproj` when adding Swift files**; just create them in the right directory and they'll be picked up.
+The Xcode target uses `PBXFileSystemSynchronizedRootGroup` — every file inside `Tarsa Fantasy/` is compiled automatically. **Do not edit `project.pbxproj` when adding Swift files**; just create them in the right directory and they'll be picked up.
 
 ## Architecture
 

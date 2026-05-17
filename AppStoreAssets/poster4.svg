@@ -1,0 +1,47 @@
+<svg width="1290" height="2796" viewBox="0 0 1290 2796" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0e1535"/>
+      <stop offset="1" stop-color="#020412"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.18" r="0.7">
+      <stop offset="0" stop-color="#46e4ff" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#46e4ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="0.5" cy="0.65" r="0.5">
+      <stop offset="0" stop-color="#7c5cff" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#7c5cff" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="iconClip">
+      <rect x="495" y="380" width="300" height="300" rx="66" ry="66"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1290" height="2796" fill="url(#bg)"/>
+  <rect width="1290" height="2796" fill="url(#glow)"/>
+  <rect width="1290" height="2796" fill="url(#glow2)"/>
+
+  <image href="../Fantasy Football App/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+         x="495" y="380" width="300" height="300"
+         clip-path="url(#iconClip)"/>
+
+  <!-- Join code badge -->
+  <g transform="translate(295, 770)">
+    <rect x="0" y="0" width="700" height="170" rx="24" fill="#020412" stroke="#46e4ff" stroke-width="4"/>
+    <text x="350" y="62" text-anchor="middle"
+          font-family="Helvetica" font-weight="bold" font-size="32" fill="#46e4ff" opacity="0.8" letter-spacing="6">JOIN CODE</text>
+    <text x="350" y="142" text-anchor="middle"
+          font-family="Courier" font-weight="bold" font-size="80" fill="#ffffff" letter-spacing="14">RPNH47</text>
+  </g>
+
+  <text x="645" y="1360" text-anchor="middle"
+        font-family="Helvetica" font-weight="bold" font-size="160" fill="#ffffff">One code.</text>
+  <text x="645" y="1530" text-anchor="middle"
+        font-family="Helvetica" font-weight="bold" font-size="160" fill="#46e4ff">Whole league.</text>
+
+  <text x="645" y="1720" text-anchor="middle"
+        font-family="Helvetica" font-size="62" fill="#ffffff" opacity="0.72">Invite friends. Claim a team. Play.</text>
+
+  <text x="645" y="2650" text-anchor="middle"
+        font-family="Helvetica" font-weight="bold" font-size="44" fill="#ffffff" opacity="0.55">FANTASY FOOTBALL</text>
+</svg>

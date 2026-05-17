@@ -1,0 +1,995 @@
+import Foundation
+import Observation
+
+@MainActor
+@Observable
+final class AppState {
+
+    // Tab selection
+    var tab: AppTab = .nfl
+
+    // Season picking
+    var seasons: [Int] = []
+    var selectedSeason: Int = Calendar.current.component(.year, from: Date())
+
+    // Loaded player data, keyed by season
+    var playersBySeason: [Int: [String: Player]] = [:]
+
+    // Auth / account
+    var session: Session? = nil
+    var authError: String? = nil
+    var isAuthInFlight: Bool = false
+
+    // Leagues belonging to the signed-in user
+    var leagueSummaries: [LeagueSummary] = []
+
+    // Top-level error displayed if bootstrap fails entirely.
+    var bootstrapError: String? = nil
+    var isLoadingSeason: Bool = false
+
+    // UI theme (system/light/dark). Mirrored to UserDefaults so the launch
+    // splash uses the right scheme before we've fetched the user's row.
+    // setTheme writes both the local cache and the profiles.theme column.
+    var theme: AppTheme = AppState.localCachedTheme() {
+        didSet { AppState.cacheLocalTheme(theme) }
+    }
+
+    // App-wide injury snapshot, keyed by player_id. Refreshed at bootstrap
+    // and on pull-to-refresh; healthy players are absent. Views read this
+    // synchronously to decorate player rows.
+    var injuries: [String: Injury] = [:]
+
+    // Per-team rolling offense/defense ranks (MFL). Empty in the off-season.
+    var teamRanks: [String: TeamRanks] = [:]
+    // % of MFL leagues that started each player in the most recent week.
+    var mostStarted: [String: Double] = [:]
+    // True while a background refresh of a season is in flight (after the
+    // disk cache was shown). Drives the thin top-edge refresh indicator.
+    var isRefreshingSeason: Bool = false
+
+    private let data: NFLDataService
+    private let remote: RemoteService
+
+    init(data: NFLDataService = .shared, remote: RemoteService = .shared) {
+        self.data = data
+        self.remote = remote
+        // Subscribe to live score updates pushed by LiveScoresListener; each
+        // notification re-pulls the matching season snapshot from the data
+        // actor so SwiftUI sees the new fantasy points immediately.
+        NotificationCenter.default.addObserver(
+            forName: .liveScoresUpdated, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let season = note.userInfo?["season"] as? Int else { return }
+            Task { @MainActor [weak self] in
+                await self?.refreshLiveSnapshot(season: season)
+            }
+        }
+    }
+
+    // MARK: - Bootstrap
+
+    func bootstrap(force: Bool = false) async {
+        if !force {
+            // Try to restore a persisted Supabase session on launch.
+            if session == nil {
+                session = await remote.restoreSession()
+            }
+        }
+        if !force && !seasons.isEmpty {
+            await reloadLeagues()
+            return
+        }
+        bootstrapError = nil
+        let list = await data.availableSeasons()
+        if list.isEmpty {
+            bootstrapError = "No NFL seasons reachable. Check your network connection."
+            return
+        }
+        seasons = list
+        if !list.contains(selectedSeason) {
+            selectedSeason = list.first ?? selectedSeason
+        }
+        await loadSeason(selectedSeason)
+        await reloadLeagues()
+        await loadProfileTheme()
+        await loadInjuries()
+        await loadMarketSignals()
+    }
+
+    // MARK: - Auth
+
+    func signUp(username: String, password: String) async {
+        await runAuth { try await self.remote.signUp(username: username, password: password) }
+    }
+
+    func signIn(username: String, password: String) async {
+        await runAuth { try await self.remote.signIn(username: username, password: password) }
+    }
+
+    func signOut() async {
+        try? await remote.signOut()
+        session = nil
+        leagueSummaries = []
+    }
+
+    private func runAuth(_ op: @escaping () async throws -> Session) async {
+        isAuthInFlight = true
+        authError = nil
+        defer { isAuthInFlight = false }
+        do {
+            let s = try await op()
+            session = s
+            // On first sign-in, drop any pre-account local leagues file from
+            // the old LeagueStore — the user opted to discard it.
+            Self.removeLocalLeaguesFileIfPresent()
+            await reloadLeagues()
+            await loadProfileTheme()
+        } catch {
+            authError = error.localizedDescription
+        }
+    }
+
+    private static func removeLocalLeaguesFileIfPresent() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        guard let url = docs?.appendingPathComponent("leagues.json") else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    // MARK: - Theme
+
+    private static let themeStorageKey = "app.theme"
+
+    private static func localCachedTheme() -> AppTheme {
+        let raw = UserDefaults.standard.string(forKey: themeStorageKey) ?? AppTheme.dark.rawValue
+        return AppTheme(rawValue: raw) ?? .dark
+    }
+
+    private static func cacheLocalTheme(_ theme: AppTheme) {
+        UserDefaults.standard.set(theme.rawValue, forKey: themeStorageKey)
+    }
+
+    // Load the user's persisted theme from the server (overrides the local
+    // cache when present). Called once after sign-in completes.
+    func loadProfileTheme() async {
+        guard let uid = session?.userID else { return }
+        if let remote = await remote.profileTheme(userID: uid) {
+            theme = remote
+        }
+    }
+
+    // Persist the user's pick to the server. Updates the local state
+    // immediately (so the UI flips), then writes through.
+    func setTheme(_ new: AppTheme) async {
+        theme = new
+        guard let uid = session?.userID else { return }
+        _ = try? await remote.setProfileTheme(userID: uid, theme: new)
+    }
+
+    // MARK: - Season data
+
+    @discardableResult
+    func loadSeason(_ season: Int) async -> [String: Player]? {
+        if let existing = playersBySeason[season] { return existing }
+
+        // Disk cache hit → show stale data instantly, refresh in background.
+        // Cold launch and season-switch become a non-event for the user.
+        if let cached = PlayerCacheStore.shared.loadSync(season: season) {
+            playersBySeason[season] = cached
+            await data.seed(season: season, players: cached)
+            Task { await LiveScoresListener.shared.start(season: season) }
+            Task { await self.refreshSeasonInBackground(season) }
+            return cached
+        }
+
+        // No cache → block on the network like before.
+        isLoadingSeason = true
+        defer { isLoadingSeason = false }
+        do {
+            let players = try await data.players(season: season)
+            playersBySeason[season] = players
+            PlayerCacheStore.shared.save(season: season, players: players)
+            Task { await LiveScoresListener.shared.start(season: season) }
+            return players
+        } catch {
+            bootstrapError = error.localizedDescription
+            return nil
+        }
+    }
+
+    // Re-fetches the season from Supabase off the visible path. Failures are
+    // swallowed — if we're offline, keep showing the cached snapshot.
+    private func refreshSeasonInBackground(_ season: Int) async {
+        isRefreshingSeason = true
+        defer { isRefreshingSeason = false }
+        do {
+            let fresh = try await data.players(season: season, forceRefresh: true)
+            playersBySeason[season] = fresh
+            PlayerCacheStore.shared.save(season: season, players: fresh)
+        } catch {
+            #if DEBUG
+            print("Background refresh \(season) failed: \(error)")
+            #endif
+        }
+    }
+
+    func players(season: Int) -> [String: Player] {
+        playersBySeason[season] ?? [:]
+    }
+
+    // Pulls the latest snapshot (including any live overrides) from the data
+    // actor and republishes it. Views call this after they get a Realtime
+    // signal so SwiftUI re-renders with fresh fantasy point totals.
+    func refreshLiveSnapshot(season: Int) async {
+        if let snap = await data.currentSnapshot(season: season) {
+            playersBySeason[season] = snap
+        }
+    }
+
+    func selectedPlayers() -> [String: Player] {
+        players(season: selectedSeason)
+    }
+
+    // MARK: - NFL data (Phase 1 stats overhaul)
+
+    func schedules(season: Int) async -> [NFLGame] {
+        (try? await data.schedules(season: season)) ?? []
+    }
+
+    func nflTeams() async -> [NFLTeamMeta] {
+        await data.teams()
+    }
+
+    func snapCounts(season: Int) async -> [String: [Int: SnapCount]] {
+        (try? await data.snapCounts(season: season)) ?? [:]
+    }
+
+    func trendingPlayers() async -> [TrendingPlayer] {
+        await remote.trendingPlayers()
+    }
+
+    // Simulation-aware trending: inside a sim, returns what was trending
+    // during the simulated week of the simulated season. Outside, returns
+    // current live trending.
+    func trendingPlayers(for league: League?) async -> [TrendingPlayer] {
+        if let lg = league, lg.isTest, let week = lg.simulatedWeek, week > 0 {
+            return await remote.trendingPlayers(season: lg.season, week: week)
+        }
+        return await remote.trendingPlayers()
+    }
+
+    func loadInjuries() async {
+        injuries = await remote.injuries()
+    }
+
+    // Simulation-aware injury snapshot. For sims, pulls historical injuries
+    // at the simulated week; for real leagues, returns the global live map.
+    func injuries(for league: League?) async -> [String: Injury] {
+        if let lg = league, lg.isTest, let week = lg.simulatedWeek, week > 0 {
+            return await remote.injuries(season: lg.season, week: week)
+        }
+        return injuries
+    }
+
+    func loadMarketSignals() async {
+        async let ranks = data.teamRanks()
+        async let starters = data.mostStarted()
+        teamRanks   = await ranks
+        mostStarted = await starters
+    }
+
+    func dvp(season: Int, position: String) async -> [String: DvPEntry] {
+        (try? await data.dvp(season: season, position: position)) ?? [:]
+    }
+
+    // Simulation-aware DvP: clamps rank window to the simulated week.
+    func dvp(for league: League, position: String) async -> [String: DvPEntry] {
+        let upTo = league.isTest ? league.simulatedWeek : nil
+        return (try? await data.dvp(season: league.season, position: position, upToWeek: upTo)) ?? [:]
+    }
+
+    func adp(season: Int, scoring: Scoring) async -> [String: Double] {
+        (try? await data.adp(season: season, scoring: scoring)) ?? [:]
+    }
+
+    // Point-in-time ADP for a simulation. Picks the latest snapshot on or
+    // before the simulation's "draft date" — for past seasons that's
+    // late August of that season, which mirrors typical draft windows.
+    func adpForSimulation(season: Int, scoring: Scoring) async -> [String: Double] {
+        let cal = Calendar(identifier: .gregorian)
+        let draftDate = cal.date(from: DateComponents(year: season, month: 8, day: 25)) ?? Date()
+        return (try? await data.adp(season: season, scoring: scoring, onOrBefore: draftDate)) ?? [:]
+    }
+
+    // Inactives (set of player IDs) for a given (season, week). Empty when
+    // we don't have backfill for that season.
+    func inactives(season: Int, week: Int) async -> Set<String> {
+        await data.inactives(season: season, week: week)
+    }
+
+    // Depth chart for one team in a (season, week). Empty when not backfilled.
+    func depthChart(season: Int, week: Int, team: String) async -> [DepthChartEntry] {
+        await data.depthChart(season: season, week: week, team: team)
+    }
+
+    func availableWeeks(season: Int) -> [Int] {
+        let players = self.players(season: season)
+        var weeks: Set<Int> = []
+        for (_, p) in players {
+            for g in p.games { weeks.insert(g.week) }
+        }
+        return weeks.sorted()
+    }
+
+    // MARK: - Leagues
+
+    func reloadLeagues() async {
+        guard let session else { leagueSummaries = []; return }
+        do {
+            leagueSummaries = try await remote.myLeagues(userID: session.userID)
+        } catch {
+            leagueSummaries = []
+            bootstrapError = error.localizedDescription
+        }
+    }
+
+    func createLeague(
+        name: String,
+        season: Int,
+        scoring: Scoring,
+        yourTeamName: String,
+        otherTeamNames: [String],
+        rosterConfig: RosterConfig = .default
+    ) async throws -> League {
+        guard let session else { throw AppError.notSignedIn }
+        let league = try await remote.createLeague(
+            creatorID: session.userID,
+            name: name, season: season, scoring: scoring,
+            rosterConfig: rosterConfig,
+            yourTeamName: yourTeamName, otherTeamNames: otherTeamNames
+        )
+        await reloadLeagues()
+        await loadSeason(season)
+        return league
+    }
+
+    func setRoster(leagueID: String, teamID: String, playerIDs: [String]) async throws -> League {
+        guard let league = try await remote.league(id: leagueID) else {
+            throw AppError.leagueNotFound
+        }
+        let seasonPlayers = await loadSeason(league.season) ?? players(season: league.season)
+        let lineup = Fantasy.autoFillLineup(
+            roster: playerIDs,
+            players: seasonPlayers,
+            config: league.rosterConfig,
+            scoring: league.scoring
+        )
+        guard let updated = try await remote.setRoster(
+            teamID: teamID, roster: playerIDs, starters: lineup
+        ) else {
+            throw AppError.leagueNotFound
+        }
+        await reloadLeagues()
+        return updated
+    }
+
+    func deleteLeague(_ id: String) async {
+        try? await remote.deleteLeague(id)
+        await reloadLeagues()
+    }
+
+    // MARK: - League history (multi-season)
+
+    // Snapshots the current standings + per-week matchups into the
+    // league_seasons + league_matchups tables, then flips season_completed.
+    // Commissioner-only (server enforces).
+    @discardableResult
+    func completeLeagueSeason(leagueID: String) async throws -> League? {
+        guard let league = try await remote.league(id: leagueID) else { return nil }
+        let snap = await loadSeason(league.season) ?? players(season: league.season)
+        let standings = Fantasy.standings(league: league, players: snap)
+        // Per-team season points (already computed in standings.pointsFor);
+        // scoring leader = highest pointsFor.
+        let leader = standings.max(by: { $0.pointsFor < $1.pointsFor })
+
+        // Walk every scheduled week and snapshot the per-matchup scores.
+        var archived: [LeagueMatchupArchive] = []
+        for plan in league.schedule {
+            let result = Fantasy.scoreboard(league: league, players: snap, week: plan.week)
+            for m in result.matchups {
+                let homeTeam = league.teams.first(where: { $0.id == m.home.teamID })
+                let awayTeam = league.teams.first(where: { $0.id == m.away.teamID })
+                archived.append(LeagueMatchupArchive(
+                    week: plan.week,
+                    homeTeamID: m.home.teamID,
+                    awayTeamID: m.away.teamID,
+                    homeUserID: homeTeam?.ownerID,
+                    awayUserID: awayTeam?.ownerID,
+                    homePoints: m.home.points,
+                    awayPoints: m.away.points
+                ))
+            }
+        }
+
+        let updated = try await remote.completeLeagueSeason(
+            leagueID: league.id,
+            standings: standings,
+            scoringLeaderTeamID: leader?.id,
+            scoringLeaderTeamName: leader?.name,
+            matchups: archived
+        )
+        await reloadLeagues()
+        return updated
+    }
+
+    @discardableResult
+    func rolloverLeague(parentID: String, newSeason: Int, newName: String?) async throws -> League? {
+        let lg = try await remote.rolloverLeague(parentID: parentID, newSeason: newSeason, newName: newName)
+        await reloadLeagues()
+        return lg
+    }
+
+    func leagueHistory(leagueID: String) async -> [LeagueSeasonArchive] {
+        (try? await remote.leagueHistory(leagueID: leagueID)) ?? []
+    }
+
+    func headToHead(leagueID: String, meUserID: String, opponentUserID: String) async -> [HeadToHeadEntry] {
+        (try? await remote.headToHead(
+            leagueID: leagueID, meUserID: meUserID, opponentUserID: opponentUserID
+        )) ?? []
+    }
+
+    // MARK: - Play-by-play
+
+    func plays(gameID: String) async -> [Play] {
+        await remote.plays(gameID: gameID)
+    }
+
+    // MARK: - League chat
+
+    func leagueMessages(leagueID: String, limit: Int = 200) async -> [LeagueMessage] {
+        await remote.messages(leagueID: leagueID, limit: limit)
+    }
+
+    @discardableResult
+    func sendLeagueMessage(leagueID: String, content: String) async throws -> LeagueMessage {
+        guard let session else { throw AppError.notSignedIn }
+        return try await remote.sendMessage(
+            leagueID: leagueID, userID: session.userID, content: content
+        )
+    }
+
+    func deleteLeagueMessage(id: String) async {
+        try? await remote.deleteMessage(id: id)
+    }
+
+    func league(_ id: String) async -> League? {
+        (try? await remote.league(id: id)) ?? nil
+    }
+
+    func lookupLeague(byCode code: String) async throws -> League? {
+        try await remote.leagueByCode(code)
+    }
+
+    func claimTeam(teamID: String) async throws -> League? {
+        guard let session else { throw AppError.notSignedIn }
+        let updated = try await remote.claimTeam(teamID: teamID, userID: session.userID)
+        await reloadLeagues()
+        return updated
+    }
+
+    // MARK: - Waivers / free agency
+
+    func droppedPlayers(leagueID: String) async -> [DroppedPlayer] {
+        (try? await remote.droppedPlayers(leagueID: leagueID)) ?? []
+    }
+
+    func waiverClaims(leagueID: String) async -> [WaiverClaim] {
+        (try? await remote.waiverClaims(leagueID: leagueID)) ?? []
+    }
+
+    func transactions(leagueID: String) async -> [LeagueTransaction] {
+        (try? await remote.transactions(leagueID: leagueID, limit: 100)) ?? []
+    }
+
+    func addFreeAgent(
+        league: League, team: FantasyTeam,
+        addPlayerID: String, dropPlayerID: String?
+    ) async throws -> League? {
+        try await remote.addFreeAgent(
+            league: league, team: team,
+            addPlayerID: addPlayerID, dropPlayerID: dropPlayerID
+        )
+    }
+
+    func dropPlayer(league: League, team: FantasyTeam, playerID: String) async throws -> League? {
+        try await remote.dropPlayer(league: league, team: team, playerID: playerID)
+    }
+
+    @discardableResult
+    func submitWaiverClaim(
+        leagueID: String, teamID: String,
+        addPlayerID: String, dropPlayerID: String?
+    ) async throws -> WaiverClaim? {
+        try await remote.submitWaiverClaim(
+            leagueID: leagueID, teamID: teamID,
+            addPlayerID: addPlayerID, dropPlayerID: dropPlayerID
+        )
+    }
+
+    func cancelWaiverClaim(_ id: String) async throws {
+        try await remote.cancelWaiverClaim(id)
+    }
+
+    func reorderWaiverClaims(teamID: String, claimIDsInOrder: [String]) async throws {
+        try await remote.reorderWaiverClaims(teamID: teamID, claimIDsInOrder: claimIDsInOrder)
+    }
+
+    @discardableResult
+    func approveTransaction(_ txID: String) async throws -> League? {
+        guard let session else { throw AppError.notSignedIn }
+        return try await remote.approveTransaction(txID, commissionerID: session.userID)
+    }
+
+    func rejectTransaction(_ txID: String, note: String? = nil) async throws {
+        guard let session else { throw AppError.notSignedIn }
+        try await remote.rejectTransaction(txID, commissionerID: session.userID, note: note)
+    }
+
+    @discardableResult
+    func updateWaiverSettings(
+        leagueID: String, settings: WaiverSettings, priority: [String]
+    ) async throws -> League? {
+        try await remote.updateWaiverSettings(
+            leagueID: leagueID, settings: settings, priority: priority
+        )
+    }
+
+    @discardableResult
+    func updateLeague(
+        leagueID: String, name: String, scoring: Scoring, rosterConfig: RosterConfig
+    ) async throws -> League? {
+        let updated = try await remote.updateLeague(
+            leagueID: leagueID, name: name, scoring: scoring, rosterConfig: rosterConfig
+        )
+        await reloadLeagues()
+        return updated
+    }
+
+    @discardableResult
+    func renameTeam(teamID: String, name: String) async throws -> League? {
+        try await remote.renameTeam(teamID: teamID, name: name)
+    }
+
+    @discardableResult
+    func kickTeamOwner(teamID: String) async throws -> League? {
+        try await remote.kickTeamOwner(teamID: teamID)
+    }
+
+    // MARK: - Trades
+
+    func trades(leagueID: String) async -> [Trade] {
+        (try? await remote.trades(leagueID: leagueID)) ?? []
+    }
+
+    func tradeVotes(tradeID: String) async -> [TradeVote] {
+        (try? await remote.tradeVotes(tradeID: tradeID)) ?? []
+    }
+
+    @discardableResult
+    func proposeTrade(
+        leagueID: String, proposerTeamID: String, recipientTeamID: String,
+        proposerPlayerIDs: [String], recipientPlayerIDs: [String],
+        note: String?, parentTradeID: String? = nil
+    ) async throws -> Trade? {
+        try await remote.proposeTrade(
+            leagueID: leagueID,
+            proposerTeamID: proposerTeamID, recipientTeamID: recipientTeamID,
+            proposerPlayerIDs: proposerPlayerIDs,
+            recipientPlayerIDs: recipientPlayerIDs,
+            note: note, parentTradeID: parentTradeID
+        )
+    }
+
+    @discardableResult
+    func acceptTrade(_ tradeID: String) async throws -> Trade? {
+        try await remote.acceptTrade(tradeID)
+    }
+
+    @discardableResult
+    func rejectTrade(_ tradeID: String) async throws -> Trade? {
+        try await remote.rejectTrade(tradeID)
+    }
+
+    @discardableResult
+    func cancelTrade(_ tradeID: String) async throws -> Trade? {
+        try await remote.cancelTrade(tradeID)
+    }
+
+    @discardableResult
+    func commishResolveTrade(_ tradeID: String, approve: Bool, note: String?) async throws -> Trade? {
+        try await remote.commishResolveTrade(tradeID, approve: approve, note: note)
+    }
+
+    @discardableResult
+    func voteTrade(_ tradeID: String, vote: String) async throws -> Trade? {
+        try await remote.voteTrade(tradeID, vote: vote)
+    }
+
+    @discardableResult
+    func updateTradeSettings(leagueID: String, settings: TradeSettings) async throws -> League? {
+        try await remote.updateTradeSettings(leagueID: leagueID, settings: settings)
+    }
+
+    // MARK: - Draft
+
+    func draft(leagueID: String) async -> Draft? {
+        (try? await remote.draft(leagueID: leagueID)) ?? nil
+    }
+
+    func draftPicks(draftID: String) async -> [DraftPick] {
+        (try? await remote.draftPicks(draftID: draftID)) ?? []
+    }
+
+    @discardableResult
+    func upsertDraft(
+        leagueID: String, format: DraftFormat, pickSeconds: Int,
+        startsAt: Date, pickOrder: [String], rosterSize: Int
+    ) async throws -> Draft? {
+        try await remote.upsertDraft(
+            leagueID: leagueID, format: format, pickSeconds: pickSeconds,
+            startsAt: startsAt, pickOrder: pickOrder, rosterSize: rosterSize
+        )
+    }
+
+    @discardableResult
+    func startDraft(draftID: String) async throws -> Draft? {
+        try await remote.startDraft(draftID: draftID)
+    }
+
+    @discardableResult
+    func pauseDraft(draftID: String) async throws -> Draft? {
+        try await remote.pauseDraft(draftID: draftID)
+    }
+
+    @discardableResult
+    func resumeDraft(draftID: String) async throws -> Draft? {
+        try await remote.resumeDraft(draftID: draftID)
+    }
+
+    @discardableResult
+    func makePick(draftID: String, teamID: String, playerID: String) async throws -> Draft? {
+        try await remote.makePick(draftID: draftID, teamID: teamID, playerID: playerID, auto: false)
+    }
+
+    @discardableResult
+    func setAutoPick(draftID: String, teamID: String, enabled: Bool) async throws -> Draft? {
+        try await remote.setAutoPick(draftID: draftID, teamID: teamID, enabled: enabled)
+    }
+
+    // MARK: - Draft queue
+
+    func draftQueue(draftID: String, teamID: String) async -> [String] {
+        await remote.draftQueue(draftID: draftID, teamID: teamID)
+    }
+
+    func queueAdd(draftID: String, teamID: String, playerID: String) async throws {
+        try await remote.queueAdd(draftID: draftID, teamID: teamID, playerID: playerID)
+    }
+
+    func queueRemove(draftID: String, teamID: String, playerID: String) async throws {
+        try await remote.queueRemove(draftID: draftID, teamID: teamID, playerID: playerID)
+    }
+
+    func queueReorder(draftID: String, teamID: String, playerIDs: [String]) async throws {
+        try await remote.queueReorder(draftID: draftID, teamID: teamID, playerIDs: playerIDs)
+    }
+
+    // Client-side auto-pick on timer expiry. Picks position-aware best
+    // available, then locks the team into auto-pick mode so they keep
+    // drafting on their own until they manually toggle off. Idempotent —
+    // if another client already advanced the pick, make_pick fails on the
+    // unique constraint and the call returns nil.
+    @discardableResult
+    func autoPickIfExpired(draft: Draft, league: League?, players: [String: Player]) async -> Draft? {
+        guard draft.status == .live,
+              let deadline = draft.pickDeadline,
+              deadline <= Date() else { return nil }
+        return await performAutoPick(draft: draft, league: league, players: players, lockIntoAuto: true)
+    }
+
+    // Voluntary auto-pick: fires when a team in auto_pick_team_ids is on
+    // the clock. Doesn't re-lock (they're already in the list).
+    @discardableResult
+    func autoPickForOnClockAutoTeam(draft: Draft, league: League?, players: [String: Player]) async -> Draft? {
+        guard draft.status == .live,
+              let teamID = draft.teamOnClock(forPick: draft.currentPick),
+              draft.isOnAutoPick(teamID: teamID) else { return nil }
+        return await performAutoPick(draft: draft, league: league, players: players, lockIntoAuto: false)
+    }
+
+    private func performAutoPick(
+        draft: Draft, league: League?, players: [String: Player], lockIntoAuto: Bool
+    ) async -> Draft? {
+        guard let teamID = draft.teamOnClock(forPick: draft.currentPick) else { return nil }
+        let pickedIDs = await draftedPlayerIDs(draftID: draft.id)
+        // Use the league snapshot to know what's on the team (in case the
+        // cached league.teams.roster lags behind the latest picks). The most
+        // accurate roster is the picks-so-far filtered by this team_id.
+        let teamPicks = await draftPicks(draftID: draft.id)
+            .filter { $0.teamID == teamID }
+            .map(\.playerID)
+        let team = FantasyTeam(id: teamID, name: "", roster: teamPicks)
+        let config = league?.rosterConfig ?? .default
+        let scoring = league?.scoring ?? .ppr
+        // Queue strictly wins: if the team owner queued players, the first
+        // still-available queued player is picked, ignoring the 7-pick-loop
+        // template entirely. Falls through to the loop strategy only when
+        // the queue is empty (or all queued players are already drafted).
+        var chosenID: String? = nil
+        let queued = await remote.draftQueue(draftID: draft.id, teamID: teamID)
+        for pid in queued where !pickedIDs.contains(pid) && players[pid] != nil {
+            chosenID = pid
+            break
+        }
+
+        if chosenID == nil {
+            // Use point-in-time ADP for simulation drafts (what real managers
+            // had at draft time), current ADP for live real-league drafts.
+            let adp: [String: Double]
+            if let lg = league {
+                adp = lg.isTest
+                    ? await adpForSimulation(season: lg.season, scoring: lg.scoring)
+                    : await self.adp(season: lg.season, scoring: lg.scoring)
+            } else {
+                adp = [:]
+            }
+            chosenID = Fantasy.bestAutoPickPlayerID(
+                team: team, players: players, pickedPlayerIDs: pickedIDs,
+                config: config, scoring: scoring, adp: adp
+            )
+        }
+        guard let pid = chosenID else { return nil }
+        let updated = try? await remote.makePick(
+            draftID: draft.id, teamID: teamID, playerID: pid, auto: true
+        )
+        if lockIntoAuto, updated != nil {
+            _ = try? await remote.setAutoPick(draftID: draft.id, teamID: teamID, enabled: true)
+        }
+        return updated
+    }
+
+    private func draftedPlayerIDs(draftID: String) async -> Set<String> {
+        let picks = await draftPicks(draftID: draftID)
+        return Set(picks.map(\.playerID))
+    }
+
+    // MARK: - Admin
+
+    var isAdmin: Bool {
+        guard let username = session?.profile.username else { return false }
+        return AdminConfig.adminUsernames.contains(username.lowercased())
+    }
+
+    // MARK: - Simulations
+
+    enum SimulationDraftMode { case preDrafted, liveDraft }
+
+    // Convention: in a simulation, the user's "primary" team is the one
+    // whose name doesn't match the auto-generated bot pattern. Every team
+    // is owned by the creator so we can't disambiguate by owner_id.
+    static func primaryTeamID(in league: League) -> String? {
+        league.teams.first(where: { !$0.name.hasPrefix("Bot ") })?.id
+            ?? league.teams.first?.id
+    }
+
+    // Create a Simulation league: 1 user team + N bots, all owned by the
+    // creator so they can be acted on through the normal RPCs.
+    @discardableResult
+    func createSimulation(
+        name: String,
+        season: Int,
+        scoring: Scoring,
+        rosterConfig: RosterConfig = .default,
+        yourTeamName: String,
+        mode: SimulationDraftMode = .preDrafted,
+        botCount: Int
+    ) async throws -> League {
+        guard let session else { throw AppError.notSignedIn }
+        let bots = max(1, botCount)
+        let otherNames = (1...bots).map { "Bot \($0)" }
+        let league = try await remote.createLeague(
+            creatorID: session.userID,
+            name: name,
+            season: season,
+            scoring: scoring,
+            rosterConfig: rosterConfig,
+            yourTeamName: yourTeamName,
+            otherTeamNames: otherNames
+        )
+        // Flip is_test + clear deadline; the row is otherwise normal.
+        try await remote.markAsTestLeague(leagueID: league.id)
+
+        // Every bot team's owner_id = creator's UID so they can act on
+        // their behalf through the normal RLS-protected RPCs.
+        for team in league.teams where team.ownerID == nil {
+            _ = try await remote.claimTeam(teamID: team.id, userID: session.userID)
+        }
+
+        // Make sure we have the data season loaded before drafting.
+        let seasonPlayers = await loadSeason(league.season) ?? players(season: league.season)
+
+        switch mode {
+        case .preDrafted:
+            // Point-in-time ADP — the rankings a real manager would have
+            // had when drafting this season, not season-aggregate hindsight.
+            let adp = await adpForSimulation(season: league.season, scoring: league.scoring)
+            let drafted = Fantasy.draftRosters(
+                players: seasonPlayers, teamCount: league.teams.count,
+                config: league.rosterConfig, scoring: league.scoring,
+                adp: adp
+            )
+            for (idx, team) in league.teams.enumerated() {
+                let roster = drafted[idx]
+                let lineup = Fantasy.autoFillLineup(
+                    roster: roster, players: seasonPlayers,
+                    config: league.rosterConfig, scoring: league.scoring
+                )
+                _ = try await remote.setRoster(
+                    teamID: team.id, roster: roster, starters: lineup
+                )
+            }
+            // Capture the pristine week-0 entry state so reset_all can
+            // restore it later.
+            try await remote.snapshotTeams(leagueID: league.id, week: 0)
+        case .liveDraft:
+            // Schedule a draft starting in 30s with a short pick clock
+            // so the user can walk through the full draft room flow.
+            let pickOrder = league.teams.map(\.id).shuffled()
+            _ = try await remote.upsertDraft(
+                leagueID: league.id,
+                format: .snake,
+                pickSeconds: 20,
+                startsAt: Date().addingTimeInterval(30),
+                pickOrder: pickOrder,
+                rosterSize: league.rosterConfig.totalSize
+            )
+            // Snapshot the empty-roster entry state so reset_all has
+            // something to restore to. Without this, a live-draft sim
+            // couldn't be wound back: reset would leave rosters wherever
+            // they were at reset-time even though the picks get deleted
+            // and the draft re-scheduled.
+            try await remote.snapshotTeams(leagueID: league.id, week: 0)
+        }
+        await reloadLeagues()
+        return league
+    }
+
+    // MARK: - Simulation: time travel + bot orchestration
+
+    @discardableResult
+    func advanceSimulatedWeek(leagueID: String, delta: Int) async throws -> League? {
+        guard let lg = try await remote.league(id: leagueID), lg.isTest else { return nil }
+        let scheduleLen = lg.schedule.count
+        let current = lg.simulatedWeek ?? 0
+        // Phases: 0 = pre, 1...scheduleLen = regular weeks, scheduleLen+1 = post.
+        let next = max(0, min(scheduleLen + 1, current + delta))
+        let updated = try await remote.setSimulatedWeek(leagueID: leagueID, week: next)
+        // Capture the entry state of the new week so reset_period can rewind
+        // back to it. Snapshot is a no-op if one already exists (jumping back
+        // and forward shouldn't clobber the original entry).
+        if let updated, delta > 0 {
+            try? await remote.snapshotTeams(leagueID: leagueID, week: next)
+            await runAutoProcessing(league: updated)
+        }
+        return updated
+    }
+
+    @discardableResult
+    func resetCurrentPeriod(leagueID: String) async -> League? {
+        (try? await remote.resetPeriod(leagueID: leagueID)) ?? nil
+    }
+
+    @discardableResult
+    func resetAll(leagueID: String) async -> League? {
+        (try? await remote.resetAll(leagueID: leagueID)) ?? nil
+    }
+
+    private func runAutoProcessing(league: League) async {
+        // Process waivers: re-use the regular waiver flow by simulating the
+        // tick. We don't have a "force run" RPC, so for each pending claim
+        // resolve it directly via processClaim — the existing
+        // process_waivers function is a cron-only Edge Function. For v1 we
+        // approximate by walking the pending list and using the same logic
+        // the server uses. Trades have attempt_execute_trade callable per id.
+        let pendingTrades = await trades(leagueID: league.id)
+            .filter { $0.status == .pendingExecution }
+        for t in pendingTrades {
+            _ = try? await remote.callTradeRetry(tradeID: t.id)
+        }
+        // Pending waiver claims: simplest path is to leave them alone (the
+        // hourly cron handles them). Surfacing a "Run waivers now" button is
+        // a separate piece of work.
+    }
+
+    // Generate one round of bot moves and execute each in sequence.
+    func runBotActivity(league: League) async {
+        guard league.isTest, let session else { return }
+        // Refresh the league + players snapshot so the bot's view of the
+        // world is up to date.
+        guard let fresh = try? await remote.league(id: league.id) else { return }
+        let primary = Self.primaryTeamID(in: fresh) ?? ""
+        let snapshot = players(season: fresh.season)
+        let clamped: [String: Player]
+        if let week = fresh.simulatedWeek, week > 0 {
+            clamped = Fantasy.clamped(snapshot, upTo: week)
+        } else {
+            clamped = snapshot
+        }
+        let dropped = await droppedPlayers(leagueID: fresh.id)
+        let onWaivers = Set(dropped.filter(\.isOnWaivers).map(\.playerID))
+
+        // Historical context — both empty/no-ops in real leagues. In a sim
+        // these pull from trending_history / inactives for the simulated week.
+        let week = fresh.simulatedWeek ?? 0
+        var trendingAdds: [String: Double] = [:]
+        var inactiveSet: Set<String> = []
+        if fresh.isTest, week > 0 {
+            for t in await remote.trendingPlayers(season: fresh.season, week: week) {
+                trendingAdds[t.playerID] = t.adds
+            }
+            inactiveSet = await data.inactives(season: fresh.season, week: week)
+        }
+
+        var rng = SystemRandomNumberGenerator()
+        let moves = BotAI.weeklyMoves(
+            league: fresh, adminTeamID: primary, players: clamped,
+            onWaivers: onWaivers, upToWeek: week,
+            trendingAdds: trendingAdds, inactives: inactiveSet, rng: &rng
+        )
+        for move in moves {
+            try? await execute(move: move, in: fresh, session: session)
+        }
+    }
+
+    private func execute(move: BotMove, in league: League, session: Session) async throws {
+        switch move {
+        case let .addDrop(teamID, addPlayerID, dropPlayerID):
+            guard let team = league.teams.first(where: { $0.id == teamID }) else { return }
+            _ = try await remote.addFreeAgent(
+                league: league, team: team,
+                addPlayerID: addPlayerID, dropPlayerID: dropPlayerID
+            )
+        case let .waiverClaim(teamID, addPlayerID, dropPlayerID):
+            _ = try await remote.submitWaiverClaim(
+                leagueID: league.id, teamID: teamID,
+                addPlayerID: addPlayerID, dropPlayerID: dropPlayerID
+            )
+        case let .proposeTrade(fromTeamID, toTeamID, sendIDs, requestIDs):
+            _ = try await remote.proposeTrade(
+                leagueID: league.id,
+                proposerTeamID: fromTeamID, recipientTeamID: toTeamID,
+                proposerPlayerIDs: sendIDs, recipientPlayerIDs: requestIDs,
+                note: "Bot offer", parentTradeID: nil
+            )
+        }
+    }
+
+    // MARK: - Previews
+
+    static var preview: AppState {
+        let state = AppState()
+        state.seasons = [2025, 2024, 2023]
+        state.selectedSeason = 2025
+        return state
+    }
+
+    enum AppError: LocalizedError {
+        case notSignedIn, leagueNotFound
+        var errorDescription: String? {
+            switch self {
+            case .notSignedIn:    return "You're not signed in."
+            case .leagueNotFound: return "League not found."
+            }
+        }
+    }
+}

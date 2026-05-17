@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+
+# Claude Code local state (skills, settings, worktrees)
+.claude/
+
+# Supabase CLI local link state
+supabase/.temp/
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.swiftpm/
+.build/
+Packages/
+Package.pins
+Package.resolved
+
+# CocoaPods (not currently used, future-proofing)
+Pods/
+
+# Carthage (not currently used, future-proofing)
+Carthage/Build/

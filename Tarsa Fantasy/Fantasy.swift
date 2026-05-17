@@ -1,0 +1,804 @@
+import Foundation
+
+// Pure data-layer functions. Ported from src/main.py and unit-tested-equivalent
+// behavior. No I/O, no Apple frameworks beyond Foundation.
+enum Fantasy {
+
+    // Fantasy-relevant positions for UI surfacing. nflverse data also includes
+    // IDP rows (LB/DB/DL/CB/S/etc); the data layer keeps them for stats use
+    // but no browseable list should expose them until we add IDP support.
+    static let fantasyPositions: Set<String> = ["QB", "RB", "WR", "TE", "K"]
+    static func isFantasyPosition(_ position: String) -> Bool {
+        fantasyPositions.contains(position.uppercased())
+    }
+
+    static func round2(_ x: Double) -> Double { (x * 100).rounded() / 100 }
+
+    static func seasonTotals(_ games: [Game]) -> SeasonTotals {
+        var t = SeasonTotals()
+        t.gamesPlayed = games.count
+        for g in games {
+            t.completions          += g.completions
+            t.attempts             += g.attempts
+            t.passingYards         += g.passingYards
+            t.passingTDs           += g.passingTDs
+            t.passingInterceptions += g.passingInterceptions
+            t.carries              += g.carries
+            t.rushingYards         += g.rushingYards
+            t.rushingTDs           += g.rushingTDs
+            t.receptions           += g.receptions
+            t.targets              += g.targets
+            t.receivingYards       += g.receivingYards
+            t.receivingTDs         += g.receivingTDs
+            t.fumblesLost          += g.fumblesLost
+            t.fantasyPoints        += g.fantasyPoints
+            t.fantasyPointsPPR     += g.fantasyPointsPPR
+            t.fantasyPointsHalfPPR += g.fantasyPointsHalfPPR
+        }
+        return t
+    }
+
+    static func summary(_ player: Player, scoring: Scoring) -> PlayerSummary {
+        let totals = seasonTotals(player.games)
+        let pts = totals.points(scoring: scoring)
+        let games = max(totals.gamesPlayed, 1)
+        return PlayerSummary(
+            id: player.id,
+            name: player.name,
+            position: player.position,
+            team: player.team,
+            headshotURL: player.headshotURL,
+            gamesPlayed: totals.gamesPlayed,
+            points: round2(pts),
+            pointsPerGame: round2(pts / Double(games))
+        )
+    }
+
+    static func search(
+        players: [String: Player],
+        query: String = "",
+        position: Position = .all,
+        scoring: Scoring = .ppr,
+        limit: Int = 150,
+        // When provided, results are sorted by ADP ascending; players without
+        // an ADP entry sink below those with one, ordered by points descending.
+        // The draft room passes this so the player list mirrors a real draft
+        // board; other callers omit it and get the historical points sort.
+        adp: [String: Double]? = nil
+    ) -> [PlayerSummary] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        var rows: [PlayerSummary] = []
+        rows.reserveCapacity(players.count)
+        for (_, p) in players {
+            if !isFantasyPosition(p.position) { continue }
+            if position != .all, p.position.uppercased() != position.rawValue { continue }
+            if !q.isEmpty {
+                let hay = "\(p.name) \(p.team) \(p.position)".lowercased()
+                if !hay.contains(q) { continue }
+            }
+            rows.append(summary(p, scoring: scoring))
+        }
+        if let adp {
+            rows.sort { lhs, rhs in
+                switch (adp[lhs.id], adp[rhs.id]) {
+                case let (l?, r?):  return l < r
+                case (_?, nil):     return true
+                case (nil, _?):     return false
+                case (nil, nil):    return lhs.points > rhs.points
+                }
+            }
+        } else {
+            rows.sort { $0.points > $1.points }
+        }
+        if limit > 0 && rows.count > limit { rows = Array(rows.prefix(limit)) }
+        return rows
+    }
+
+    static func rank(
+        players: [String: Player],
+        scope: RankScope,
+        week: Int? = nil,
+        position: Position = .all,
+        scoring: Scoring = .ppr,
+        limit: Int = 100
+    ) -> [Rank] {
+        var rows: [Rank] = []
+        for (_, p) in players {
+            if !isFantasyPosition(p.position) { continue }
+            if position != .all, p.position.uppercased() != position.rawValue { continue }
+            switch scope {
+            case .week:
+                guard let w = week, let g = p.games.first(where: { $0.week == w }) else { continue }
+                rows.append(Rank(
+                    id: p.id, rank: 0, name: p.name, position: p.position,
+                    team: p.team, headshotURL: p.headshotURL,
+                    opponent: g.opponent, week: w, gamesPlayed: nil,
+                    points: round2(g.points(scoring: scoring)),
+                    pointsPerGame: nil
+                ))
+            case .season:
+                let totals = seasonTotals(p.games)
+                if totals.gamesPlayed == 0 { continue }
+                let pts = totals.points(scoring: scoring)
+                rows.append(Rank(
+                    id: p.id, rank: 0, name: p.name, position: p.position,
+                    team: p.team, headshotURL: p.headshotURL,
+                    opponent: nil, week: nil, gamesPlayed: totals.gamesPlayed,
+                    points: round2(pts),
+                    pointsPerGame: round2(pts / Double(totals.gamesPlayed))
+                ))
+            }
+        }
+        rows.sort { $0.points > $1.points }
+        if limit > 0 && rows.count > limit { rows = Array(rows.prefix(limit)) }
+        for i in rows.indices { rows[i].rank = i + 1 }
+        return rows
+    }
+
+    enum RankScope: String, CaseIterable, Identifiable, Hashable {
+        case season, week
+        var id: String { rawValue }
+        var label: String { self == .season ? "Season" : "By week" }
+    }
+
+    // Snake-draft `players` across `teamCount` teams, filling each team's
+    // roster to `config.totalSize`. Within each round, picks alternate
+    // direction (round 1: teams 1→N, round 2: N→1, etc). Position-specific
+    // rounds run first (QB/RB/WR/TE → FLEX → K), then bench fills with the
+    // best remaining player regardless of position.
+    // Snake-drafts full rosters across teams. Each team applies the same
+    // auto-pick loop strategy that's used on the live clock, so pre-drafted
+    // simulation rosters look like they came out of a real draft room.
+    // Pick order alternates per round (round 1: team 1→N, round 2: N→1, …).
+    static func draftRosters(
+        players: [String: Player],
+        teamCount: Int,
+        config: RosterConfig,
+        scoring: Scoring,
+        adp: [String: Double] = [:]
+    ) -> [[String]] {
+        var rosters: [[String]] = Array(repeating: [], count: teamCount)
+        var taken: Set<String> = []
+        let totalRounds = config.totalSize
+
+        for round in 1...totalRounds {
+            let order: [Int] = round.isMultiple(of: 2)
+                ? Array((0..<teamCount).reversed())
+                : Array(0..<teamCount)
+            for t in order {
+                let team = FantasyTeam(id: "t\(t)", name: "", roster: rosters[t])
+                if let pid = bestAutoPickPlayerID(
+                    team: team, players: players, pickedPlayerIDs: taken,
+                    config: config, scoring: scoring, adp: adp
+                ) {
+                    rosters[t].append(pid)
+                    taken.insert(pid)
+                }
+            }
+        }
+        return rosters
+    }
+
+    // ============================================================
+    // Auto-pick strategy
+    //
+    // Bots draft in 7-round loops with a fixed position template,
+    // breaking out for K/DEF in the final two rounds:
+    //   R1 RB/WR/TE   R2 RB/WR/TE   R3 RB/WR/TE/QB
+    //   R4 RB/WR/TE/QB R5 RB/WR/TE/QB R6 RB/WR/TE   R7 RB/WR/TE
+    // Within each 7-round loop the position budget is exactly:
+    //   2 RB, 2 WR, 1 TE, 1 QB, 1 flex (RB/WR/TE).
+    // The flex consumes the first "extra" RB/WR/TE pick after a position
+    // hits its dedicated cap. Once a position is exhausted in the loop it
+    // cannot be picked again that loop — even if the per-round template
+    // still permits it.
+    //
+    // Final two rounds (rounds totalRounds-1 and totalRounds) prefer K
+    // (we don't model DEF as a roster position in this app).
+    //
+    // If no allowed-pool candidate is available we fall back to the
+    // highest-ADP player overall.
+    // ============================================================
+
+    // Per-loop position budgets. Increase any number to widen what the bot
+    // is willing to draft within a single 7-round loop.
+    static let loopRoundCount = 7
+    private static let loopBudgetRB:   Int = 2
+    private static let loopBudgetWR:   Int = 2
+    private static let loopBudgetTE:   Int = 1
+    private static let loopBudgetQB:   Int = 1
+    private static let loopBudgetFlex: Int = 1   // one of RB/WR/TE
+
+    // Per-round position template (0-indexed offsets within a loop of 7).
+    private static func roundTemplate(loopOffset: Int) -> Set<String> {
+        switch loopOffset {
+        case 0, 1:       return ["RB", "WR", "TE"]
+        case 2, 3, 4:    return ["RB", "WR", "TE", "QB"]
+        case 5, 6:       return ["RB", "WR", "TE"]
+        default:         return ["RB", "WR", "TE"]
+        }
+    }
+
+    // Positions the bot is allowed to pick at a given round, given the
+    // positions it has already taken in the current loop. Returns nil
+    // when the caller should fall back to the overall best-available
+    // ADP player (e.g. partial-loop or exhausted positions).
+    static func autoPickAllowedPositions(
+        round: Int,
+        totalRounds: Int,
+        currentLoopPicks: [String]
+    ) -> Set<String> {
+        // Final two rounds = K / DEF phase.
+        if totalRounds >= 2 && round >= totalRounds - 1 {
+            return ["K", "DEF"]
+        }
+        let loopOffset = (round - 1) % loopRoundCount
+        let template = roundTemplate(loopOffset: loopOffset)
+
+        // Tally what's been picked in the current loop and how much flex
+        // capacity is left. Flex consumes the FIRST overflow of any of
+        // RB/WR/TE past its dedicated budget.
+        var counts: [String: Int] = [:]
+        for pos in currentLoopPicks {
+            counts[pos, default: 0] += 1
+        }
+        let rbOver = max(0, (counts["RB"] ?? 0) - loopBudgetRB)
+        let wrOver = max(0, (counts["WR"] ?? 0) - loopBudgetWR)
+        let teOver = max(0, (counts["TE"] ?? 0) - loopBudgetTE)
+        let flexUsed = rbOver + wrOver + teOver
+        let flexLeft = max(0, loopBudgetFlex - flexUsed)
+
+        func hasCapacity(_ pos: String) -> Bool {
+            switch pos {
+            case "RB": return (counts["RB"] ?? 0) < loopBudgetRB || flexLeft > 0
+            case "WR": return (counts["WR"] ?? 0) < loopBudgetWR || flexLeft > 0
+            case "TE": return (counts["TE"] ?? 0) < loopBudgetTE || flexLeft > 0
+            case "QB": return (counts["QB"] ?? 0) < loopBudgetQB
+            default:   return true
+            }
+        }
+        return template.filter(hasCapacity)
+    }
+
+    // Returns the positions of the picks the team made within the loop
+    // containing `round`. K-phase picks (final two rounds) are excluded.
+    static func positionsInCurrentLoop(
+        team: FantasyTeam,
+        players: [String: Player],
+        round: Int,
+        totalRounds: Int
+    ) -> [String] {
+        let kPhaseStart = totalRounds - 1   // 1-indexed round number
+        // Loop the upcoming pick belongs to (0-indexed). Out-of-K picks only.
+        let upcomingIsKPhase = totalRounds >= 2 && round >= kPhaseStart
+        if upcomingIsKPhase { return [] }
+        let upcomingLoop = (round - 1) / loopRoundCount
+        var out: [String] = []
+        for (idx, pid) in team.roster.enumerated() {
+            let pickRound = idx + 1
+            if totalRounds >= 2 && pickRound >= kPhaseStart { continue }
+            let pickLoop = (pickRound - 1) / loopRoundCount
+            if pickLoop != upcomingLoop { continue }
+            if let p = players[pid] {
+                out.append(p.position.uppercased())
+            }
+        }
+        return out
+    }
+
+    // Picks one player for a team that's on the clock. ADP is the primary
+    // ranking; players without an ADP entry fall to the bottom (ranked by
+    // season points as a tiebreak so we still fill rosters when ADP data
+    // is sparse). See the comment block above for the strategy.
+    static func bestAutoPickPlayerID(
+        team: FantasyTeam,
+        players: [String: Player],
+        pickedPlayerIDs: Set<String>,
+        config: RosterConfig,
+        scoring: Scoring,
+        adp: [String: Double] = [:]
+    ) -> String? {
+        let available = players.values.filter { !pickedPlayerIDs.contains($0.id) }
+        if available.isEmpty { return nil }
+
+        // Rank by ADP first, season points as a safety net for players
+        // without an ADP entry (sparse historical data, deep rookies).
+        let ranked = available.sorted { a, b in
+            switch (adp[a.id], adp[b.id]) {
+            case let (x?, y?): return x < y
+            case (_?, nil):    return true
+            case (nil, _?):    return false
+            default:
+                return seasonTotals(a.games).points(scoring: scoring)
+                    > seasonTotals(b.games).points(scoring: scoring)
+            }
+        }
+
+        let round = team.roster.count + 1
+        let totalRounds = config.totalSize
+        let loopPicks = positionsInCurrentLoop(
+            team: team, players: players,
+            round: round, totalRounds: totalRounds
+        )
+        let allowed = autoPickAllowedPositions(
+            round: round, totalRounds: totalRounds,
+            currentLoopPicks: loopPicks
+        )
+        if let pick = ranked.first(where: { allowed.contains($0.position.uppercased()) }) {
+            return pick.id
+        }
+        // Allowed pool exhausted — fall back to overall best available.
+        return ranked.first?.id
+    }
+
+    static func generateSchedule(teamIDs: [String]) -> [ScheduleWeek] {
+        var teams = teamIDs
+        let byeMarker = "__bye__"
+        if teams.count % 2 == 1 { teams.append(byeMarker) }
+        let count = teams.count
+        guard count >= 2 else { return [] }
+        var rotation = teams
+        var schedule: [ScheduleWeek] = []
+        for week in 1..<count {
+            var matchups: [[String]] = []
+            var byes: [String] = []
+            for i in 0..<(count / 2) {
+                let a = rotation[i]
+                let b = rotation[count - 1 - i]
+                if a == byeMarker      { byes.append(b) }
+                else if b == byeMarker { byes.append(a) }
+                else                   { matchups.append([a, b]) }
+            }
+            schedule.append(ScheduleWeek(week: week, matchups: matchups, byes: byes))
+            let first = rotation[0]
+            let last  = rotation[count - 1]
+            let mid   = Array(rotation[1..<(count - 1)])
+            rotation = [first, last] + mid
+        }
+        return schedule
+    }
+
+    struct TeamWeekScore {
+        let total: Double
+        // Ordered: starters first (by slot order), then bench. Empty starter
+        // slots are present as entries with playerID == "".
+        let roster: [LeagueRosterEntry]
+    }
+
+    // Fills starter slots from `roster` greedily, picking the highest-scoring
+    // unassigned player whose position matches each slot. FLEX is filled after
+    // the position-specific slots so a FLEX-eligible player isn't stolen from
+    // a dedicated WR/RB/TE slot. Returns an array of length config.starterCount
+    // where "" indicates an unfilled slot.
+    static func autoFillLineup(
+        roster: [String],
+        players: [String: Player],
+        config: RosterConfig,
+        scoring: Scoring
+    ) -> [String] {
+        let ranked = roster
+            .compactMap { pid -> (id: String, position: String, points: Double)? in
+                guard let p = players[pid] else { return nil }
+                let pts = seasonTotals(p.games).points(scoring: scoring)
+                return (pid, p.position, pts)
+            }
+            .sorted { $0.points > $1.points }
+
+        let slots = config.starterSlots
+        var assignment = Array(repeating: "", count: slots.count)
+        var used: Set<String> = []
+        // Order slots so FLEX (and any other catch-all slots) are filled last.
+        let slotOrder = slots.indices.sorted { i, j in
+            let a = slots[i], b = slots[j]
+            if a == .flex && b != .flex { return false }
+            if b == .flex && a != .flex { return true }
+            return i < j
+        }
+        for slotIdx in slotOrder {
+            let slot = slots[slotIdx]
+            if let pick = ranked.first(where: { !used.contains($0.id) && slot.accepts(position: $0.position) }) {
+                assignment[slotIdx] = pick.id
+                used.insert(pick.id)
+            }
+        }
+        return assignment
+    }
+
+    // Returns the team's lineup as (starters, bench) player IDs. If the stored
+    // starters are missing or stale (e.g. old leagues, roster edited without
+    // re-saving lineup), it auto-fills on the fly.
+    static func resolveLineup(
+        team: FantasyTeam,
+        players: [String: Player],
+        config: RosterConfig,
+        scoring: Scoring
+    ) -> (starters: [String], bench: [String]) {
+        let starters: [String]
+        if team.starters.count == config.starterCount
+            && team.starters.contains(where: { !$0.isEmpty }) {
+            // Drop starter IDs no longer on the roster.
+            let onRoster = Set(team.roster)
+            starters = team.starters.map { onRoster.contains($0) ? $0 : "" }
+        } else {
+            starters = autoFillLineup(
+                roster: team.roster, players: players,
+                config: config, scoring: scoring
+            )
+        }
+        let startingSet = Set(starters.filter { !$0.isEmpty })
+        let bench = team.roster.filter { !startingSet.contains($0) }
+        return (starters, bench)
+    }
+
+    static func teamWeekScore(
+        players: [String: Player],
+        team: FantasyTeam,
+        config: RosterConfig,
+        week: Int,
+        scoring: Scoring
+    ) -> TeamWeekScore {
+        let (starters, bench) = resolveLineup(
+            team: team, players: players, config: config, scoring: scoring
+        )
+        var total: Double = 0
+        var rows: [LeagueRosterEntry] = []
+        let slots = config.starterSlots
+        for (i, pid) in starters.enumerated() {
+            let slot = slots[i]
+            if pid.isEmpty {
+                rows.append(LeagueRosterEntry(
+                    id: "s\(i)-empty",
+                    playerID: "",
+                    name: "Empty",
+                    position: slot.label,
+                    team: "",
+                    headshotURL: "",
+                    points: 0,
+                    played: false,
+                    slot: slot
+                ))
+                continue
+            }
+            let player = players[pid]
+            let game = player?.games.first { $0.week == week }
+            let pts = game?.points(scoring: scoring) ?? 0
+            total += pts
+            rows.append(LeagueRosterEntry(
+                id: "s\(i)-\(pid)",
+                playerID: pid,
+                name: player?.name ?? pid,
+                position: player?.position ?? slot.label,
+                team: player?.team ?? "",
+                headshotURL: player?.headshotURL ?? "",
+                points: round2(pts),
+                played: game != nil,
+                slot: slot
+            ))
+        }
+        for (i, pid) in bench.enumerated() {
+            let player = players[pid]
+            let game = player?.games.first { $0.week == week }
+            let pts = game?.points(scoring: scoring) ?? 0
+            rows.append(LeagueRosterEntry(
+                id: "b\(i)-\(pid)",
+                playerID: pid,
+                name: player?.name ?? pid,
+                position: player?.position ?? "",
+                team: player?.team ?? "",
+                headshotURL: player?.headshotURL ?? "",
+                points: round2(pts),
+                played: game != nil,
+                slot: .bench
+            ))
+        }
+        return TeamWeekScore(total: round2(total), roster: rows)
+    }
+
+    static func scoreboard(
+        league: League,
+        players: [String: Player],
+        week: Int
+    ) -> (matchups: [LeagueMatchup], byes: [LeagueBye]) {
+        let teamsByID = Dictionary(uniqueKeysWithValues: league.teams.map { ($0.id, $0) })
+        guard let plan = league.schedule.first(where: { $0.week == week }) else {
+            return ([], [])
+        }
+        var matchups: [LeagueMatchup] = []
+        for pair in plan.matchups {
+            guard pair.count == 2,
+                  let home = teamsByID[pair[0]],
+                  let away = teamsByID[pair[1]] else { continue }
+            let h = teamWeekScore(players: players, team: home, config: league.rosterConfig, week: week, scoring: league.scoring)
+            let a = teamWeekScore(players: players, team: away, config: league.rosterConfig, week: week, scoring: league.scoring)
+            let played = h.roster.contains { $0.played } || a.roster.contains { $0.played }
+            matchups.append(LeagueMatchup(
+                id: "\(week)-\(home.id)-\(away.id)",
+                home: LeagueSide(teamID: home.id, name: home.name, points: h.total, roster: h.roster),
+                away: LeagueSide(teamID: away.id, name: away.name, points: a.total, roster: a.roster),
+                played: played
+            ))
+        }
+        let byes: [LeagueBye] = plan.byes.compactMap { tid in
+            guard let t = teamsByID[tid] else { return nil }
+            return LeagueBye(id: tid, name: t.name)
+        }
+        return (matchups, byes)
+    }
+
+    // The most recent week with any stat row, or 1 if the season hasn't begun.
+    // Used by the waiver flow to decide which week's games to check when
+    // determining whether a player is locked.
+    static func currentWeek(players: [String: Player]) -> Int {
+        var maxWeek = 0
+        for (_, p) in players {
+            for g in p.games where g.week > maxWeek { maxWeek = g.week }
+        }
+        return max(maxWeek, 1)
+    }
+
+    // A player is "locked" for the current week once their game has any stat
+    // line — i.e., the game has kicked off. Stats arrive from player_games
+    // (final) or live_scores (in-progress, merged in by NFLDataService), so
+    // either presence indicates the game has started.
+    static func isPlayerLocked(playerID: String, week: Int, players: [String: Player]) -> Bool {
+        guard let p = players[playerID] else { return false }
+        return p.games.contains { $0.week == week }
+    }
+
+    // MARK: - Matchup ratings (Phase 3)
+
+    // For each NFL team, the next scheduled (unplayed) game and what
+    // opponent that game is against. Built once from a season schedule.
+    static func nextOpponentByTeam(schedules: [NFLGame], asOf now: Date = Date()) -> [String: (opp: String, isHome: Bool)] {
+        var firstByTeam: [String: NFLGame] = [:]
+        let upcoming = schedules
+            .filter { $0.kickoff.map { $0 > now } ?? false }
+            .sorted { ($0.kickoff ?? .distantFuture) < ($1.kickoff ?? .distantFuture) }
+        for g in upcoming {
+            if firstByTeam[g.home] == nil { firstByTeam[g.home] = g }
+            if firstByTeam[g.away] == nil { firstByTeam[g.away] = g }
+        }
+        var out: [String: (opp: String, isHome: Bool)] = [:]
+        for (team, g) in firstByTeam {
+            if team == g.home { out[team] = (g.away, true) }
+            else if team == g.away { out[team] = (g.home, false) }
+        }
+        return out
+    }
+
+    // Build a [playerID: MatchupRating] map given the players, the
+    // team→next-opponent lookup, and a [position: [team: DvPEntry]] dvp
+    // lookup. Players whose team has no scheduled opponent (bye week, end
+    // of season) get .unknown.
+    static func matchupRatingsByPlayer(
+        players: [String: Player],
+        nextOppByTeam: [String: (opp: String, isHome: Bool)],
+        dvpByPosition: [String: [String: DvPEntry]]
+    ) -> [String: (rating: MatchupRating, opponent: String, isHome: Bool)] {
+        var out: [String: (MatchupRating, String, Bool)] = [:]
+        for (_, p) in players {
+            guard let next = nextOppByTeam[p.team] else { continue }
+            let positionKey = p.position.uppercased()
+            let dvp = dvpByPosition[positionKey]?[next.opp]
+            let rating = MatchupRating.from(rank: dvp?.rank)
+            out[p.id] = (rating, next.opp, next.isHome)
+        }
+        return out
+    }
+
+    // MARK: - Advanced metrics (Phase 3)
+
+    // Per-team weekly target counts across the whole player snapshot. Lookup
+    // table keyed [team: [week: totalTargets]] so per-player target-share
+    // calculations are O(1).
+    static func teamTargetsPerWeek(players: [String: Player]) -> [String: [Int: Double]] {
+        var out: [String: [Int: Double]] = [:]
+        for (_, p) in players {
+            for g in p.games where g.targets > 0 {
+                out[g.team, default: [:]][g.week, default: 0] += g.targets
+            }
+        }
+        return out
+    }
+
+    // Similar to above, but team rushing TDs + passing TDs + receiving TDs
+    // for TD share calculations.
+    static func teamTouchdownsPerWeek(players: [String: Player]) -> [String: [Int: Double]] {
+        var out: [String: [Int: Double]] = [:]
+        for (_, p) in players {
+            for g in p.games {
+                let tds = g.passingTDs + g.rushingTDs + g.receivingTDs
+                if tds > 0 {
+                    out[g.team, default: [:]][g.week, default: 0] += tds
+                }
+            }
+        }
+        return out
+    }
+
+    struct WeeklyAdvanced {
+        let week: Int
+        let snapPct: Double?
+        let targets: Double
+        let targetShare: Double?    // 0..1
+        let yardsPerTarget: Double?
+        let yardsPerCatch: Double?
+        let carries: Double
+        let yardsPerCarry: Double?
+        let tds: Double
+        let tdShare: Double?        // 0..1
+    }
+
+    // Builds the per-week advanced derived row for a single player. snapMap
+    // is the [week: SnapCount] slice from snapCounts(season:)[playerID].
+    static func weeklyAdvanced(
+        player: Player,
+        snapMap: [Int: SnapCount]?,
+        teamTargets: [String: [Int: Double]],
+        teamTouchdowns: [String: [Int: Double]]
+    ) -> [WeeklyAdvanced] {
+        player.games.sorted { $0.week < $1.week }.map { g in
+            let totalTeamTargets = teamTargets[g.team]?[g.week] ?? 0
+            let totalTeamTDs     = teamTouchdowns[g.team]?[g.week] ?? 0
+            let snap = snapMap?[g.week]?.offensePct
+            let tShare: Double?  = totalTeamTargets > 0 ? round2(g.targets / totalTeamTargets) : nil
+            let ypTarget: Double? = g.targets > 0 ? round2(g.receivingYards / g.targets) : nil
+            let ypCatch:  Double? = g.receptions > 0 ? round2(g.receivingYards / g.receptions) : nil
+            let ypCarry:  Double? = g.carries > 0 ? round2(g.rushingYards / g.carries) : nil
+            let tds = g.passingTDs + g.rushingTDs + g.receivingTDs
+            let tdShare: Double? = totalTeamTDs > 0 ? round2(tds / totalTeamTDs) : nil
+            return WeeklyAdvanced(
+                week: g.week,
+                snapPct: snap,
+                targets: g.targets,
+                targetShare: tShare,
+                yardsPerTarget: ypTarget,
+                yardsPerCatch: ypCatch,
+                carries: g.carries,
+                yardsPerCarry: ypCarry,
+                tds: tds,
+                tdShare: tdShare
+            )
+        }
+    }
+
+    // MARK: - Stats overhaul helpers (Phase 1)
+
+    // Returns season fantasy rank within each player's position. WR12 etc.
+    // Players with no games this season are excluded (no signal to rank).
+    static func positionRanks(
+        players: [String: Player], scoring: Scoring
+    ) -> [String: PositionRank] {
+        // Group players by position with their season total.
+        var byPosition: [String: [(id: String, points: Double)]] = [:]
+        for (_, p) in players {
+            let totals = seasonTotals(p.games)
+            if totals.gamesPlayed == 0 { continue }
+            let pos = p.position.uppercased()
+            if pos.isEmpty { continue }
+            byPosition[pos, default: []].append((p.id, totals.points(scoring: scoring)))
+        }
+        var out: [String: PositionRank] = [:]
+        for (pos, list) in byPosition {
+            let sorted = list.sorted { $0.points > $1.points }
+            let total = sorted.count
+            for (i, entry) in sorted.enumerated() {
+                out[entry.id] = PositionRank(
+                    position: pos, rank: i + 1,
+                    totalAtPosition: total,
+                    seasonPoints: round2(entry.points)
+                )
+            }
+        }
+        return out
+    }
+
+    // Trend arrow based on average of last N games vs full-season average.
+    // .flat when within 10% of season average; .up/.down when meaningfully
+    // above/below.
+    static func trendDirection(
+        games: [Game], scoring: Scoring, lookback: Int = 3
+    ) -> Trend {
+        guard games.count >= 2 else { return .flat }
+        let sorted = games.sorted { $0.week < $1.week }
+        let recent = Array(sorted.suffix(lookback))
+        let recentAvg  = recent.reduce(0.0) { $0 + $1.points(scoring: scoring) } / Double(recent.count)
+        let seasonAvg  = sorted.reduce(0.0) { $0 + $1.points(scoring: scoring) } / Double(sorted.count)
+        if seasonAvg == 0 { return .flat }
+        let delta = (recentAvg - seasonAvg) / seasonAvg
+        if delta > 0.10  { return .up }
+        if delta < -0.10 { return .down }
+        return .flat
+    }
+
+    // Chronological per-week points — for the inline sparkline. Skips weeks
+    // without games (so the line shape reflects appearances only).
+    static func sparklineSeries(games: [Game], scoring: Scoring) -> [Double] {
+        games.sorted { $0.week < $1.week }
+             .map { $0.points(scoring: scoring) }
+    }
+
+    // Convenience for view code: return the clamped snapshot if the league
+    // is in a Testing Environment with a pinned week, otherwise the raw
+    // dict pass-through. One call site instead of conditionals everywhere.
+    static func playersFor(
+        league: League, snapshot: [String: Player]
+    ) -> [String: Player] {
+        if league.isTest, let week = league.simulatedWeek {
+            return clamped(snapshot, upTo: week)
+        }
+        return snapshot
+    }
+
+    // Returns a clamped copy of the season's player dict where each player's
+    // games are restricted to weeks <= upTo. Used by Testing Environment
+    // league views so standings/scoreboard/lock detection reflect only the
+    // simulated portion of the season. Non-test leagues never need this.
+    static func clamped(_ players: [String: Player], upTo week: Int) -> [String: Player] {
+        var out: [String: Player] = [:]
+        out.reserveCapacity(players.count)
+        for (id, p) in players {
+            var copy = p
+            copy.games = p.games.filter { $0.week <= week }
+            out[id] = copy
+        }
+        return out
+    }
+
+    // Players not on any roster in this league.
+    static func freeAgents(league: League, players: [String: Player]) -> Set<String> {
+        var rostered: Set<String> = []
+        for t in league.teams { rostered.formUnion(t.roster) }
+        var free: Set<String> = []
+        for id in players.keys where !rostered.contains(id) { free.insert(id) }
+        return free
+    }
+
+    static func standings(league: League, players: [String: Player]) -> [StandingsRow] {
+        struct Acc { var w = 0; var l = 0; var t = 0; var pf = 0.0; var pa = 0.0; var name = "" }
+        var rows: [String: Acc] = [:]
+        for team in league.teams {
+            rows[team.id] = Acc(name: team.name)
+        }
+        let teamsByID = Dictionary(uniqueKeysWithValues: league.teams.map { ($0.id, $0) })
+        for plan in league.schedule {
+            for pair in plan.matchups {
+                guard pair.count == 2,
+                      let home = teamsByID[pair[0]],
+                      let away = teamsByID[pair[1]] else { continue }
+                let h = teamWeekScore(players: players, team: home, config: league.rosterConfig, week: plan.week, scoring: league.scoring)
+                let a = teamWeekScore(players: players, team: away, config: league.rosterConfig, week: plan.week, scoring: league.scoring)
+                if !(h.roster.contains { $0.played } || a.roster.contains { $0.played }) { continue }
+                rows[home.id]!.pf += h.total
+                rows[home.id]!.pa += a.total
+                rows[away.id]!.pf += a.total
+                rows[away.id]!.pa += h.total
+                if h.total > a.total {
+                    rows[home.id]!.w += 1
+                    rows[away.id]!.l += 1
+                } else if a.total > h.total {
+                    rows[away.id]!.w += 1
+                    rows[home.id]!.l += 1
+                } else {
+                    rows[home.id]!.t += 1
+                    rows[away.id]!.t += 1
+                }
+            }
+        }
+        let sorted = rows.map { (id: $0.key, acc: $0.value) }
+            .sorted { ($0.acc.w, $0.acc.pf) > ($1.acc.w, $1.acc.pf) }
+        return sorted.enumerated().map { (i, item) in
+            StandingsRow(
+                id: item.id,
+                name: item.acc.name,
+                wins: item.acc.w,
+                losses: item.acc.l,
+                ties: item.acc.t,
+                pointsFor: round2(item.acc.pf),
+                pointsAgainst: round2(item.acc.pa),
+                games: item.acc.w + item.acc.l + item.acc.t,
+                rank: i + 1
+            )
+        }
+    }
+}

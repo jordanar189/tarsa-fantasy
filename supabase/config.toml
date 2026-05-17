@@ -1,0 +1,34 @@
+# Supabase CLI project config. Created by `supabase link` if not present;
+# included here so a fresh clone works without re-linking from scratch.
+
+project_id = "uxpfktjpmyhdlwfxnwri"
+
+[functions.sync_nflverse]
+verify_jwt = false   # invoked from pg_cron via service_role; no end-user auth
+
+[functions.sync_espn_live]
+verify_jwt = false
+
+[functions.sync_pbp]
+verify_jwt = false
+
+[functions.sync_schedules]
+verify_jwt = false
+
+[functions.sync_snap_counts]
+verify_jwt = false
+
+[functions.draft_tick]
+verify_jwt = false
+
+[functions.process_waivers]
+verify_jwt = false
+
+[functions.process_trades]
+verify_jwt = false
+
+[functions.sync_adp]
+verify_jwt = false
+
+[functions.sync_mfl]
+verify_jwt = false
