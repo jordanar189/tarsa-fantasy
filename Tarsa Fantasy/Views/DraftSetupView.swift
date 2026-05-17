@@ -109,7 +109,7 @@ struct DraftSetupView: View {
         } header: {
             Text("Schedule").ffEyebrow()
         } footer: {
-            Text("The room opens at the start time. The clock counts down on each pick — when it hits zero, the best-available player is auto-picked.")
+            Text("Owners can enter the room any time after the draft is scheduled. The pick clock starts once the draft goes live — when it hits zero, the best-available player is auto-picked.")
                 .foregroundStyle(FFColor.textTertiary)
         }
         .listRowBackground(FFColor.surface)

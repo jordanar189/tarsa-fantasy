@@ -230,8 +230,9 @@ struct LeagueDetailView: View {
     private func draftBannerContent(_ lg: League, draft: Draft, now: Date) -> some View {
         let isCommish = lg.creatorID == app.session?.userID
         let canEnter  = draft.status == .live
-            || (draft.status == .scheduled && draft.startsAt <= now)
+            || draft.status == .scheduled
             || draft.status == .paused
+        let beforeStart = draft.status == .scheduled && draft.startsAt > now
         return VStack(alignment: .leading, spacing: FFSpace.s) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
@@ -256,6 +257,11 @@ struct LeagueDetailView: View {
                 }
             }
             if canEnter {
+                if beforeStart {
+                    Text("Starts in \(formatStartsFrom(draft.startsAt, now: now))")
+                        .font(.ffStatSmall)
+                        .foregroundStyle(FFColor.accent)
+                }
                 Button {
                     showingDraftRoom = true
                 } label: {
@@ -263,10 +269,6 @@ struct LeagueDetailView: View {
                         .ffPrimaryButton()
                 }
                 .buttonStyle(.plain)
-            } else if draft.status == .scheduled {
-                Text("Starts in \(formatStartsFrom(draft.startsAt, now: now))")
-                    .font(.ffStatSmall)
-                    .foregroundStyle(FFColor.accent)
             }
         }
         .ffCard()
