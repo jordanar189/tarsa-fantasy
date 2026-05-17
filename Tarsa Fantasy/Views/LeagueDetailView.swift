@@ -614,6 +614,7 @@ struct LeagueDetailView: View {
             RoundedRectangle(cornerRadius: FFRadius.m)
                 .strokeBorder(isMine ? FFColor.accent.opacity(0.5) : Color.clear, lineWidth: 1)
         )
+        .prefetchAvatars(urls: team.roster.compactMap { players[$0]?.headshotURL })
     }
 
     private func lineupRow(slot: LineupSlot, playerID: String,
@@ -625,7 +626,8 @@ struct LeagueDetailView: View {
                 .font(.ffMicro)
                 .foregroundStyle(FFColor.textTertiary)
                 .frame(width: 40, alignment: .leading)
-            if let summary {
+            if let summary, let player {
+                PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 32)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(summary.name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                     HStack(spacing: 6) {
@@ -638,6 +640,7 @@ struct LeagueDetailView: View {
                     .font(.ffStatSmall)
                     .foregroundStyle(FFColor.textPrimary)
             } else {
+                emptyAvatar(size: 32)
                 Text("Empty")
                     .font(.ffBody)
                     .foregroundStyle(FFColor.textTertiary)
@@ -646,5 +649,16 @@ struct LeagueDetailView: View {
         }
         .padding(.vertical, FFSpace.s)
         .ffHairlineBottom()
+    }
+
+    private func emptyAvatar(size: CGFloat) -> some View {
+        ZStack {
+            Circle().fill(FFColor.surfaceElevated)
+            Image(systemName: "person.fill")
+                .font(.system(size: size * 0.42, weight: .regular))
+                .foregroundStyle(FFColor.textTertiary)
+        }
+        .frame(width: size, height: size)
+        .overlay(Circle().strokeBorder(FFColor.border, lineWidth: 0.5))
     }
 }
