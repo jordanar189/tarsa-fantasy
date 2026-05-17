@@ -15,10 +15,11 @@ struct LeagueDetailView: View {
     @State private var showingDraftSettings: Bool = false
 
     // Unified section set used for both simulation and standard leagues.
-    // Standard leagues additionally surface Chat and (when available)
-    // History; sims keep the original four-tab strategy-testing layout.
+    // Standard leagues additionally surface History (when available);
+    // sims keep the original four-tab strategy-testing layout. Chat
+    // lives at the top-level Chat tab, not in here.
     enum SimSection: String, CaseIterable, Identifiable {
-        case overview, week, draft, manage, chat, history
+        case overview, week, draft, manage, history
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -26,7 +27,6 @@ struct LeagueDetailView: View {
             case .week:     return "Matchup"
             case .draft:    return "Draft"
             case .manage:   return "Manage"
-            case .chat:     return "Chat"
             case .history:  return "History"
             }
         }
@@ -36,27 +36,12 @@ struct LeagueDetailView: View {
         ZStack {
             FFColor.bg.ignoresSafeArea()
             if let league {
-                if simSection == .chat && !league.isTest {
-                    // Chat owns its own scroll + composer and needs the
-                    // full vertical space, so it lives OUTSIDE the parent
-                    // ScrollView. Keep the section picker pinned above to
-                    // preserve navigation context.
-                    VStack(spacing: 0) {
-                        VStack(spacing: FFSpace.l) {
-                            sectionPicker(for: league)
-                        }
-                        .padding(.horizontal, FFSpace.l)
-                        .padding(.top, FFSpace.l)
-                        LeagueChatView(league: league)
+                ScrollView {
+                    VStack(spacing: FFSpace.l) {
+                        simulationContent(league)
                     }
-                } else {
-                    ScrollView {
-                        VStack(spacing: FFSpace.l) {
-                            simulationContent(league)
-                        }
-                        .padding(.horizontal, FFSpace.l)
-                        .padding(.bottom, 40)
-                    }
+                    .padding(.horizontal, FFSpace.l)
+                    .padding(.bottom, 40)
                 }
             } else {
                 ProgressView().tint(FFColor.accent)
@@ -120,7 +105,7 @@ struct LeagueDetailView: View {
     // Unified page composition. Strategy-testing layout for both sim and
     // standard leagues: Overview homepage, weekly matchup with full game
     // context, draft post-mortem, roster + waivers management. Standard
-    // leagues additionally surface Chat and (when available) History.
+    // leagues additionally surface History (when available).
     @ViewBuilder
     private func simulationContent(_ lg: League) -> some View {
         // Show the live/scheduled draft banner whenever a draft exists and
@@ -141,8 +126,6 @@ struct LeagueDetailView: View {
         case .manage:
             rostersView(lg)
             WaiversView(league: lg) { updated in self.league = updated }
-        case .chat:
-            EmptyView()   // handled by the branch above
         case .history:
             LeagueHistoryView(league: lg)
         }
@@ -150,11 +133,8 @@ struct LeagueDetailView: View {
 
     private func visibleSections(for lg: League) -> [SimSection] {
         var sections: [SimSection] = [.overview, .week, .draft, .manage]
-        if !lg.isTest {
-            sections.append(.chat)
-            if lg.seasonCompleted || lg.parentLeagueID != nil {
-                sections.append(.history)
-            }
+        if !lg.isTest, lg.seasonCompleted || lg.parentLeagueID != nil {
+            sections.append(.history)
         }
         return sections
     }
@@ -166,8 +146,8 @@ struct LeagueDetailView: View {
         }
         .onAppear {
             // Snap back to Overview if the current selection isn't valid
-            // for this league (e.g. switching from a standard league with
-            // Chat selected into a sim).
+            // for this league (e.g. History was visible on a wrapped season
+            // and we navigate to a league where it's not).
             if !visible.contains(simSection) { simSection = .overview }
         }
     }
