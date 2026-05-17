@@ -58,6 +58,10 @@ struct ContentView: View {
     private var mainTabs: some View {
         @Bindable var app = app
         return TabView(selection: $app.tab) {
+            ChatView()
+                .tabItem { Label("Chat", systemImage: "message.fill") }
+                .tag(AppTab.chat)
+
             NFLHubView()
                 .tabItem { Label("NFL", systemImage: "football.fill") }
                 .tag(AppTab.nfl)

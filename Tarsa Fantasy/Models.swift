@@ -1,6 +1,6 @@
 import Foundation
 
-enum AppTab: String, Hashable { case nfl, leagues }
+enum AppTab: String, Hashable { case chat, nfl, leagues }
 
 // Persisted UI theme. `system` follows the device setting; `light`/`dark`
 // force the app into that scheme regardless of the device. Default is
@@ -492,13 +492,33 @@ struct Play: Identifiable, Hashable {
 
 // One posted message in a league's chat. Username is joined in at fetch
 // time; nil for messages whose author's profile has been deleted.
-struct LeagueMessage: Identifiable, Hashable {
+// imageURL is set when the user attached a photo; content may be empty in
+// that case (image-only post).
+struct LeagueMessage: Identifiable, Hashable, Sendable {
     let id: String
     let leagueID: String
     let userID: String
     let username: String?
     let content: String
+    let imageURL: String?
     let createdAt: Date
+}
+
+// One emoji reaction on a chat message. Composite identity (message, user,
+// emoji) — a user can react with multiple distinct emojis on the same
+// message, but only one of each.
+struct LeagueMessageReaction: Identifiable, Hashable, Sendable {
+    let messageID: String
+    let userID: String
+    let emoji: String
+    var id: String { "\(messageID)|\(userID)|\(emoji)" }
+}
+
+// Combined chat transcript: messages plus all their reactions, fetched in
+// a single round-trip so the chat opens with full state.
+struct LeagueChatLoad: Sendable {
+    let messages: [LeagueMessage]
+    let reactions: [String: [LeagueMessageReaction]]
 }
 
 // One historical matchup between two users (head-to-head view).
@@ -530,9 +550,95 @@ struct LeagueSummary: Identifiable, Hashable {
     let isTest: Bool
 }
 
-struct Profile: Identifiable, Hashable {
+struct Profile: Identifiable, Hashable, Sendable {
     let id: String
     let username: String
+}
+
+// One row of the friendships table. Stored canonically (user_a < user_b),
+// but the FriendshipStatus helpers below project it into "the other user"
+// from the caller's perspective.
+enum FriendshipState: String, Hashable, Sendable {
+    case pending, accepted
+}
+
+struct Friendship: Hashable, Identifiable, Sendable {
+    let userA: String
+    let userB: String
+    let requestedBy: String
+    let state: FriendshipState
+    let createdAt: Date
+    let acceptedAt: Date?
+
+    var id: String { "\(userA)|\(userB)" }
+
+    func otherUserID(me: String) -> String {
+        userA == me ? userB : userA
+    }
+}
+
+// What the current user sees when looking at someone else's profile —
+// the relevant action depends on the friendship state.
+enum FriendshipStatus: Hashable, Sendable {
+    case none                // no row exists
+    case requestSent         // pending, current user requested
+    case requestReceived     // pending, other user requested
+    case friends             // accepted
+}
+
+// A DM thread (1:1 conversation). user_a < user_b by canonical ordering;
+// `other(me:)` projects to the friend's userID.
+struct DMThread: Identifiable, Hashable, Sendable {
+    let id: String
+    let userA: String
+    let userB: String
+    let createdAt: Date
+    let lastMessageAt: Date?
+
+    func otherUserID(me: String) -> String {
+        userA == me ? userB : userA
+    }
+}
+
+// One posted DM. Mirrors LeagueMessage shape — image-only allowed when
+// content is empty.
+struct DMMessage: Identifiable, Hashable, Sendable {
+    let id: String
+    let threadID: String
+    let senderID: String
+    let content: String
+    let imageURL: String?
+    let createdAt: Date
+}
+
+// One entry in the user's DM inbox: a thread plus the cached profile of
+// the other participant so the conversation list can render names without
+// per-row fetches.
+struct DMInboxEntry: Identifiable, Hashable, Sendable {
+    let thread: DMThread
+    let other: Profile
+    var id: String { thread.id }
+}
+
+// Aggregated "inbox" view shown in the Chat tab — leagues and DM threads
+// surfaced together, sorted by recency.
+enum Conversation: Identifiable, Hashable, Sendable {
+    case league(LeagueSummary)
+    case dm(DMInboxEntry)
+
+    var id: String {
+        switch self {
+        case .league(let lg):       return "league:\(lg.id)"
+        case .dm(let entry):        return "dm:\(entry.thread.id)"
+        }
+    }
+
+    var sortDate: Date {
+        switch self {
+        case .league(let lg):       return lg.createdAt
+        case .dm(let entry):        return entry.thread.lastMessageAt ?? entry.thread.createdAt
+        }
+    }
 }
 
 struct Session: Hashable {
