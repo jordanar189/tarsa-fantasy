@@ -11,12 +11,14 @@ struct LeagueDetailView: View {
     @State private var simSection: SimSection = .overview
     @State private var week: Int = 1
     @State private var editingTeam: FantasyTeam? = nil
+    @State private var viewingTeam: FantasyTeam? = nil
+    @State private var pendingEdit: FantasyTeam? = nil
     @State private var showingSettings: Bool = false
     @State private var showingDraftRoom: Bool = false
     @State private var showingDraftSettings: Bool = false
 
     enum Section: String, CaseIterable, Identifiable {
-        case standings, matchup, rosters, waivers, chat, history
+        case standings, matchup, waivers, chat, history
         var id: String { rawValue }
         var label: String { rawValue.capitalized }
     }
@@ -71,7 +73,6 @@ struct LeagueDetailView: View {
                             switch section {
                             case .standings:  standingsView(league)
                             case .matchup:    MatchupView(league: league, week: $week)
-                            case .rosters:    rostersView(league)
                             case .waivers:
                                 WaiversView(league: league) { updated in
                                     self.league = updated
@@ -117,6 +118,21 @@ struct LeagueDetailView: View {
                 RosterEditorView(league: league, team: team) { updated in
                     self.league = updated
                 }
+            }
+        }
+        .sheet(item: $viewingTeam) { team in
+            if let league {
+                rosterSheet(team: team, lg: league)
+            }
+        }
+        .onChange(of: viewingTeam) { _, new in
+            // Hand off from view → edit: SwiftUI can't reliably present a
+            // second sheet while another is dismissing, so we wait for the
+            // viewing sheet to fully drop before opening the editor.
+            guard new == nil, let pending = pendingEdit else { return }
+            pendingEdit = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                editingTeam = pending
             }
         }
         .sheet(isPresented: $showingSettings) {
@@ -421,7 +437,14 @@ struct LeagueDetailView: View {
 
             VStack(spacing: 0) {
                 ForEach(rows) { row in
-                    standingsRow(row, isMe: row.id == myID)
+                    let team = lg.teams.first(where: { $0.id == row.id })
+                    Button {
+                        viewingTeam = team
+                    } label: {
+                        standingsRow(row, isMe: row.id == myID)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(team == nil)
                 }
             }
             .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
@@ -455,10 +478,15 @@ struct LeagueDetailView: View {
                 .font(.ffStatSmall)
                 .foregroundStyle(FFColor.textSecondary)
                 .frame(width: 50, alignment: .trailing)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(FFColor.textTertiary)
+                .padding(.leading, FFSpace.s)
         }
         .padding(.horizontal, FFSpace.l)
         .padding(.vertical, FFSpace.m)
         .background(isMe ? FFColor.accentSoft : Color.clear)
+        .contentShape(Rectangle())
         .ffHairlineBottom()
     }
 
@@ -484,9 +512,45 @@ struct LeagueDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private func rosterSheet(team: FantasyTeam, lg: League) -> some View {
+        let players = Fantasy.playersFor(league: lg, snapshot: app.players(season: lg.season))
+        let uid = app.session?.userID
+        let isMine = team.ownerID == uid
+        let isCommish = lg.creatorID == uid
+        NavigationStack {
+            ZStack {
+                FFColor.bg.ignoresSafeArea()
+                ScrollView {
+                    teamCard(
+                        team: team, config: lg.rosterConfig, players: players,
+                        scoring: lg.scoring, isMine: isMine, isCommish: isCommish,
+                        onEdit: { t in
+                            pendingEdit = t
+                            viewingTeam = nil
+                        }
+                    )
+                    .padding(.horizontal, FFSpace.l)
+                    .padding(.top, FFSpace.l)
+                    .padding(.bottom, 40)
+                }
+            }
+            .navigationTitle(team.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(FFColor.bg, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { viewingTeam = nil }
+                        .foregroundStyle(FFColor.accent)
+                }
+            }
+        }
+    }
+
     private func teamCard(team: FantasyTeam, config: RosterConfig,
                           players: [String: Player], scoring: Scoring,
-                          isMine: Bool, isCommish: Bool) -> some View {
+                          isMine: Bool, isCommish: Bool,
+                          onEdit: ((FantasyTeam) -> Void)? = nil) -> some View {
         let (starters, bench) = Fantasy.resolveLineup(team: team, players: players, config: config, scoring: scoring)
         return VStack(alignment: .leading, spacing: FFSpace.m) {
             HStack(spacing: FFSpace.s) {
@@ -525,7 +589,7 @@ struct LeagueDetailView: View {
 
             if isMine || isCommish {
                 Button {
-                    editingTeam = team
+                    if let onEdit { onEdit(team) } else { editingTeam = team }
                 } label: {
                     HStack {
                         Image(systemName: isMine ? "square.and.pencil" : "shield.lefthalf.filled")
