@@ -1,6 +1,14 @@
 # macOS
 .DS_Store
 
+# Local environment (App Store Connect API credentials)
+.env
+
+# Build artifacts from scripts/upload-testflight.sh
+build/
+*.xcarchive
+*.ipa
+
 # Claude Code local state (skills, settings, worktrees)
 .claude/
 
