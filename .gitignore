@@ -9,8 +9,8 @@ build/
 *.xcarchive
 *.ipa
 
-# Claude Code local state (skills, settings, worktrees)
-.claude/
+# Claude Code agent worktrees — embedded git repos, can't be usefully committed
+.claude/worktrees/
 
 # Supabase CLI local link state
 supabase/.temp/
