@@ -17,13 +17,11 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-# Load .env
-if [[ ! -f .env ]]; then
-  echo "error: .env not found at $PROJECT_ROOT/.env" >&2
-  echo "       copy .env.example and fill in your App Store Connect API credentials" >&2
-  exit 1
+# Load .env if present. In CI the values come from env vars directly,
+# so a missing .env is fine as long as the required vars are already set.
+if [[ -f .env ]]; then
+  set -a; source .env; set +a
 fi
-set -a; source .env; set +a
 
 # Validate required vars
 for var in ASC_KEY_ID ASC_ISSUER_ID ASC_TEAM_ID; do
