@@ -41,6 +41,15 @@ if [[ ! -f "$ASC_KEY_FILE" ]]; then
   exit 1
 fi
 
+# Pass the API key to xcodebuild so it can fetch/create provisioning profiles
+# without needing a logged-in Apple ID. Works both locally (.env) and in CI
+# (secrets). The flags are honored by both `archive` and `-exportArchive`.
+AUTH_FLAGS=(
+  -authenticationKeyID "$ASC_KEY_ID"
+  -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+  -authenticationKeyPath "$ASC_KEY_FILE"
+)
+
 SCHEME="Tarsa Fantasy"
 PROJECT="Tarsa Fantasy.xcodeproj"
 BUILD_DIR="$PROJECT_ROOT/build"
@@ -75,6 +84,7 @@ xcodebuild \
   -destination 'generic/platform=iOS' \
   -archivePath "$ARCHIVE_PATH" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  "${AUTH_FLAGS[@]}" \
   -allowProvisioningUpdates \
   archive
 
@@ -84,6 +94,7 @@ xcodebuild \
   -archivePath "$ARCHIVE_PATH" \
   -exportPath "$EXPORT_PATH" \
   -exportOptionsPlist "$EXPORT_OPTIONS" \
+  "${AUTH_FLAGS[@]}" \
   -allowProvisioningUpdates
 
 IPA_PATH="$(find "$EXPORT_PATH" -name '*.ipa' -maxdepth 2 | head -1)"
