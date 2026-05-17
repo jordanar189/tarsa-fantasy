@@ -164,9 +164,15 @@ struct LeagueChatView: View {
                 if !grouped {
                     HStack(spacing: 6) {
                         if isMine { Spacer(minLength: 0) }
-                        Text(displayName(for: m))
-                            .font(.ffCaption.bold())
-                            .foregroundStyle(FFColor.textSecondary)
+                        // Username tap → profile. NavigationLink resolves
+                        // against the host stack's ChatRoute destinations.
+                        NavigationLink(value: ChatRoute.profile(m.userID)) {
+                            Text(displayName(for: m))
+                                .font(.ffCaption.bold())
+                                .foregroundStyle(FFColor.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(m.userID == myUserID)
                         Text(m.createdAt.formatted(.dateTime.hour().minute()))
                             .font(.ffMicro)
                             .foregroundStyle(FFColor.textTertiary)

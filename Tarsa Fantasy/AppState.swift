@@ -23,6 +23,13 @@ final class AppState {
     // Leagues belonging to the signed-in user
     var leagueSummaries: [LeagueSummary] = []
 
+    // Social graph + DM inbox. Reloaded on bootstrap and on pull-to-refresh
+    // of the Chat tab. dmInbox stores both the thread row and the cached
+    // profile of the other participant so the conversation list can render
+    // without a per-row fetch.
+    var friendships: [Friendship] = []
+    var dmInbox: [DMInboxEntry] = []
+
     // Top-level error displayed if bootstrap fails entirely.
     var bootstrapError: String? = nil
     var isLoadingSeason: Bool = false
@@ -91,6 +98,7 @@ final class AppState {
         }
         await loadSeason(selectedSeason)
         await reloadLeagues()
+        await reloadFriendsAndDMs()
         await loadProfileTheme()
         await loadInjuries()
         await loadMarketSignals()
@@ -110,6 +118,8 @@ final class AppState {
         try? await remote.signOut()
         session = nil
         leagueSummaries = []
+        friendships = []
+        dmInbox = []
     }
 
     private func runAuth(_ op: @escaping () async throws -> Session) async {
@@ -123,6 +133,7 @@ final class AppState {
             // the old LeagueStore — the user opted to discard it.
             Self.removeLocalLeaguesFileIfPresent()
             await reloadLeagues()
+            await reloadFriendsAndDMs()
             await loadProfileTheme()
         } catch {
             authError = error.localizedDescription
@@ -476,6 +487,95 @@ final class AppState {
         guard let session else { throw AppError.notSignedIn }
         return try await remote.toggleReaction(
             messageID: messageID, userID: session.userID, emoji: emoji
+        )
+    }
+
+    // MARK: - Friends + DMs
+
+    func profile(userID: String) async -> Profile? {
+        await remote.profile(userID: userID)
+    }
+
+    func reloadFriendsAndDMs() async {
+        guard let session else {
+            friendships = []
+            dmInbox = []
+            return
+        }
+        async let f = remote.friendships(userID: session.userID)
+        async let d = remote.dmInbox(userID: session.userID)
+        friendships = await f
+        dmInbox = await d
+    }
+
+    // Convenience projection: what's the friendship status between me and
+    // another user, derived from the cached friendships list.
+    func friendshipStatus(otherUserID: String) -> FriendshipStatus {
+        guard let me = session?.userID else { return .none }
+        guard let f = friendships.first(where: {
+            $0.userA == otherUserID || $0.userB == otherUserID
+        }) else { return .none }
+        switch f.state {
+        case .accepted: return .friends
+        case .pending:
+            return f.requestedBy == me ? .requestSent : .requestReceived
+        }
+    }
+
+    @discardableResult
+    func sendFriendRequest(toUserID otherUserID: String) async throws -> Friendship {
+        let f = try await remote.sendFriendRequest(otherUserID: otherUserID)
+        await reloadFriendsAndDMs()
+        return f
+    }
+
+    @discardableResult
+    func acceptFriendRequest(fromUserID otherUserID: String) async throws -> Friendship {
+        let f = try await remote.acceptFriendRequest(otherUserID: otherUserID)
+        await reloadFriendsAndDMs()
+        return f
+    }
+
+    func removeFriendship(withUserID otherUserID: String) async throws {
+        guard let session else { throw AppError.notSignedIn }
+        try await remote.removeFriendship(
+            otherUserID: otherUserID, meUserID: session.userID
+        )
+        await reloadFriendsAndDMs()
+    }
+
+    @discardableResult
+    func openDMThread(withUserID otherUserID: String) async throws -> DMThread {
+        let thread = try await remote.getOrCreateDMThread(otherUserID: otherUserID)
+        await reloadFriendsAndDMs()
+        return thread
+    }
+
+    func dmMessages(threadID: String, limit: Int = 200) async -> [DMMessage] {
+        await remote.dmMessages(threadID: threadID, limit: limit)
+    }
+
+    @discardableResult
+    func sendDMMessage(
+        threadID: String, content: String, imageURL: String? = nil
+    ) async throws -> DMMessage {
+        guard let session else { throw AppError.notSignedIn }
+        let msg = try await remote.sendDMMessage(
+            threadID: threadID, senderID: session.userID,
+            content: content, imageURL: imageURL
+        )
+        // Keep the inbox's last-message ordering fresh.
+        await reloadFriendsAndDMs()
+        return msg
+    }
+
+    func deleteDMMessage(id: String) async {
+        try? await remote.deleteDMMessage(id: id)
+    }
+
+    func uploadDMImage(threadID: String, data: Data, contentType: String) async throws -> String {
+        try await remote.uploadDMImage(
+            threadID: threadID, data: data, contentType: contentType
         )
     }
 
