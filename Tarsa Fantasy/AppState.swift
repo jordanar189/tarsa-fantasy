@@ -446,20 +446,37 @@ final class AppState {
 
     // MARK: - League chat
 
-    func leagueMessages(leagueID: String, limit: Int = 200) async -> [LeagueMessage] {
+    func leagueChat(leagueID: String, limit: Int = 200) async -> LeagueChatLoad {
         await remote.messages(leagueID: leagueID, limit: limit)
     }
 
     @discardableResult
-    func sendLeagueMessage(leagueID: String, content: String) async throws -> LeagueMessage {
+    func sendLeagueMessage(
+        leagueID: String, content: String, imageURL: String? = nil
+    ) async throws -> LeagueMessage {
         guard let session else { throw AppError.notSignedIn }
         return try await remote.sendMessage(
-            leagueID: leagueID, userID: session.userID, content: content
+            leagueID: leagueID, userID: session.userID,
+            content: content, imageURL: imageURL
+        )
+    }
+
+    func uploadChatImage(leagueID: String, data: Data, contentType: String) async throws -> String {
+        try await remote.uploadChatImage(
+            leagueID: leagueID, data: data, contentType: contentType
         )
     }
 
     func deleteLeagueMessage(id: String) async {
         try? await remote.deleteMessage(id: id)
+    }
+
+    @discardableResult
+    func toggleReaction(messageID: String, emoji: String) async throws -> Bool {
+        guard let session else { throw AppError.notSignedIn }
+        return try await remote.toggleReaction(
+            messageID: messageID, userID: session.userID, emoji: emoji
+        )
     }
 
     func league(_ id: String) async -> League? {

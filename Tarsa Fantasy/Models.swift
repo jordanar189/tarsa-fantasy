@@ -492,13 +492,33 @@ struct Play: Identifiable, Hashable {
 
 // One posted message in a league's chat. Username is joined in at fetch
 // time; nil for messages whose author's profile has been deleted.
-struct LeagueMessage: Identifiable, Hashable {
+// imageURL is set when the user attached a photo; content may be empty in
+// that case (image-only post).
+struct LeagueMessage: Identifiable, Hashable, Sendable {
     let id: String
     let leagueID: String
     let userID: String
     let username: String?
     let content: String
+    let imageURL: String?
     let createdAt: Date
+}
+
+// One emoji reaction on a chat message. Composite identity (message, user,
+// emoji) — a user can react with multiple distinct emojis on the same
+// message, but only one of each.
+struct LeagueMessageReaction: Identifiable, Hashable, Sendable {
+    let messageID: String
+    let userID: String
+    let emoji: String
+    var id: String { "\(messageID)|\(userID)|\(emoji)" }
+}
+
+// Combined chat transcript: messages plus all their reactions, fetched in
+// a single round-trip so the chat opens with full state.
+struct LeagueChatLoad: Sendable {
+    let messages: [LeagueMessage]
+    let reactions: [String: [LeagueMessageReaction]]
 }
 
 // One historical matchup between two users (head-to-head view).

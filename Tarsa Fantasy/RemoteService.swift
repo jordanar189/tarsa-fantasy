@@ -1701,65 +1701,106 @@ actor RemoteService {
 
     // Fetches the most-recent `limit` messages for a league, oldest-first so
     // the caller can append directly into a chat transcript. Username comes
-    // from a join on profiles.
-    func messages(leagueID: String, limit: Int = 200) async -> [LeagueMessage] {
-        guard let lid = UUID(uuidString: leagueID) else { return [] }
+    // from a join on profiles. Reactions are embedded via a join on
+    // league_message_reactions so the chat opens with full state in one
+    // round-trip.
+    func messages(leagueID: String, limit: Int = 200) async -> LeagueChatLoad {
+        guard let lid = UUID(uuidString: leagueID) else {
+            return LeagueChatLoad(messages: [], reactions: [:])
+        }
         struct Row: Decodable {
             let id: UUID
             let leagueId: UUID
             let userId: UUID
             let content: String
+            let imageUrl: String?
             let createdAt: Date
             let profiles: ProfilesJoin?
+            let leagueMessageReactions: [ReactionJoin]?
             enum CodingKeys: String, CodingKey {
                 case id, content, profiles
                 case leagueId  = "league_id"
                 case userId    = "user_id"
+                case imageUrl  = "image_url"
                 case createdAt = "created_at"
+                case leagueMessageReactions = "league_message_reactions"
             }
         }
         struct ProfilesJoin: Decodable { let username: String? }
+        struct ReactionJoin: Decodable {
+            let userId: UUID
+            let emoji: String
+            enum CodingKeys: String, CodingKey {
+                case emoji
+                case userId = "user_id"
+            }
+        }
         let rows: [Row] = (try? await client.from("league_messages")
-            .select("id, league_id, user_id, content, created_at, profiles!user_id(username)")
+            .select("id, league_id, user_id, content, image_url, created_at, profiles!user_id(username), league_message_reactions(user_id, emoji)")
             .eq("league_id", value: lid)
             .order("created_at", ascending: false)
             .limit(limit)
             .execute().value) ?? []
-        return rows.reversed().map { r in
-            LeagueMessage(
-                id: r.id.uuidString,
+
+        var messages: [LeagueMessage] = []
+        var reactions: [String: [LeagueMessageReaction]] = [:]
+        for r in rows.reversed() {
+            let mid = r.id.uuidString
+            messages.append(LeagueMessage(
+                id: mid,
                 leagueID: r.leagueId.uuidString,
                 userID: r.userId.uuidString,
                 username: r.profiles?.username,
                 content: r.content,
+                imageURL: r.imageUrl,
                 createdAt: r.createdAt
-            )
+            ))
+            if let list = r.leagueMessageReactions, !list.isEmpty {
+                reactions[mid] = list.map {
+                    LeagueMessageReaction(
+                        messageID: mid,
+                        userID: $0.userId.uuidString,
+                        emoji: $0.emoji
+                    )
+                }
+            }
         }
+        return LeagueChatLoad(messages: messages, reactions: reactions)
     }
 
     @discardableResult
-    func sendMessage(leagueID: String, userID: String, content: String) async throws -> LeagueMessage {
+    func sendMessage(
+        leagueID: String, userID: String, content: String, imageURL: String? = nil
+    ) async throws -> LeagueMessage {
         guard let lid = UUID(uuidString: leagueID),
               let uid = UUID(uuidString: userID) else {
             throw RemoteError.invalidUserID
         }
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw RemoteError.emptyMessage }
+        // Image-only posts are allowed; otherwise text must be non-empty.
+        guard !trimmed.isEmpty || imageURL != nil else { throw RemoteError.emptyMessage }
         struct Insert: Encodable {
-            let league_id: UUID; let user_id: UUID; let content: String
+            let league_id: UUID
+            let user_id: UUID
+            let content: String
+            let image_url: String?
         }
         struct Row: Decodable {
             let id: UUID; let leagueId: UUID; let userId: UUID
-            let content: String; let createdAt: Date
+            let content: String; let imageUrl: String?; let createdAt: Date
             enum CodingKeys: String, CodingKey {
                 case id, content
                 case leagueId  = "league_id"
                 case userId    = "user_id"
+                case imageUrl  = "image_url"
                 case createdAt = "created_at"
             }
         }
         let row: Row = try await client.from("league_messages")
-            .insert(Insert(league_id: lid, user_id: uid, content: trimmed))
+            .insert(Insert(
+                league_id: lid, user_id: uid,
+                content: trimmed, image_url: imageURL
+            ))
             .select()
             .single()
             .execute().value
@@ -1769,7 +1810,8 @@ actor RemoteService {
         return LeagueMessage(
             id: row.id.uuidString, leagueID: row.leagueId.uuidString,
             userID: row.userId.uuidString, username: profile?.username,
-            content: row.content, createdAt: row.createdAt
+            content: row.content, imageURL: row.imageUrl,
+            createdAt: row.createdAt
         )
     }
 
@@ -1779,6 +1821,77 @@ actor RemoteService {
             .delete()
             .eq("id", value: mid)
             .execute()
+    }
+
+    // Uploads image data to the chat-images bucket under the league's
+    // folder, returning the public URL to embed in the message row. The
+    // path layout (<league_id>/<uuid>.<ext>) is what the storage RLS
+    // policy parses to gate writes to league members only.
+    func uploadChatImage(
+        leagueID: String, data: Data, contentType: String
+    ) async throws -> String {
+        guard let lid = UUID(uuidString: leagueID) else {
+            throw RemoteError.invalidUserID
+        }
+        let ext: String
+        switch contentType.lowercased() {
+        case "image/png":  ext = "png"
+        case "image/gif":  ext = "gif"
+        case "image/heic": ext = "heic"
+        case "image/webp": ext = "webp"
+        default:           ext = "jpg"
+        }
+        let folder = lid.uuidString.lowercased()
+        let filename = "\(UUID().uuidString.lowercased()).\(ext)"
+        let path = "\(folder)/\(filename)"
+        _ = try await client.storage
+            .from("chat-images")
+            .upload(
+                path,
+                data: data,
+                options: FileOptions(contentType: contentType, upsert: false)
+            )
+        let url = try client.storage.from("chat-images").getPublicURL(path: path)
+        return url.absoluteString
+    }
+
+    // MARK: - Reactions
+
+    // Toggles the caller's reaction on a message: inserts if absent,
+    // deletes if already present. Returns the post-toggle state (true =
+    // reaction is now applied, false = it was removed).
+    @discardableResult
+    func toggleReaction(messageID: String, userID: String, emoji: String) async throws -> Bool {
+        guard let mid = UUID(uuidString: messageID),
+              let uid = UUID(uuidString: userID) else {
+            throw RemoteError.invalidUserID
+        }
+        // Probe first: if our reaction exists, delete it; otherwise insert.
+        struct ExistRow: Decodable { let emoji: String }
+        let existing: [ExistRow] = (try? await client.from("league_message_reactions")
+            .select("emoji")
+            .eq("message_id", value: mid)
+            .eq("user_id", value: uid)
+            .eq("emoji", value: emoji)
+            .limit(1)
+            .execute().value) ?? []
+        if existing.isEmpty {
+            struct Insert: Encodable {
+                let message_id: UUID; let user_id: UUID; let emoji: String
+            }
+            _ = try await client.from("league_message_reactions")
+                .insert(Insert(message_id: mid, user_id: uid, emoji: emoji))
+                .execute()
+            return true
+        } else {
+            _ = try await client.from("league_message_reactions")
+                .delete()
+                .eq("message_id", value: mid)
+                .eq("user_id", value: uid)
+                .eq("emoji", value: emoji)
+                .execute()
+            return false
+        }
     }
 
     private static func decodeStandingsRow(_ json: AnyJSON) -> StandingsRow? {
