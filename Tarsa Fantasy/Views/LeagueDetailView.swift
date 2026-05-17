@@ -7,27 +7,18 @@ struct LeagueDetailView: View {
 
     @State private var league: League? = nil
     @State private var draft: Draft? = nil
-    @State private var section: Section = .standings
     @State private var simSection: SimSection = .overview
     @State private var week: Int = 1
     @State private var editingTeam: FantasyTeam? = nil
-    @State private var viewingTeam: FantasyTeam? = nil
-    @State private var pendingEdit: FantasyTeam? = nil
     @State private var showingSettings: Bool = false
     @State private var showingDraftRoom: Bool = false
     @State private var showingDraftSettings: Bool = false
 
-    enum Section: String, CaseIterable, Identifiable {
-        case standings, matchup, waivers, chat, history
-        var id: String { rawValue }
-        var label: String { rawValue.capitalized }
-    }
-
-    // Simulation-specific section set. Keeps strategy testing front-and-
-    // center: where you are in the season, this week's matchup with full
-    // game-environment context, how your draft pans out, manage rosters.
+    // Unified section set used for both simulation and standard leagues.
+    // Standard leagues additionally surface Chat and (when available)
+    // History; sims keep the original four-tab strategy-testing layout.
     enum SimSection: String, CaseIterable, Identifiable {
-        case overview, week, draft, manage
+        case overview, week, draft, manage, chat, history
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -35,6 +26,8 @@ struct LeagueDetailView: View {
             case .week:     return "Matchup"
             case .draft:    return "Draft"
             case .manage:   return "Manage"
+            case .chat:     return "Chat"
+            case .history:  return "History"
             }
         }
     }
@@ -43,18 +36,10 @@ struct LeagueDetailView: View {
         ZStack {
             FFColor.bg.ignoresSafeArea()
             if let league {
-                if league.isTest {
-                    ScrollView {
-                        VStack(spacing: FFSpace.l) {
-                            simulationContent(league)
-                        }
-                        .padding(.horizontal, FFSpace.l)
-                        .padding(.bottom, 40)
-                    }
-                } else if section == .chat {
+                if simSection == .chat && !league.isTest {
                     // Chat owns its own scroll + composer and needs the
                     // full vertical space, so it lives OUTSIDE the parent
-                    // ScrollView. Keep hero/draftBanner pinned above to
+                    // ScrollView. Keep the section picker pinned above to
                     // preserve navigation context.
                     VStack(spacing: 0) {
                         VStack(spacing: FFSpace.l) {
@@ -67,21 +52,7 @@ struct LeagueDetailView: View {
                 } else {
                     ScrollView {
                         VStack(spacing: FFSpace.l) {
-                            hero(league)
-                            draftBanner(league)
-                            sectionPicker(for: league)
-                            switch section {
-                            case .standings:  standingsView(league)
-                            case .matchup:    MatchupView(league: league, week: $week)
-                            case .waivers:
-                                WaiversView(league: league) { updated in
-                                    self.league = updated
-                                }
-                            case .chat:
-                                EmptyView()    // handled by the branch above
-                            case .history:
-                                LeagueHistoryView(league: league)
-                            }
+                            simulationContent(league)
                         }
                         .padding(.horizontal, FFSpace.l)
                         .padding(.bottom, 40)
@@ -120,21 +91,6 @@ struct LeagueDetailView: View {
                 }
             }
         }
-        .sheet(item: $viewingTeam) { team in
-            if let league {
-                rosterSheet(team: team, lg: league)
-            }
-        }
-        .onChange(of: viewingTeam) { _, new in
-            // Hand off from view → edit: SwiftUI can't reliably present a
-            // second sheet while another is dismissing, so we wait for the
-            // viewing sheet to fully drop before opening the editor.
-            guard new == nil, let pending = pendingEdit else { return }
-            pendingEdit = nil
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                editingTeam = pending
-            }
-        }
         .sheet(isPresented: $showingSettings) {
             if let league {
                 LeagueSettingsView(
@@ -161,19 +117,20 @@ struct LeagueDetailView: View {
         }
     }
 
-    // Simulation-specific page composition. Different hero + section set
-    // tailored to strategy-testing workflows: where you are in the season,
-    // weekly matchup analysis with full game context, draft post-mortem.
+    // Unified page composition. Strategy-testing layout for both sim and
+    // standard leagues: Overview homepage, weekly matchup with full game
+    // context, draft post-mortem, roster + waivers management. Standard
+    // leagues additionally surface Chat and (when available) History.
     @ViewBuilder
     private func simulationContent(_ lg: League) -> some View {
-        // Live-draft sims still need the draft banner up top; once drafted
-        // the user lands on Overview.
-        if let d = draft, d.status != .complete {
+        // Show the live/scheduled draft banner whenever a draft exists and
+        // hasn't completed. Sims auto-create their draft on construction
+        // so the "schedule the draft" CTA only makes sense in standard
+        // leagues where a draft may not yet exist.
+        if draft != nil || !lg.isTest {
             draftBanner(lg)
         }
-        SegmentedTabPicker(items: SimSection.allCases, selection: $simSection) {
-            Text($0.label)
-        }
+        sectionPicker(for: lg)
         switch simSection {
         case .overview:
             SimulationOverviewView(league: lg) { updated in self.league = updated }
@@ -184,6 +141,34 @@ struct LeagueDetailView: View {
         case .manage:
             rostersView(lg)
             WaiversView(league: lg) { updated in self.league = updated }
+        case .chat:
+            EmptyView()   // handled by the branch above
+        case .history:
+            LeagueHistoryView(league: lg)
+        }
+    }
+
+    private func visibleSections(for lg: League) -> [SimSection] {
+        var sections: [SimSection] = [.overview, .week, .draft, .manage]
+        if !lg.isTest {
+            sections.append(.chat)
+            if lg.seasonCompleted || lg.parentLeagueID != nil {
+                sections.append(.history)
+            }
+        }
+        return sections
+    }
+
+    private func sectionPicker(for lg: League) -> some View {
+        let visible = visibleSections(for: lg)
+        return SegmentedTabPicker(items: visible, selection: $simSection) {
+            Text($0.label)
+        }
+        .onAppear {
+            // Snap back to Overview if the current selection isn't valid
+            // for this league (e.g. switching from a standard league with
+            // Chat selected into a sim).
+            if !visible.contains(simSection) { simSection = .overview }
         }
     }
 
@@ -318,178 +303,6 @@ struct LeagueDetailView: View {
         }
     }
 
-    private func formatStarts(_ d: Date) -> String {
-        let s = max(0, Int(d.timeIntervalSinceNow.rounded(.up)))
-        if s >= 86400 { return "\(s/86400)d \((s%86400)/3600)h" }
-        if s >= 3600  { return String(format: "%dh %02dm", s/3600, (s%3600)/60) }
-        if s >= 60    { return String(format: "%dm %02ds", s/60, s%60) }
-        return "\(s)s"
-    }
-
-    private var myTeam: FantasyTeam? {
-        guard let uid = app.session?.userID else { return nil }
-        return league?.teams.first(where: { $0.ownerID == uid })
-    }
-
-    // MARK: - Hero
-
-    private func hero(_ lg: League) -> some View {
-        VStack(alignment: .leading, spacing: FFSpace.l) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("YOUR TEAM").ffEyebrow(color: FFColor.textTertiary)
-                    HStack(spacing: FFSpace.s) {
-                        Text(myTeam?.name ?? "Spectating")
-                            .font(.system(size: 28, weight: .bold))
-                            .foregroundStyle(FFColor.textPrimary)
-                            .lineLimit(1)
-                        if lg.creatorID == app.session?.userID {
-                            CommissionerBadge()
-                        }
-                    }
-                }
-                Spacer()
-            }
-
-            heroStats(lg)
-
-            HStack(spacing: FFSpace.s) {
-                FFPill { Text(String(lg.season)) }
-                FFPill { Text(lg.scoring.label.uppercased()) }
-                FFPill { Text("\(lg.teams.count) TEAMS") }
-            }
-        }
-        .ffCard(padding: FFSpace.xl)
-        .padding(.top, FFSpace.s)
-    }
-
-    @ViewBuilder
-    private func heroStats(_ lg: League) -> some View {
-        let players = Fantasy.playersFor(league: lg, snapshot: app.players(season: lg.season))
-        let standings = Fantasy.standings(league: lg, players: players)
-        let mine = standings.first(where: { $0.id == myTeam?.id })
-
-        HStack(alignment: .top, spacing: FFSpace.xl) {
-            statBlock(label: "RECORD",
-                      value: mine.map { "\($0.wins)–\($0.losses)\($0.ties > 0 ? "–\($0.ties)" : "")" } ?? "—")
-            divider
-            statBlock(label: "POINTS FOR", value: mine.map { $0.pointsFor.fpString } ?? "—")
-            divider
-            statBlock(label: "RANK",
-                      value: mine.map { "#\($0.rank)" } ?? "—",
-                      color: mine?.rank == 1 ? FFColor.accent : FFColor.textPrimary)
-        }
-    }
-
-    private var divider: some View {
-        Rectangle().fill(FFColor.border).frame(width: 1, height: 36)
-    }
-
-    private func statBlock(label: String, value: String, color: Color = FFColor.textPrimary) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).ffEyebrow(color: FFColor.textTertiary)
-            Text(value)
-                .font(.ffStatMedium)
-                .foregroundStyle(color)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: - Section picker
-
-    private func sectionPicker(for league: League) -> some View {
-        // History tab only appears for leagues with archives reachable —
-        // i.e., this season has been completed OR there's a parent league
-        // in the chain.
-        let visible = Section.allCases.filter {
-            $0 != .history || league.seasonCompleted || league.parentLeagueID != nil
-        }
-        return SegmentedTabPicker(items: visible, selection: $section) {
-            Text($0.label)
-        }
-        .onAppear {
-            // Snap back to standings if history was selected but is no
-            // longer available (e.g., view reopened with stale state).
-            if !visible.contains(section) { section = .standings }
-        }
-    }
-
-    // MARK: - Standings
-
-    @ViewBuilder
-    private func standingsView(_ lg: League) -> some View {
-        let players = Fantasy.playersFor(league: lg, snapshot: app.players(season: lg.season))
-        let rows = Fantasy.standings(league: lg, players: players)
-        let myID = myTeam?.id
-
-        VStack(spacing: 0) {
-            HStack {
-                Text("#").ffEyebrow(color: FFColor.textTertiary).frame(width: 28, alignment: .leading)
-                Text("TEAM").ffEyebrow(color: FFColor.textTertiary)
-                Spacer()
-                Text("PF").ffEyebrow(color: FFColor.textTertiary)
-                    .frame(width: 60, alignment: .trailing)
-                Text("REC").ffEyebrow(color: FFColor.textTertiary)
-                    .frame(width: 50, alignment: .trailing)
-            }
-            .padding(.horizontal, FFSpace.l)
-            .padding(.vertical, FFSpace.s)
-
-            VStack(spacing: 0) {
-                ForEach(rows) { row in
-                    let team = lg.teams.first(where: { $0.id == row.id })
-                    Button {
-                        viewingTeam = team
-                    } label: {
-                        standingsRow(row, isMe: row.id == myID)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(team == nil)
-                }
-            }
-            .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
-            .overlay(
-                RoundedRectangle(cornerRadius: FFRadius.m)
-                    .strokeBorder(FFColor.border, lineWidth: 1)
-            )
-        }
-    }
-
-    private func standingsRow(_ row: StandingsRow, isMe: Bool) -> some View {
-        HStack {
-            Text("\(row.rank)")
-                .font(.ffStatSmall)
-                .foregroundStyle(isMe ? FFColor.accent : FFColor.textSecondary)
-                .frame(width: 28, alignment: .leading)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(row.name)
-                    .font(.ffHeadline)
-                    .foregroundStyle(isMe ? FFColor.textPrimary : FFColor.textPrimary)
-                if isMe {
-                    Text("YOU").ffEyebrow(color: FFColor.accent)
-                }
-            }
-            Spacer()
-            Text(row.pointsFor.fpString)
-                .font(.ffStatSmall)
-                .foregroundStyle(FFColor.textPrimary)
-                .frame(width: 60, alignment: .trailing)
-            Text("\(row.wins)–\(row.losses)")
-                .font(.ffStatSmall)
-                .foregroundStyle(FFColor.textSecondary)
-                .frame(width: 50, alignment: .trailing)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(FFColor.textTertiary)
-                .padding(.leading, FFSpace.s)
-        }
-        .padding(.horizontal, FFSpace.l)
-        .padding(.vertical, FFSpace.m)
-        .background(isMe ? FFColor.accentSoft : Color.clear)
-        .contentShape(Rectangle())
-        .ffHairlineBottom()
-    }
-
     // MARK: - Rosters
 
     @ViewBuilder
@@ -512,45 +325,9 @@ struct LeagueDetailView: View {
         }
     }
 
-    @ViewBuilder
-    private func rosterSheet(team: FantasyTeam, lg: League) -> some View {
-        let players = Fantasy.playersFor(league: lg, snapshot: app.players(season: lg.season))
-        let uid = app.session?.userID
-        let isMine = team.ownerID == uid
-        let isCommish = lg.creatorID == uid
-        NavigationStack {
-            ZStack {
-                FFColor.bg.ignoresSafeArea()
-                ScrollView {
-                    teamCard(
-                        team: team, config: lg.rosterConfig, players: players,
-                        scoring: lg.scoring, isMine: isMine, isCommish: isCommish,
-                        onEdit: { t in
-                            pendingEdit = t
-                            viewingTeam = nil
-                        }
-                    )
-                    .padding(.horizontal, FFSpace.l)
-                    .padding(.top, FFSpace.l)
-                    .padding(.bottom, 40)
-                }
-            }
-            .navigationTitle(team.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(FFColor.bg, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { viewingTeam = nil }
-                        .foregroundStyle(FFColor.accent)
-                }
-            }
-        }
-    }
-
     private func teamCard(team: FantasyTeam, config: RosterConfig,
                           players: [String: Player], scoring: Scoring,
-                          isMine: Bool, isCommish: Bool,
-                          onEdit: ((FantasyTeam) -> Void)? = nil) -> some View {
+                          isMine: Bool, isCommish: Bool) -> some View {
         let (starters, bench) = Fantasy.resolveLineup(team: team, players: players, config: config, scoring: scoring)
         return VStack(alignment: .leading, spacing: FFSpace.m) {
             HStack(spacing: FFSpace.s) {
@@ -589,7 +366,7 @@ struct LeagueDetailView: View {
 
             if isMine || isCommish {
                 Button {
-                    if let onEdit { onEdit(team) } else { editingTeam = team }
+                    editingTeam = team
                 } label: {
                     HStack {
                         Image(systemName: isMine ? "square.and.pencil" : "shield.lefthalf.filled")

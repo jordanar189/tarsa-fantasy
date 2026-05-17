@@ -17,15 +17,24 @@ struct SimulationOverviewView: View {
     private var currentWeek: Int { league.simulatedWeek ?? 0 }
     private var scheduleLen: Int { league.schedule.count }
 
-    private var phaseLabel: String {
+    // Sims have a discrete season phase (preseason → week N → postseason);
+    // standard leagues don't, so we suppress the chip there.
+    private var phaseLabel: String? {
+        guard league.isTest else { return nil }
         if currentWeek == 0 { return "PRESEASON" }
         if currentWeek > scheduleLen { return "POSTSEASON" }
         return "WEEK \(currentWeek) OF \(scheduleLen)"
     }
 
+    // In a sim every team is owned by the creator, so we fall back to the
+    // canonical primary team. In a real league we look up the team owned
+    // by the signed-in user.
     private var primaryTeam: FantasyTeam? {
-        guard let id = AppState.primaryTeamID(in: league) else { return nil }
-        return league.teams.first(where: { $0.id == id })
+        if league.isTest, let id = AppState.primaryTeamID(in: league) {
+            return league.teams.first(where: { $0.id == id })
+        }
+        guard let uid = app.session?.userID else { return nil }
+        return league.teams.first(where: { $0.ownerID == uid })
     }
 
     var body: some View {
@@ -39,10 +48,13 @@ struct SimulationOverviewView: View {
         }
     }
 
-    // Compact week stepper + run-bots + reset accessor. Replaces the
-    // standalone SimulationBanner for sim leagues.
+    // Compact week stepper + run-bots + reset accessor. Sim-only — the
+    // banner has no meaning in a live standard league.
+    @ViewBuilder
     private var controlStrip: some View {
-        SimulationBanner(league: league, onLeagueUpdate: onLeagueUpdate)
+        if league.isTest {
+            SimulationBanner(league: league, onLeagueUpdate: onLeagueUpdate)
+        }
     }
 
     private var standingsSnapshot: some View {
@@ -55,9 +67,11 @@ struct SimulationOverviewView: View {
             HStack {
                 Text("YOUR PROGRESS").ffEyebrow()
                 Spacer()
-                Text(phaseLabel)
-                    .font(.ffMicro).tracking(0.8)
-                    .foregroundStyle(FFColor.accent)
+                if let phaseLabel {
+                    Text(phaseLabel)
+                        .font(.ffMicro).tracking(0.8)
+                        .foregroundStyle(FFColor.accent)
+                }
             }
             HStack(alignment: .top, spacing: FFSpace.xl) {
                 column(label: "RANK",
@@ -85,11 +99,12 @@ struct SimulationOverviewView: View {
         return "\(r.wins)–\(r.losses)"
     }
 
-    // What the league was talking about *at this week*. Empty before the
-    // season starts; for a sim, pulls from trending_history.
+    // What the league was talking about *at this week*. Empty during a
+    // sim's preseason; in a standard league we always have live data, so
+    // show it as soon as the page opens.
     @ViewBuilder
     private var informationEnvironment: some View {
-        if currentWeek > 0 {
+        if !league.isTest || currentWeek > 0 {
             VStack(spacing: FFSpace.l) {
                 trendingCard
                 injuryCard
@@ -218,7 +233,7 @@ struct SimulationOverviewView: View {
     private func refreshContext() async {
         loaded = false
         defer { loaded = true }
-        guard currentWeek > 0 else {
+        if league.isTest && currentWeek == 0 {
             trending = []
             injuriesAtWeek = [:]
             inactivesAtWeek = []
@@ -226,9 +241,14 @@ struct SimulationOverviewView: View {
         }
         async let tr = app.trendingPlayers(for: league)
         async let inj = app.injuries(for: league)
-        async let ina = app.inactives(season: league.season, week: currentWeek)
         self.trending        = await tr
         self.injuriesAtWeek  = await inj
-        self.inactivesAtWeek = await ina
+        // Standard leagues have no simulated week — inactives are
+        // week-scoped and don't apply, so skip the fetch.
+        if currentWeek > 0 {
+            self.inactivesAtWeek = await app.inactives(season: league.season, week: currentWeek)
+        } else {
+            self.inactivesAtWeek = []
+        }
     }
 }
