@@ -186,15 +186,23 @@ extension View {
         }
     }
 
-    // Primary call-to-action button. Full width, accent fill, pill shape.
+    // Primary call-to-action button. Full width, brand gradient fill, pill
+    // shape. White foreground reads cleanly on the cyan→violet gradient in
+    // both modes — don't swap it for FFColor.bg or it'll vanish in light.
     func ffPrimaryButton(disabled: Bool = false) -> some View {
         self
             .font(.ffHeadline)
-            .foregroundStyle(FFColor.bg)
+            .foregroundStyle(disabled ? FFColor.textTertiary : .white)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
-            .background(disabled ? FFColor.borderStrong : FFColor.accent,
-                        in: RoundedRectangle(cornerRadius: FFRadius.s))
+            .background(
+                RoundedRectangle(cornerRadius: FFRadius.s)
+                    .fill(disabled
+                          ? AnyShapeStyle(FFColor.borderStrong)
+                          : AnyShapeStyle(FFGradient.brand))
+            )
+            .shadow(color: disabled ? .clear : FFBrand.violet.opacity(0.30),
+                    radius: 14, y: 6)
     }
 
     // Secondary button — outlined, smaller emphasis.
@@ -253,19 +261,115 @@ struct FFPill<Content: View>: View {
 
 // Decorative gradient glow used on hero screens (auth, league hero card).
 struct FFGlow: View {
+    var intensity: Double = 1.0
     var body: some View {
         ZStack {
             RadialGradient(
-                colors: [FFColor.accent.opacity(0.18), .clear],
-                center: .init(x: 0.2, y: 0.1),
-                startRadius: 10, endRadius: 420
+                colors: [FFBrand.cyan.opacity(0.28 * intensity), .clear],
+                center: .init(x: 0.2, y: 0.05),
+                startRadius: 10, endRadius: 460
             )
             RadialGradient(
-                colors: [Color(red: 0.49, green: 0.36, blue: 1.0).opacity(0.14), .clear],
-                center: .init(x: 0.85, y: 0.85),
-                startRadius: 10, endRadius: 400
+                colors: [FFBrand.violet.opacity(0.22 * intensity), .clear],
+                center: .init(x: 0.9, y: 0.9),
+                startRadius: 10, endRadius: 440
             )
         }
         .allowsHitTesting(false)
+    }
+}
+
+// MARK: - Brand identity
+
+// The trophy → cyan→violet gradient lockup sampled from the app icon. Use
+// these to add brand character on top of the otherwise minimal surface:
+// hero headlines, primary CTAs, the refresh indicator, the join code, etc.
+// Treat the gradient like the loudest tool in the kit — it works because
+// most of the UI stays monochrome.
+enum FFBrand {
+    static let cyan   = Color(red: 0.27, green: 0.89, blue: 1.00)   // #46e4ff
+    static let violet = Color(red: 0.49, green: 0.36, blue: 1.00)   // #7e5cff
+}
+
+enum FFGradient {
+    static let brand = LinearGradient(
+        colors: [FFBrand.cyan, FFBrand.violet],
+        startPoint: .topLeading,
+        endPoint:   .bottomTrailing
+    )
+
+    static let brandSoft = LinearGradient(
+        colors: [FFBrand.cyan.opacity(0.20), FFBrand.violet.opacity(0.20)],
+        startPoint: .topLeading,
+        endPoint:   .bottomTrailing
+    )
+
+    // Subtle wash for card surfaces on hero screens — barely visible but
+    // tints the whole card toward the brand without trampling content.
+    static let brandWash = LinearGradient(
+        colors: [FFBrand.cyan.opacity(0.08), FFBrand.violet.opacity(0.08)],
+        startPoint: .topLeading,
+        endPoint:   .bottomTrailing
+    )
+}
+
+// The "Tarsa" wordmark + trophy lockup. Same gradient on both icon and
+// text so the mark reads as one cohesive unit. `compact` shows just the
+// trophy (useful for inline nav titles); the default includes the word.
+struct FFBrandMark: View {
+    enum Size { case small, medium, large }
+    var size: Size = .medium
+    var compact: Bool = false
+    var showsSubtitle: Bool = false
+
+    private var iconSize: CGFloat {
+        switch size {
+        case .small:  18
+        case .medium: 28
+        case .large:  52
+        }
+    }
+    private var textSize: CGFloat {
+        switch size {
+        case .small:  13
+        case .medium: 20
+        case .large:  34
+        }
+    }
+    private var subtitleSize: CGFloat {
+        switch size {
+        case .small:  9
+        case .medium: 11
+        case .large:  13
+        }
+    }
+    private var spacing: CGFloat {
+        switch size {
+        case .small:  6
+        case .medium: 10
+        case .large:  14
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: spacing) {
+            Image(systemName: "trophy.fill")
+                .font(.system(size: iconSize, weight: .bold))
+                .foregroundStyle(FFGradient.brand)
+            if !compact {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("TARSA")
+                        .font(.system(size: textSize, weight: .heavy, design: .rounded))
+                        .tracking(size == .large ? 4 : 2.4)
+                        .foregroundStyle(FFGradient.brand)
+                    if showsSubtitle {
+                        Text("FANTASY FOOTBALL")
+                            .font(.system(size: subtitleSize, weight: .semibold))
+                            .tracking(2)
+                            .foregroundStyle(FFColor.textSecondary)
+                    }
+                }
+            }
+        }
     }
 }

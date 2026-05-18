@@ -130,7 +130,9 @@ struct ChipRow<Item: Hashable & Identifiable, Label: View>: View {
                             .tracking(0.6)
                             .padding(.horizontal, 14).padding(.vertical, 8)
                             .background(
-                                selection == item ? FFColor.accent : Color.clear,
+                                selection == item
+                                    ? AnyShapeStyle(FFGradient.brand)
+                                    : AnyShapeStyle(Color.clear),
                                 in: Capsule()
                             )
                             .overlay(
@@ -139,7 +141,7 @@ struct ChipRow<Item: Hashable & Identifiable, Label: View>: View {
                                     lineWidth: 1
                                 )
                             )
-                            .foregroundStyle(selection == item ? FFColor.bg : FFColor.textSecondary)
+                            .foregroundStyle(selection == item ? .white : FFColor.textSecondary)
                     }
                     .buttonStyle(.plain)
                 }
@@ -168,9 +170,15 @@ struct SegmentedTabPicker<T: Hashable & Identifiable, Label: View>: View {
                         .font(.ffCaption.bold())
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
-                        .foregroundStyle(selection == item ? FFColor.accent : FFColor.textSecondary)
+                        .foregroundStyle(
+                            selection == item
+                                ? AnyShapeStyle(FFGradient.brand)
+                                : AnyShapeStyle(FFColor.textSecondary)
+                        )
                         .background(
-                            selection == item ? FFColor.accentSoft : Color.clear,
+                            selection == item
+                                ? AnyShapeStyle(FFGradient.brandSoft)
+                                : AnyShapeStyle(Color.clear),
                             in: RoundedRectangle(cornerRadius: FFRadius.xs)
                         )
                 }
@@ -218,7 +226,7 @@ struct TopRefreshIndicator: View {
                 Rectangle()
                     .fill(FFColor.accent.opacity(0.08))
                 Capsule()
-                    .fill(FFColor.accent)
+                    .fill(FFGradient.brand)
                     .frame(width: segmentWidth, height: 2)
                     // Slide from off-left to off-right and loop.
                     .offset(x: -segmentWidth + (trackWidth + segmentWidth) * phase)
@@ -282,8 +290,9 @@ struct MatchupPill: View {
     }
 }
 
-// Small filled badge that marks the league's commissioner. Same accent colors
-// as FFPill but always filled so it stands out next to plain identifiers.
+// Small filled badge that marks the league's commissioner. Painted with the
+// brand gradient so the commish jumps out on the leagues list and member
+// rolls without needing a different shape or layout.
 struct CommissionerBadge: View {
     var compact: Bool = false
     var body: some View {
@@ -295,8 +304,8 @@ struct CommissionerBadge: View {
         .font(.ffMicro)
         .tracking(0.8)
         .padding(.horizontal, compact ? 6 : 8).padding(.vertical, 4)
-        .background(FFColor.accentSoft, in: Capsule())
-        .foregroundStyle(FFColor.accent)
+        .background(FFGradient.brand, in: Capsule())
+        .foregroundStyle(.white)
     }
 }
 
