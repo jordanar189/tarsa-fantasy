@@ -53,6 +53,14 @@ struct DMChatView: View {
         .onChange(of: pickerItem) { _, item in
             Task { await loadPickedImage(item) }
         }
+        .alert("Couldn't send", isPresented: Binding(
+            get: { error != nil },
+            set: { if !$0 { error = nil } }
+        )) {
+            Button("OK") { }
+        } message: {
+            Text(error ?? "")
+        }
     }
 
     // MARK: - Message list
@@ -331,10 +339,19 @@ struct DMChatView: View {
         }
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else { return }
-            let contentType = item.supportedContentTypes
-                .first(where: { $0.preferredMIMEType?.hasPrefix("image/") == true })?
-                .preferredMIMEType ?? "image/jpeg"
-            pendingImage = PendingImage(data: data, contentType: contentType)
+            // Convert to JPEG for broad Supabase storage / CDN compatibility.
+            // HEIC and other exotic formats may not render via AsyncImage over HTTPS.
+            let (finalData, finalType): (Data, String)
+            if let image = UIImage(data: data), let jpg = image.jpegData(compressionQuality: 0.85) {
+                finalData = jpg
+                finalType = "image/jpeg"
+            } else {
+                finalData = data
+                finalType = item.supportedContentTypes
+                    .first(where: { $0.preferredMIMEType?.hasPrefix("image/") == true })?
+                    .preferredMIMEType ?? "image/jpeg"
+            }
+            pendingImage = PendingImage(data: finalData, contentType: finalType)
         } catch {
             self.error = error.localizedDescription
         }
