@@ -100,17 +100,20 @@ struct ChatView: View {
     }
 
     private var empty: some View {
-        VStack(spacing: FFSpace.s) {
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 36, weight: .light))
-                .foregroundStyle(FFColor.textTertiary)
-            Text("No conversations yet")
-                .font(.ffTitle)
-                .foregroundStyle(FFColor.textPrimary)
-            Text("Join a league to chat with leaguemates, or message a friend.")
-                .font(.ffBody)
-                .foregroundStyle(FFColor.textSecondary)
-                .multilineTextAlignment(.center)
+        VStack(spacing: FFSpace.l) {
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(.system(size: 48, weight: .bold))
+                .foregroundStyle(FFGradient.brand)
+                .shadow(color: FFBrand.violet.opacity(0.30), radius: 14, y: 6)
+            VStack(spacing: FFSpace.xs) {
+                Text("Quiet on the wire")
+                    .font(.ffTitle)
+                    .foregroundStyle(FFColor.textPrimary)
+                Text("Join a league to start trash talking — or shoot a friend a DM.")
+                    .font(.ffBody)
+                    .foregroundStyle(FFColor.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
         }
         .padding(.horizontal, FFSpace.xxl)
     }
@@ -236,11 +239,15 @@ private struct ConversationRow: View {
             return nil
         }()
         return ZStack {
-            Circle().fill(FFColor.surfaceElevated)
+            if symbol != nil {
+                Circle().fill(FFGradient.brand)
+            } else {
+                Circle().fill(FFColor.surfaceElevated)
+            }
             if let symbol {
                 Image(systemName: symbol)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(FFColor.accent)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
             } else {
                 Text(initials)
                     .font(.ffCaption.bold())

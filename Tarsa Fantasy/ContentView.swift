@@ -85,6 +85,7 @@ struct ContentView: View {
 
     private func bootstrapErrorOverlay(_ error: String) -> some View {
         VStack(spacing: FFSpace.m) {
+            FFBrandMark(size: .small)
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 28))
                 .foregroundStyle(FFColor.warning)

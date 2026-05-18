@@ -10,6 +10,9 @@ struct LeaguesView: View {
         NavigationStack(path: $navPath) {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
+                if app.leagueSummaries.isEmpty {
+                    FFGlow(intensity: 0.7).ignoresSafeArea()
+                }
                 content
             }
             .navigationTitle("Leagues")
@@ -41,13 +44,19 @@ struct LeaguesView: View {
     private var empty: some View {
         VStack(spacing: FFSpace.xxl) {
             Spacer()
-            VStack(spacing: FFSpace.s) {
-                Image(systemName: "trophy")
-                    .font(.system(size: 36, weight: .light))
-                    .foregroundStyle(FFColor.textTertiary)
-                Text("No leagues yet").font(.ffTitle).foregroundStyle(FFColor.textPrimary)
-                Text("Create one, or join with a code.")
-                    .font(.ffBody).foregroundStyle(FFColor.textSecondary)
+            VStack(spacing: FFSpace.l) {
+                Image(systemName: "trophy.fill")
+                    .font(.system(size: 56, weight: .bold))
+                    .foregroundStyle(FFGradient.brand)
+                    .shadow(color: FFBrand.violet.opacity(0.4), radius: 18, y: 8)
+                VStack(spacing: FFSpace.xs) {
+                    Text("Your trophy case is empty")
+                        .font(.ffTitle).foregroundStyle(FFColor.textPrimary)
+                    Text("Start a league, or join one with a code.\nA championship has to start somewhere.")
+                        .font(.ffBody)
+                        .foregroundStyle(FFColor.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
             }
             VStack(spacing: FFSpace.s) {
                 Button("Create a league") { showingCreate = true }
@@ -100,12 +109,13 @@ struct LeaguesView: View {
         Button(action: action) {
             HStack(spacing: FFSpace.l) {
                 ZStack {
-                    Circle().fill(FFColor.accentSoft)
+                    Circle().fill(FFGradient.brand)
                     Image(systemName: icon)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(FFColor.accent)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
                 }
                 .frame(width: 40, height: 40)
+                .shadow(color: FFBrand.violet.opacity(0.30), radius: 8, y: 3)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(.ffHeadline).foregroundStyle(FFColor.textPrimary)
@@ -153,7 +163,7 @@ struct LeagueListRow: View {
                     Text("CODE").ffEyebrow(color: FFColor.textTertiary)
                     Text(summary.joinCode)
                         .font(.ffStatSmall)
-                        .foregroundStyle(FFColor.accent)
+                        .foregroundStyle(FFGradient.brand)
                 }
             }
         }
