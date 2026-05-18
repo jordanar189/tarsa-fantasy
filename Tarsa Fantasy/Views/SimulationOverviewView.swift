@@ -1,18 +1,21 @@
 import SwiftUI
 
-// Simulation Overview. The "homepage" of a simulation: where in the season
-// we are, how the user's team is tracking against the field, and the
-// information environment of that week — top adds, key injuries — so the
-// user can decide what move to test next.
+// League Overview. The "homepage" for both sims and standard leagues: where
+// in the season we are, the user's team progress, a weekly scoreboard, full
+// standings (tap a team name to pop up its roster), and the week's
+// information environment — top adds, key injuries — so the user can decide
+// what move to test next.
 struct SimulationOverviewView: View {
     @Environment(AppState.self) private var app
     let league: League
     let onLeagueUpdate: (League) -> Void
+    let onTapTeam: (FantasyTeam) -> Void
 
     @State private var trending: [TrendingPlayer] = []
     @State private var injuriesAtWeek: [String: Injury] = [:]
     @State private var inactivesAtWeek: Set<String> = []
     @State private var loaded: Bool = false
+    @State private var scoreboardWeek: Int? = nil
 
     private var currentWeek: Int { league.simulatedWeek ?? 0 }
     private var scheduleLen: Int { league.schedule.count }
@@ -41,6 +44,8 @@ struct SimulationOverviewView: View {
         VStack(spacing: FFSpace.l) {
             controlStrip
             standingsSnapshot
+            scoreboardCard
+            standingsCard
             informationEnvironment
         }
         .task(id: "\(league.id)-\(currentWeek)") {
@@ -97,6 +102,227 @@ struct SimulationOverviewView: View {
     private func formatRecord(_ r: StandingsRow) -> String {
         if r.ties > 0 { return "\(r.wins)–\(r.losses)–\(r.ties)" }
         return "\(r.wins)–\(r.losses)"
+    }
+
+    // MARK: - Scoreboard
+
+    private var scheduleWeeks: [Int] { league.schedule.map(\.week) }
+
+    // Default the week picker to the "current" week — the simulated week for
+    // sims, or the latest week with any stat rows for standard leagues.
+    // Clamp into the schedule so a paused sim or out-of-season league lands
+    // on a valid entry.
+    private func defaultScoreboardWeek() -> Int {
+        let weeks = scheduleWeeks
+        guard let first = weeks.first, let last = weeks.last else { return 1 }
+        let target: Int
+        if league.isTest {
+            target = max(1, currentWeek)
+        } else {
+            target = Fantasy.currentWeek(players: app.players(season: league.season))
+        }
+        return min(max(target, first), last)
+    }
+
+    private var resolvedScoreboardWeek: Int {
+        scoreboardWeek ?? defaultScoreboardWeek()
+    }
+
+    private var scoreboardCard: some View {
+        let players = Fantasy.playersFor(league: league,
+                                         snapshot: app.players(season: league.season))
+        let week    = resolvedScoreboardWeek
+        let result  = Fantasy.scoreboard(league: league, players: players, week: week)
+        let weekBinding = Binding<Int>(
+            get: { resolvedScoreboardWeek },
+            set: { scoreboardWeek = $0 }
+        )
+
+        return VStack(alignment: .leading, spacing: FFSpace.m) {
+            HStack {
+                Text("SCOREBOARD").ffEyebrow()
+                Spacer()
+                if scheduleWeeks.count > 1 {
+                    Menu {
+                        Picker("Week", selection: weekBinding) {
+                            ForEach(scheduleWeeks, id: \.self) { w in
+                                Text("Week \(w)").tag(w)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Week \(week)")
+                                .font(.ffCaption.bold())
+                                .foregroundStyle(FFColor.textPrimary)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(FFColor.textTertiary)
+                        }
+                    }
+                } else {
+                    Text("Week \(week)")
+                        .font(.ffCaption.bold())
+                        .foregroundStyle(FFColor.textPrimary)
+                }
+            }
+
+            if result.matchups.isEmpty && result.byes.isEmpty {
+                Text("No games scheduled for this week.")
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textTertiary)
+                    .padding(.vertical, FFSpace.s)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(result.matchups) { m in
+                        scoreboardRow(m)
+                    }
+                }
+                if !result.byes.isEmpty {
+                    Text("On bye")
+                        .ffEyebrow(color: FFColor.textTertiary)
+                        .padding(.top, FFSpace.s)
+                    VStack(spacing: 0) {
+                        ForEach(result.byes) { bye in
+                            byeRow(bye)
+                        }
+                    }
+                }
+            }
+        }
+        .ffCard()
+    }
+
+    private func scoreboardRow(_ m: LeagueMatchup) -> some View {
+        let leader: String? = {
+            if m.home.points > m.away.points { return m.home.teamID }
+            if m.away.points > m.home.points { return m.away.teamID }
+            return nil
+        }()
+        return HStack(alignment: .center, spacing: FFSpace.s) {
+            scoreboardSide(team: teamByID(m.home.teamID), name: m.home.name,
+                           points: m.home.points, alignment: .leading,
+                           winning: leader == m.home.teamID, played: m.played)
+            Text("VS").ffEyebrow(color: FFColor.textTertiary)
+            scoreboardSide(team: teamByID(m.away.teamID), name: m.away.name,
+                           points: m.away.points, alignment: .trailing,
+                           winning: leader == m.away.teamID, played: m.played)
+        }
+        .padding(.vertical, FFSpace.s)
+        .ffHairlineBottom()
+    }
+
+    private func scoreboardSide(team: FantasyTeam?, name: String, points: Double,
+                                alignment: HorizontalAlignment, winning: Bool,
+                                played: Bool) -> some View {
+        let frameAlign: Alignment = (alignment == .leading) ? .leading : .trailing
+        return VStack(alignment: alignment, spacing: 2) {
+            Button {
+                if let team { onTapTeam(team) }
+            } label: {
+                Text(name)
+                    .font(.ffBody)
+                    .foregroundStyle(winning ? FFColor.textPrimary : FFColor.textSecondary)
+                    .lineLimit(1)
+                    .multilineTextAlignment(alignment == .leading ? .leading : .trailing)
+                    .frame(maxWidth: .infinity, alignment: frameAlign)
+            }
+            .buttonStyle(.plain)
+            .disabled(team == nil)
+            Text(points.fpString)
+                .font(.ffStatMedium)
+                .foregroundStyle(winning ? FFColor.accent
+                                 : (played ? FFColor.textPrimary : FFColor.textTertiary))
+        }
+        .frame(maxWidth: .infinity, alignment: frameAlign)
+    }
+
+    private func byeRow(_ bye: LeagueBye) -> some View {
+        let team = teamByID(bye.id)
+        return Button {
+            if let team { onTapTeam(team) }
+        } label: {
+            HStack {
+                Text(bye.name)
+                    .font(.ffBody)
+                    .foregroundStyle(FFColor.textSecondary)
+                Spacer()
+                Text("BYE")
+                    .font(.ffMicro.bold())
+                    .foregroundStyle(FFColor.warning)
+            }
+            .padding(.vertical, FFSpace.s)
+            .ffHairlineBottom()
+        }
+        .buttonStyle(.plain)
+        .disabled(team == nil)
+    }
+
+    private func teamByID(_ id: String) -> FantasyTeam? {
+        league.teams.first(where: { $0.id == id })
+    }
+
+    // MARK: - Standings
+
+    private var standingsCard: some View {
+        let players   = Fantasy.playersFor(league: league,
+                                           snapshot: app.players(season: league.season))
+        let standings = Fantasy.standings(league: league, players: players)
+        let uid       = app.session?.userID
+
+        return VStack(alignment: .leading, spacing: FFSpace.s) {
+            HStack {
+                Text("STANDINGS").ffEyebrow()
+                Spacer()
+                Text("Tap a team to see its roster")
+                    .font(.ffMicro)
+                    .foregroundStyle(FFColor.textTertiary)
+            }
+            VStack(spacing: 0) {
+                ForEach(standings) { row in
+                    standingsRow(row, isMine: teamByID(row.id)?.ownerID == uid)
+                }
+            }
+        }
+        .ffCard()
+    }
+
+    private func standingsRow(_ row: StandingsRow, isMine: Bool) -> some View {
+        let team = teamByID(row.id)
+        return Button {
+            if let team { onTapTeam(team) }
+        } label: {
+            HStack(spacing: FFSpace.s) {
+                Text("\(row.rank)")
+                    .font(.ffStatSmall)
+                    .foregroundStyle(row.rank == 1 ? FFColor.accent : FFColor.textTertiary)
+                    .frame(width: 24, alignment: .leading)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(row.name)
+                            .font(.ffBody)
+                            .foregroundStyle(FFColor.textPrimary)
+                            .lineLimit(1)
+                        if isMine {
+                            Text("YOU").ffEyebrow(color: FFColor.accent)
+                        }
+                    }
+                    Text(formatRecord(row))
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.textSecondary)
+                }
+                Spacer()
+                Text(row.pointsFor.fpString)
+                    .font(.ffStatSmall)
+                    .foregroundStyle(FFColor.textPrimary)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FFColor.textTertiary)
+            }
+            .padding(.vertical, FFSpace.s)
+            .ffHairlineBottom()
+        }
+        .buttonStyle(.plain)
+        .disabled(team == nil)
     }
 
     // What the league was talking about *at this week*. Empty during a

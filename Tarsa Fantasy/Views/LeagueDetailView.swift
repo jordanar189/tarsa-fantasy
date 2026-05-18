@@ -10,6 +10,7 @@ struct LeagueDetailView: View {
     @State private var simSection: SimSection = .overview
     @State private var week: Int = 1
     @State private var editingTeam: FantasyTeam? = nil
+    @State private var viewingTeam: FantasyTeam? = nil
     @State private var showingSettings: Bool = false
     @State private var showingDraftRoom: Bool = false
     @State private var showingDraftSettings: Bool = false
@@ -76,6 +77,21 @@ struct LeagueDetailView: View {
                 }
             }
         }
+        .sheet(item: $viewingTeam) { team in
+            if let league {
+                TeamRosterSheet(league: league, team: team) {
+                    // Hop from the read-only roster popup straight into the
+                    // editor. The popup dismisses itself before invoking us;
+                    // defer the second sheet by a tick so the first one has
+                    // fully unwound — SwiftUI drops back-to-back sheets that
+                    // race the same presenter.
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        editingTeam = team
+                    }
+                }
+            }
+        }
         .sheet(isPresented: $showingSettings) {
             if let league {
                 LeagueSettingsView(
@@ -103,9 +119,10 @@ struct LeagueDetailView: View {
     }
 
     // Unified page composition. Strategy-testing layout for both sim and
-    // standard leagues: Overview homepage, weekly matchup with full game
-    // context, draft post-mortem, roster + waivers management. Standard
-    // leagues additionally surface History (when available).
+    // standard leagues: Overview homepage (scoreboard + standings, with a
+    // tap-a-team-name popup for rosters), weekly matchup with full game
+    // context, draft post-mortem, waivers management. Standard leagues
+    // additionally surface History (when available).
     @ViewBuilder
     private func simulationContent(_ lg: League) -> some View {
         // Show the live/scheduled draft banner whenever a draft exists and
@@ -118,13 +135,16 @@ struct LeagueDetailView: View {
         sectionPicker(for: lg)
         switch simSection {
         case .overview:
-            SimulationOverviewView(league: lg) { updated in self.league = updated }
+            SimulationOverviewView(
+                league: lg,
+                onLeagueUpdate: { updated in self.league = updated },
+                onTapTeam: { team in viewingTeam = team }
+            )
         case .week:
             simulationWeekTab(lg)
         case .draft:
             SimulationDraftReviewView(league: lg)
         case .manage:
-            rostersView(lg)
             WaiversView(league: lg) { updated in self.league = updated }
         case .history:
             LeagueHistoryView(league: lg)
@@ -285,139 +305,4 @@ struct LeagueDetailView: View {
         }
     }
 
-    // MARK: - Rosters
-
-    @ViewBuilder
-    private func rostersView(_ lg: League) -> some View {
-        let players = Fantasy.playersFor(league: lg, snapshot: app.players(season: lg.season))
-        let config = lg.rosterConfig
-        let uid = app.session?.userID
-        let isCommish = lg.creatorID == uid
-        let ordered = lg.teams.sorted { a, b in
-            (a.ownerID == uid && b.ownerID != uid)
-                || (a.ownerID != nil && b.ownerID == nil)
-        }
-        VStack(spacing: FFSpace.l) {
-            ForEach(ordered) { team in
-                teamCard(
-                    team: team, config: config, players: players, scoring: lg.scoring,
-                    isMine: team.ownerID == uid, isCommish: isCommish
-                )
-            }
-        }
-    }
-
-    private func teamCard(team: FantasyTeam, config: RosterConfig,
-                          players: [String: Player], scoring: Scoring,
-                          isMine: Bool, isCommish: Bool) -> some View {
-        let (starters, bench) = Fantasy.resolveLineup(team: team, players: players, config: config, scoring: scoring)
-        return VStack(alignment: .leading, spacing: FFSpace.m) {
-            HStack(spacing: FFSpace.s) {
-                Text(team.name).font(.ffHeadline).foregroundStyle(FFColor.textPrimary)
-                if isMine {
-                    Text("YOU").ffEyebrow(color: FFColor.accent)
-                } else if team.ownerID == nil {
-                    Text("OPEN").ffEyebrow(color: FFColor.warning)
-                }
-                Spacer()
-                Text("\(team.roster.count)/\(config.totalSize)")
-                    .font(.ffStatSmall)
-                    .foregroundStyle(FFColor.textTertiary)
-            }
-
-            if team.roster.isEmpty {
-                Text("No players yet.")
-                    .font(.ffBody).foregroundStyle(FFColor.textSecondary)
-                    .padding(.vertical, FFSpace.m)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(zip(config.starterSlots, starters).enumerated()), id: \.offset) { _, pair in
-                        lineupRow(slot: pair.0, playerID: pair.1, players: players, scoring: scoring)
-                    }
-                }
-
-                if !bench.isEmpty {
-                    Text("Bench").ffEyebrow().padding(.top, FFSpace.s)
-                    VStack(spacing: 0) {
-                        ForEach(bench, id: \.self) { pid in
-                            lineupRow(slot: .bench, playerID: pid, players: players, scoring: scoring)
-                        }
-                    }
-                }
-            }
-
-            if isMine || isCommish {
-                Button {
-                    editingTeam = team
-                } label: {
-                    HStack {
-                        Image(systemName: isMine ? "square.and.pencil" : "shield.lefthalf.filled")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text(isMine ? "Edit roster" : "Edit roster (commish)")
-                    }
-                    .frame(maxWidth: .infinity)
-                    .font(.ffHeadline)
-                    .foregroundStyle(FFColor.accent)
-                    .padding(.vertical, 12)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: FFRadius.s)
-                            .strokeBorder(FFColor.border, lineWidth: 1)
-                    )
-                }
-                .buttonStyle(.plain)
-                .padding(.top, FFSpace.s)
-            }
-        }
-        .ffCard()
-        .overlay(
-            RoundedRectangle(cornerRadius: FFRadius.m)
-                .strokeBorder(isMine ? FFColor.accent.opacity(0.5) : Color.clear, lineWidth: 1)
-        )
-        .prefetchAvatars(urls: team.roster.compactMap { players[$0]?.headshotURL })
-    }
-
-    private func lineupRow(slot: LineupSlot, playerID: String,
-                           players: [String: Player], scoring: Scoring) -> some View {
-        let player = playerID.isEmpty ? nil : players[playerID]
-        let summary = player.map { Fantasy.summary($0, scoring: scoring) }
-        return HStack(spacing: FFSpace.m) {
-            Text(slot.label)
-                .font(.ffMicro)
-                .foregroundStyle(FFColor.textTertiary)
-                .frame(width: 40, alignment: .leading)
-            if let summary, let player {
-                PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 32)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(summary.name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
-                    HStack(spacing: 6) {
-                        PositionPill(position: summary.position)
-                        Text(summary.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
-                    }
-                }
-                Spacer()
-                Text(summary.points.fpString)
-                    .font(.ffStatSmall)
-                    .foregroundStyle(FFColor.textPrimary)
-            } else {
-                emptyAvatar(size: 32)
-                Text("Empty")
-                    .font(.ffBody)
-                    .foregroundStyle(FFColor.textTertiary)
-                Spacer()
-            }
-        }
-        .padding(.vertical, FFSpace.s)
-        .ffHairlineBottom()
-    }
-
-    private func emptyAvatar(size: CGFloat) -> some View {
-        ZStack {
-            Circle().fill(FFColor.surfaceElevated)
-            Image(systemName: "person.fill")
-                .font(.system(size: size * 0.42, weight: .regular))
-                .foregroundStyle(FFColor.textTertiary)
-        }
-        .frame(width: size, height: size)
-        .overlay(Circle().strokeBorder(FFColor.border, lineWidth: 0.5))
-    }
 }
