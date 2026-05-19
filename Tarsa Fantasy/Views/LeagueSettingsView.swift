@@ -121,12 +121,27 @@ struct LeagueSettingsView: View {
 
     private var inviteSection: some View {
         Section {
+            if let url = JoinLink.url(forCode: league.joinCode) {
+                ShareLink(
+                    item: url,
+                    subject: Text("Join \(league.name) on Tarsa Fantasy"),
+                    message: Text("Tap to claim a team in \(league.name).")
+                ) {
+                    HStack {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("Share invite link")
+                        Spacer()
+                    }
+                    .font(.ffHeadline)
+                    .foregroundStyle(FFColor.accent)
+                }
+            }
             HStack {
                 Text("Join code").font(.ffBody).foregroundStyle(FFColor.textSecondary)
                 Spacer()
                 Text(league.joinCode)
                     .font(.ffStatSmall)
-                    .foregroundStyle(FFColor.accent)
+                    .foregroundStyle(FFColor.textTertiary)
                     .textSelection(.enabled)
                 Button {
                     UIPasteboard.general.string = league.joinCode
@@ -140,7 +155,7 @@ struct LeagueSettingsView: View {
         } header: {
             Text("Invite").ffEyebrow()
         } footer: {
-            Text("Share this code with friends so they can claim open teams. Only commissioners see it.")
+            Text("Share the link so friends can tap straight into an open team. The code still works for manual entry.")
                 .foregroundStyle(FFColor.textTertiary)
         }
         .listRowBackground(FFColor.surface)

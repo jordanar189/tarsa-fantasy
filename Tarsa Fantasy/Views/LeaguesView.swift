@@ -3,8 +3,15 @@ import SwiftUI
 struct LeaguesView: View {
     @Environment(AppState.self) private var app
     @State private var showingCreate = false
-    @State private var showingJoin = false
+    @State private var joinSheet: JoinSheet? = nil
     @State private var navPath = NavigationPath()
+
+    // Drives the join sheet. `code` is non-nil when opened from an invite
+    // link (pre-filled + auto-looked-up); nil for manual entry.
+    struct JoinSheet: Identifiable {
+        let id = UUID()
+        let code: String?
+    }
 
     var body: some View {
         NavigationStack(path: $navPath) {
@@ -25,11 +32,19 @@ struct LeaguesView: View {
                 LeagueDetailView(leagueID: id)
             }
             .sheet(isPresented: $showingCreate) { CreateLeagueView() }
-            .sheet(isPresented: $showingJoin) {
-                JoinLeagueView { id in navPath.append(id) }
+            .sheet(item: $joinSheet) { sheet in
+                JoinLeagueView(initialCode: sheet.code) { id in navPath.append(id) }
             }
             .task { await app.reloadLeagues() }
+            .onAppear { consumePendingJoin() }
+            .onChange(of: app.pendingJoinCode) { _, _ in consumePendingJoin() }
         }
+    }
+
+    private func consumePendingJoin() {
+        guard let code = app.pendingJoinCode else { return }
+        joinSheet = JoinSheet(code: code)
+        app.pendingJoinCode = nil
     }
 
     @ViewBuilder
@@ -52,7 +67,7 @@ struct LeaguesView: View {
                 VStack(spacing: FFSpace.xs) {
                     Text("Your trophy case is empty")
                         .font(.ffTitle).foregroundStyle(FFColor.textPrimary)
-                    Text("Start a league, or join one with a code.\nA championship has to start somewhere.")
+                    Text("Start a league, or join one with an invite link.\nA championship has to start somewhere.")
                         .font(.ffBody)
                         .foregroundStyle(FFColor.textSecondary)
                         .multilineTextAlignment(.center)
@@ -61,7 +76,7 @@ struct LeaguesView: View {
             VStack(spacing: FFSpace.s) {
                 Button("Create a league") { showingCreate = true }
                     .ffPrimaryButton()
-                Button("Join with code") { showingJoin = true }
+                Button("Join a league") { joinSheet = JoinSheet(code: nil) }
                     .ffSecondaryButton()
             }
             .padding(.horizontal, FFSpace.xxl)
@@ -76,8 +91,8 @@ struct LeaguesView: View {
                 actionRow(icon: "plus", title: "Create a league", subtitle: "Set your roster, invite friends") {
                     showingCreate = true
                 }
-                actionRow(icon: "person.badge.plus", title: "Join with code", subtitle: "Claim a team in an existing league") {
-                    showingJoin = true
+                actionRow(icon: "person.badge.plus", title: "Join a league", subtitle: "Claim a team with an invite link or code") {
+                    joinSheet = JoinSheet(code: nil)
                 }
 
                 HStack {
@@ -158,14 +173,9 @@ struct LeagueListRow: View {
                 }
             }
             Spacer()
-            VStack(alignment: .trailing, spacing: 4) {
-                if !summary.joinCode.isEmpty {
-                    Text("CODE").ffEyebrow(color: FFColor.textTertiary)
-                    Text(summary.joinCode)
-                        .font(.ffStatSmall)
-                        .foregroundStyle(FFGradient.brand)
-                }
-            }
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(FFColor.textTertiary)
         }
         .ffCard()
     }

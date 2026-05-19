@@ -23,6 +23,11 @@ final class AppState {
     // Leagues belonging to the signed-in user
     var leagueSummaries: [LeagueSummary] = []
 
+    // Set when an invite link is opened. LeaguesView consumes it to present
+    // the join sheet pre-filled. Held until the user is signed in and the
+    // Leagues tab can pick it up.
+    var pendingJoinCode: String? = nil
+
     // Social graph + DM inbox. Reloaded on bootstrap and on pull-to-refresh
     // of the Chat tab. dmInbox stores both the thread row and the cached
     // profile of the other participant so the conversation list can render
@@ -593,6 +598,14 @@ final class AppState {
 
     func lookupLeague(byCode code: String) async throws -> League? {
         try await remote.leagueByCode(code)
+    }
+
+    /// Handles an opened invite link: stashes the code and routes to the
+    /// Leagues tab so the join sheet can surface it.
+    func handleInvite(url: URL) {
+        guard let code = JoinLink.code(from: url) else { return }
+        pendingJoinCode = code
+        tab = .leagues
     }
 
     func claimTeam(teamID: String) async throws -> League? {

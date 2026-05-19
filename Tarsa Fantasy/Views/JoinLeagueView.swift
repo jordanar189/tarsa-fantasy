@@ -3,6 +3,7 @@ import SwiftUI
 struct JoinLeagueView: View {
     @Environment(AppState.self) private var app
     @Environment(\.dismiss) private var dismiss
+    var initialCode: String? = nil
     let onJoined: (String) -> Void
 
     @State private var code: String = ""
@@ -10,6 +11,7 @@ struct JoinLeagueView: View {
     @State private var error: String? = nil
     @State private var lookingUp: Bool = false
     @State private var claiming: Bool = false
+    @State private var didAutoLookup: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -30,14 +32,22 @@ struct JoinLeagueView: View {
                         .foregroundStyle(FFColor.textSecondary)
                 }
             }
+            .task {
+                guard !didAutoLookup, let initial = initialCode else { return }
+                didAutoLookup = true
+                code = String(initial.uppercased()
+                    .filter { $0.isLetter || $0.isNumber }
+                    .prefix(6))
+                if code.count == 6 { await lookup() }
+            }
         }
     }
 
     private var codeEntry: some View {
         VStack(alignment: .leading, spacing: FFSpace.xxl) {
             VStack(alignment: .leading, spacing: FFSpace.s) {
-                Text("INVITE CODE").ffEyebrow(color: FFColor.accent)
-                Text("Enter the six-character\ncode you were sent.")
+                Text("JOIN A LEAGUE").ffEyebrow(color: FFColor.accent)
+                Text("Paste an invite link, or enter\nthe six-character code.")
                     .font(.system(size: 32, weight: .bold))
                     .foregroundStyle(FFColor.textPrimary)
                     .lineSpacing(-2)
@@ -61,9 +71,14 @@ struct JoinLeagueView: View {
                         .strokeBorder(code.count == 6 ? FFColor.accent : FFColor.border, lineWidth: 1)
                 )
                 .onChange(of: code) { _, new in
-                    code = String(new.uppercased()
-                        .filter { $0.isLetter || $0.isNumber }
-                        .prefix(6))
+                    // Allow pasting a full invite link, not just the code.
+                    if let url = URL(string: new), let extracted = JoinLink.code(from: url) {
+                        code = String(extracted.prefix(6))
+                    } else {
+                        code = String(new.uppercased()
+                            .filter { $0.isLetter || $0.isNumber }
+                            .prefix(6))
+                    }
                 }
                 if let error {
                     Text(error).font(.ffCaption).foregroundStyle(FFColor.negative)
