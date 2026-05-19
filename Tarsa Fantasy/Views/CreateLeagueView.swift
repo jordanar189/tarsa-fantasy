@@ -37,7 +37,7 @@ struct CreateLeagueView: View {
                         section("Type",
                                 footer: leagueType == .simulation
                                     ? "A solo league against bot teams. You control every team behind the scenes, can advance through weeks, run bot moves, and reset the simulation at any point."
-                                    : "A normal league. Other slots open for friends to claim with the join code.") {
+                                    : "A normal league. Other slots open for friends to claim with an invite link.") {
                             picker("League type", selection: $leagueType, choices: LeagueType.allCases) { $0.label }
                         }
 
@@ -52,7 +52,7 @@ struct CreateLeagueView: View {
                         section("Your team",
                                 footer: leagueType == .simulation
                                     ? "Every other team is a bot you control."
-                                    : "You'll automatically own this team. Other slots open for friends to claim with the join code.") {
+                                    : "You'll automatically own this team. Other slots open for friends to claim with an invite link.") {
                             field("Team name") {
                                 TextField("", text: $yourTeamName, prompt: placeholder("Your Team"))
                             }

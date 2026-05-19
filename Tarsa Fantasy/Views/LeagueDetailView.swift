@@ -52,11 +52,25 @@ struct LeagueDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(FFColor.bg, for: .navigationBar)
         .toolbar {
-            if let lg = league, lg.creatorID == app.session?.userID {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showingSettings = true } label: {
-                        Image(systemName: "gearshape")
-                            .foregroundStyle(FFColor.textPrimary)
+            if let lg = league {
+                if let url = JoinLink.url(forCode: lg.joinCode) {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        ShareLink(
+                            item: url,
+                            subject: Text("Join \(lg.name) on Tarsa Fantasy"),
+                            message: Text("Tap to claim a team in \(lg.name).")
+                        ) {
+                            Image(systemName: "square.and.arrow.up")
+                                .foregroundStyle(FFColor.textPrimary)
+                        }
+                    }
+                }
+                if lg.creatorID == app.session?.userID {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showingSettings = true } label: {
+                            Image(systemName: "gearshape")
+                                .foregroundStyle(FFColor.textPrimary)
+                        }
                     }
                 }
             }

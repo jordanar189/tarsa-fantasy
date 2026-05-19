@@ -13,6 +13,7 @@ struct TarsaFantasyApp: App {
             ContentView()
                 .environment(appState)
                 .task { await appState.bootstrap() }
+                .onOpenURL { appState.handleInvite(url: $0) }
         }
     }
 }
