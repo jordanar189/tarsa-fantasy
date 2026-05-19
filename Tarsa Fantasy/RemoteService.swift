@@ -83,7 +83,10 @@ actor RemoteService {
             .single()
             .execute()
             .value
-        return Profile(id: row.id.uuidString, username: row.username)
+        return Profile(
+            id: row.id.uuidString, username: row.username,
+            isAdmin: row.isAdmin, isTester: row.isTester
+        )
     }
 
     // Returns the user's persisted theme preference. Nil when no row /
@@ -1921,6 +1924,126 @@ actor RemoteService {
         return rows.map { Profile(id: $0.id.uuidString, username: $0.username) }
     }
 
+    // MARK: - Tester role + feedback
+
+    // Admin-only grant/revoke of the tester flag on another profile. The RPC
+    // re-checks the caller is an admin server-side, so this can't be abused
+    // by a tampered client.
+    @discardableResult
+    func setTesterRole(userID: String, isTester: Bool) async throws -> Bool {
+        guard let uid = UUID(uuidString: userID) else { throw RemoteError.invalidUserID }
+        struct Args: Encodable { let p_user: UUID; let p_is_tester: Bool }
+        let row: ProfileRow = try await client
+            .rpc("set_tester_role", params: Args(p_user: uid, p_is_tester: isTester))
+            .execute().value
+        return row.isTester
+    }
+
+    // Uploads a feedback screenshot into the feedback-images bucket,
+    // namespaced by the author's user_id so storage RLS gates the write.
+    func uploadFeedbackImage(
+        userID: String, data: Data, contentType: String
+    ) async throws -> String {
+        guard let uid = UUID(uuidString: userID) else { throw RemoteError.invalidUserID }
+        let ext: String
+        switch contentType.lowercased() {
+        case "image/png":  ext = "png"
+        case "image/gif":  ext = "gif"
+        case "image/heic": ext = "heic"
+        case "image/webp": ext = "webp"
+        default:           ext = "jpg"
+        }
+        let folder = uid.uuidString.lowercased()
+        let filename = "\(UUID().uuidString.lowercased()).\(ext)"
+        let path = "\(folder)/\(filename)"
+        _ = try await client.storage
+            .from("feedback-images")
+            .upload(
+                path,
+                data: data,
+                options: FileOptions(contentType: contentType, upsert: false)
+            )
+        let url = try client.storage.from("feedback-images").getPublicURL(path: path)
+        return url.absoluteString
+    }
+
+    @discardableResult
+    func submitFeedback(
+        userID: String, content: String, imageURLs: [String]
+    ) async throws -> FeedbackItem {
+        guard let uid = UUID(uuidString: userID) else { throw RemoteError.invalidUserID }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty || !imageURLs.isEmpty else { throw RemoteError.emptyMessage }
+        struct Insert: Encodable {
+            let user_id: UUID
+            let content: String
+            let image_urls: [String]
+        }
+        struct Row: Decodable {
+            let id: UUID; let userId: UUID; let content: String
+            let imageUrls: [String]; let status: String; let createdAt: Date
+            enum CodingKeys: String, CodingKey {
+                case id, content, status
+                case userId    = "user_id"
+                case imageUrls  = "image_urls"
+                case createdAt  = "created_at"
+            }
+        }
+        let row: Row = try await client.from("feedback")
+            .insert(Insert(user_id: uid, content: trimmed, image_urls: imageURLs))
+            .select("id, user_id, content, image_urls, status, created_at")
+            .single()
+            .execute().value
+        return FeedbackItem(
+            id: row.id.uuidString, userID: row.userId.uuidString,
+            username: "", content: row.content, imageURLs: row.imageUrls,
+            status: FeedbackStatus(rawValue: row.status) ?? .open,
+            createdAt: row.createdAt
+        )
+    }
+
+    // Admin triage list: every feedback row with the author's username
+    // joined in. Non-admins are blocked by RLS and get an empty list.
+    func feedbackInbox(limit: Int = 200) async -> [FeedbackItem] {
+        struct Row: Decodable {
+            let id: UUID; let userId: UUID; let content: String
+            let imageUrls: [String]; let status: String; let createdAt: Date
+            let profiles: ProfileJoin?
+            enum CodingKeys: String, CodingKey {
+                case id, content, status, profiles
+                case userId    = "user_id"
+                case imageUrls  = "image_urls"
+                case createdAt  = "created_at"
+            }
+        }
+        struct ProfileJoin: Decodable { let username: String }
+        let rows: [Row] = (try? await client.from("feedback")
+            .select("id, user_id, content, image_urls, status, created_at, profiles!user_id(username)")
+            .order("created_at", ascending: false)
+            .limit(limit)
+            .execute().value) ?? []
+        return rows.map { r in
+            FeedbackItem(
+                id: r.id.uuidString, userID: r.userId.uuidString,
+                username: r.profiles?.username ?? "Unknown",
+                content: r.content, imageURLs: r.imageUrls,
+                status: FeedbackStatus(rawValue: r.status) ?? .open,
+                createdAt: r.createdAt
+            )
+        }
+    }
+
+    @discardableResult
+    func setFeedbackStatus(id: String, status: FeedbackStatus) async throws -> Bool {
+        guard let fid = UUID(uuidString: id) else { throw RemoteError.invalidUserID }
+        struct Update: Encodable { let status: String }
+        _ = try await client.from("feedback")
+            .update(Update(status: status.rawValue))
+            .eq("id", value: fid)
+            .execute()
+        return true
+    }
+
     // MARK: - Friendships
 
     private struct FriendshipRow: Decodable {
@@ -2301,14 +2424,22 @@ struct ProfileRow: Codable, Hashable {
     let id: UUID
     let username: String
     let theme: String?
+    let isAdmin: Bool
+    let isTester: Bool
 
-    enum CodingKeys: String, CodingKey { case id, username, theme }
+    enum CodingKeys: String, CodingKey {
+        case id, username, theme
+        case isAdmin  = "is_admin"
+        case isTester = "is_tester"
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id       = try c.decode(UUID.self,   forKey: .id)
         username = try c.decode(String.self, forKey: .username)
         theme    = try c.decodeIfPresent(String.self, forKey: .theme)
+        isAdmin  = try c.decodeIfPresent(Bool.self, forKey: .isAdmin)  ?? false
+        isTester = try c.decodeIfPresent(Bool.self, forKey: .isTester) ?? false
     }
 }
 

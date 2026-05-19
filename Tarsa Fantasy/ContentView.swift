@@ -81,6 +81,12 @@ struct ContentView: View {
                 bootstrapErrorOverlay(error)
             }
         }
+        // App-wide feedback button, shown only to testers/admins.
+        .overlay {
+            if app.canGiveFeedback {
+                FeedbackButton()
+            }
+        }
     }
 
     private func bootstrapErrorOverlay(_ error: String) -> some View {
