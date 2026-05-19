@@ -553,6 +553,33 @@ struct LeagueSummary: Identifiable, Hashable {
 struct Profile: Identifiable, Hashable, Sendable {
     let id: String
     let username: String
+    // Server-driven role flags. Default false so the many lightweight
+    // `Profile(id:username:)` call sites (search results, DM inbox joins)
+    // stay valid — those projections don't carry role info.
+    let isAdmin: Bool
+    let isTester: Bool
+
+    init(id: String, username: String, isAdmin: Bool = false, isTester: Bool = false) {
+        self.id = id
+        self.username = username
+        self.isAdmin = isAdmin
+        self.isTester = isTester
+    }
+}
+
+// In-app feedback filed by testers/admins and triaged by admins.
+enum FeedbackStatus: String, Hashable, Sendable {
+    case open, resolved
+}
+
+struct FeedbackItem: Identifiable, Hashable, Sendable {
+    let id: String
+    let userID: String
+    let username: String      // joined from profiles for the review list
+    let content: String
+    let imageURLs: [String]
+    let status: FeedbackStatus
+    let createdAt: Date
 }
 
 // One row of the friendships table. Stored canonically (user_a < user_b),

@@ -891,8 +891,47 @@ final class AppState {
     // MARK: - Admin
 
     var isAdmin: Bool {
-        guard let username = session?.profile.username else { return false }
-        return AdminConfig.adminUsernames.contains(username.lowercased())
+        guard let profile = session?.profile else { return false }
+        // DB-driven flag is authoritative; the hard-coded allowlist remains a
+        // fallback for accounts whose is_admin column hasn't been seeded.
+        return profile.isAdmin
+            || AdminConfig.adminUsernames.contains(profile.username.lowercased())
+    }
+
+    // Testers (and admins) get the floating feedback button.
+    var isTester: Bool { session?.profile.isTester == true }
+    var canGiveFeedback: Bool { isAdmin || isTester }
+
+    // MARK: - Tester role + feedback
+
+    @discardableResult
+    func setTesterRole(userID: String, isTester: Bool) async throws -> Bool {
+        try await remote.setTesterRole(userID: userID, isTester: isTester)
+    }
+
+    func uploadFeedbackImage(data: Data, contentType: String) async throws -> String {
+        guard let session else { throw AppError.notSignedIn }
+        return try await remote.uploadFeedbackImage(
+            userID: session.userID, data: data, contentType: contentType
+        )
+    }
+
+    @discardableResult
+    func submitFeedback(content: String, imageURLs: [String]) async throws -> FeedbackItem {
+        guard let session else { throw AppError.notSignedIn }
+        return try await remote.submitFeedback(
+            userID: session.userID, content: content, imageURLs: imageURLs
+        )
+    }
+
+    func feedbackInbox() async -> [FeedbackItem] {
+        guard isAdmin else { return [] }
+        return await remote.feedbackInbox()
+    }
+
+    @discardableResult
+    func setFeedbackStatus(id: String, status: FeedbackStatus) async throws -> Bool {
+        try await remote.setFeedbackStatus(id: id, status: status)
     }
 
     // MARK: - Simulations

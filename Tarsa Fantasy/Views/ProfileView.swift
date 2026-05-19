@@ -15,6 +15,7 @@ struct ProfileView: View {
     @State private var actionInFlight: Bool = false
     @State private var error: String? = nil
     @State private var openingThread: DMThread? = nil
+    @State private var testerWorking: Bool = false
 
     private var isMe: Bool { userID == app.session?.userID }
 
@@ -82,6 +83,46 @@ struct ProfileView: View {
     @ViewBuilder
     private var otherProfileSections: some View {
         actionButtons
+        if app.isAdmin {
+            adminTesterSection
+        }
+    }
+
+    @ViewBuilder
+    private var adminTesterSection: some View {
+        let isTester = profile?.isTester ?? false
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            HStack { Text("Admin").ffEyebrow(); Spacer() }
+            VStack(alignment: .leading, spacing: FFSpace.s) {
+                HStack(spacing: FFSpace.s) {
+                    Image(systemName: isTester ? "checkmark.seal.fill" : "seal")
+                        .foregroundStyle(isTester ? FFColor.positive : FFColor.textTertiary)
+                    Text(isTester ? "Tester" : "Not a tester")
+                        .font(.ffHeadline)
+                        .foregroundStyle(FFColor.textPrimary)
+                    Spacer()
+                }
+                Text("Testers see the in-app feedback button everywhere.")
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textSecondary)
+                Button {
+                    Task { await toggleTester(to: !isTester) }
+                } label: {
+                    if testerWorking {
+                        ProgressView().tint(FFColor.accent)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Label(
+                            isTester ? "Remove tester role" : "Make tester",
+                            systemImage: isTester ? "person.badge.minus" : "person.badge.plus"
+                        )
+                    }
+                }
+                .ffSecondaryButton()
+                .disabled(testerWorking)
+            }
+            .ffCard()
+        }
     }
 
     @ViewBuilder
@@ -246,6 +287,18 @@ struct ProfileView: View {
         defer { actionInFlight = false }
         do {
             openingThread = try await app.openDMThread(withUserID: userID)
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func toggleTester(to newValue: Bool) async {
+        testerWorking = true
+        defer { testerWorking = false }
+        do {
+            _ = try await app.setTesterRole(userID: userID, isTester: newValue)
+            // Re-fetch so the toggle reflects server truth.
+            profile = await app.profile(userID: userID)
         } catch {
             self.error = error.localizedDescription
         }
