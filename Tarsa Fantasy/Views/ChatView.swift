@@ -9,6 +9,7 @@ struct ChatView: View {
     @Environment(AppState.self) private var app
     @State private var path = NavigationPath()
     @State private var showingNewDM = false
+    @State private var showingFindPeople = false
 
     private var chatEligibleLeagues: [LeagueSummary] {
         app.leagueSummaries.filter { !$0.isTest }
@@ -47,6 +48,14 @@ struct ChatView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
+                        showingFindPeople = true
+                    } label: {
+                        Image(systemName: "person.crop.circle.badge.plus")
+                            .foregroundStyle(FFColor.textPrimary)
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
                         showingNewDM = true
                     } label: {
                         Image(systemName: "square.and.pencil")
@@ -73,6 +82,12 @@ struct ChatView: View {
                 NewDMPickerSheet { otherUserID in
                     showingNewDM = false
                     Task { await openDM(with: otherUserID) }
+                }
+            }
+            .sheet(isPresented: $showingFindPeople) {
+                FindPeopleSheet { userID in
+                    showingFindPeople = false
+                    path.append(ChatRoute.profile(userID))
                 }
             }
         }
@@ -421,6 +436,194 @@ private struct FriendPickerRow: View {
         }
         .ffCard()
         .task(id: userID) { profile = await app.profile(userID: userID) }
+    }
+}
+
+// MARK: - Find people sheet
+
+// Username search across every profile in the system. Tap a result to open
+// that user's ProfileView, where the Add Friend / Message actions live.
+// Search is debounced (~250ms) and excludes the signed-in user.
+private struct FindPeopleSheet: View {
+    @Environment(AppState.self) private var app
+    @Environment(\.dismiss) private var dismiss
+    let onPick: (String) -> Void
+
+    @State private var query: String = ""
+    @State private var results: [Profile] = []
+    @State private var searchTask: Task<Void, Never>? = nil
+    @State private var isSearching: Bool = false
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                FFColor.bg.ignoresSafeArea()
+                VStack(spacing: FFSpace.l) {
+                    searchField
+                    content
+                }
+                .padding(FFSpace.l)
+            }
+            .navigationTitle("Find people")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(FFColor.bg, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(FFColor.accent)
+                }
+            }
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: FFSpace.s) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(FFColor.textTertiary)
+            TextField("", text: $query, prompt:
+                Text("Search by username").foregroundColor(FFColor.textTertiary)
+            )
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .font(.ffBody)
+            .foregroundStyle(FFColor.textPrimary)
+            .onChange(of: query) { _, new in scheduleSearch(new) }
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                    results = []
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, FFSpace.l)
+        .padding(.vertical, FFSpace.m)
+        .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+        .overlay(
+            RoundedRectangle(cornerRadius: FFRadius.m)
+                .strokeBorder(FFColor.border, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            hint
+        } else if isSearching && results.isEmpty {
+            ProgressView().tint(FFColor.accent).padding(.top, FFSpace.xl)
+            Spacer()
+        } else if results.isEmpty {
+            empty
+        } else {
+            ScrollView {
+                VStack(spacing: FFSpace.s) {
+                    ForEach(results) { p in
+                        Button {
+                            onPick(p.id)
+                        } label: {
+                            FindPeopleRow(profile: p)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private var hint: some View {
+        VStack(spacing: FFSpace.s) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(FFColor.textTertiary)
+            Text("Type a username to find anyone on Tarsa.")
+                .font(.ffCaption)
+                .foregroundStyle(FFColor.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, FFSpace.xxl)
+    }
+
+    private var empty: some View {
+        VStack(spacing: FFSpace.s) {
+            Image(systemName: "person.crop.circle.badge.questionmark")
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(FFColor.textTertiary)
+            Text("No matches.")
+                .font(.ffCaption)
+                .foregroundStyle(FFColor.textSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, FFSpace.xxl)
+    }
+
+    private func scheduleSearch(_ text: String) {
+        searchTask?.cancel()
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            results = []
+            isSearching = false
+            return
+        }
+        isSearching = true
+        searchTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if Task.isCancelled { return }
+            let found = await app.searchUsers(query: trimmed)
+            if Task.isCancelled { return }
+            results = found
+            isSearching = false
+        }
+    }
+}
+
+private struct FindPeopleRow: View {
+    @Environment(AppState.self) private var app
+    let profile: Profile
+
+    private var status: FriendshipStatus { app.friendshipStatus(otherUserID: profile.id) }
+
+    var body: some View {
+        HStack(spacing: FFSpace.m) {
+            ZStack {
+                Circle().fill(FFColor.surfaceElevated)
+                Text(profile.username.initialsFromName)
+                    .font(.ffCaption.bold())
+                    .foregroundStyle(FFColor.textSecondary)
+            }
+            .frame(width: 36, height: 36)
+            .overlay(Circle().strokeBorder(FFColor.border, lineWidth: 1))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(profile.username)
+                    .font(.ffHeadline)
+                    .foregroundStyle(FFColor.textPrimary)
+                if let label = statusLabel {
+                    Text(label)
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.textSecondary)
+                }
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(FFColor.textTertiary)
+        }
+        .ffCard()
+    }
+
+    private var statusLabel: String? {
+        switch status {
+        case .none:            return nil
+        case .friends:         return "Friends"
+        case .requestSent:     return "Request sent"
+        case .requestReceived: return "Wants to be friends"
+        }
     }
 }
 

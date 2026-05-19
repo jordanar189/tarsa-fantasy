@@ -1904,6 +1904,23 @@ actor RemoteService {
         return try? await fetchProfile(userID: uid)
     }
 
+    // Substring search over profiles.username (case-insensitive). Excludes
+    // the caller. No RLS gate on SELECT for profiles so this is a simple
+    // ilike. Returns at most `limit` rows.
+    func searchUsers(query: String, excludingUserID: String, limit: Int = 25) async -> [Profile] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let me = UUID(uuidString: excludingUserID) else { return [] }
+        struct Row: Decodable { let id: UUID; let username: String }
+        let rows: [Row] = (try? await client.from("profiles")
+            .select("id, username")
+            .ilike("username", pattern: "%\(trimmed)%")
+            .neq("id", value: me)
+            .order("username", ascending: true)
+            .limit(limit)
+            .execute().value) ?? []
+        return rows.map { Profile(id: $0.id.uuidString, username: $0.username) }
+    }
+
     // MARK: - Friendships
 
     private struct FriendshipRow: Decodable {

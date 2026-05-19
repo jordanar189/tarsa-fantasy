@@ -496,6 +496,14 @@ final class AppState {
         await remote.profile(userID: userID)
     }
 
+    // Username substring search, used by the Find People sheet. Excludes
+    // self automatically. View owns the result list — this is just a
+    // passthrough so the view never reaches into RemoteService directly.
+    func searchUsers(query: String, limit: Int = 25) async -> [Profile] {
+        guard let me = session?.userID else { return [] }
+        return await remote.searchUsers(query: query, excludingUserID: me, limit: limit)
+    }
+
     func reloadFriendsAndDMs() async {
         guard let session else {
             friendships = []
