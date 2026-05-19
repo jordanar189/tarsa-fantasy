@@ -10,15 +10,20 @@ struct ChatView: View {
     @State private var path = NavigationPath()
     @State private var showingNewDM = false
     @State private var showingFindPeople = false
+    @State private var filter: ChatFilter = .all
 
     private var chatEligibleLeagues: [LeagueSummary] {
         app.leagueSummaries.filter { !$0.isTest }
     }
 
-    private var conversations: [Conversation] {
+    private var allConversations: [Conversation] {
         let leagues = chatEligibleLeagues.map(Conversation.league)
         let dms = app.dmInbox.map(Conversation.dm)
         return (leagues + dms).sorted { $0.sortDate > $1.sortDate }
+    }
+
+    private var conversations: [Conversation] {
+        allConversations.filter(filter.includes)
     }
 
     private var pendingRequestsReceived: [Friendship] {
@@ -97,7 +102,7 @@ struct ChatView: View {
 
     @ViewBuilder
     private var content: some View {
-        if conversations.isEmpty && pendingRequestsReceived.isEmpty {
+        if allConversations.isEmpty && pendingRequestsReceived.isEmpty {
             empty
         } else {
             ScrollView {
@@ -105,13 +110,32 @@ struct ChatView: View {
                     if !pendingRequestsReceived.isEmpty {
                         requestsSection
                     }
-                    if !conversations.isEmpty {
+                    if !allConversations.isEmpty {
+                        ChatFilterPills(selection: $filter)
+                    }
+                    if conversations.isEmpty {
+                        filteredEmpty
+                    } else {
                         conversationsSection
                     }
                 }
                 .padding(FFSpace.l)
             }
         }
+    }
+
+    private var filteredEmpty: some View {
+        VStack(spacing: FFSpace.xs) {
+            Image(systemName: filter.emptyIcon)
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(FFColor.textTertiary)
+            Text(filter.emptyMessage)
+                .font(.ffCaption)
+                .foregroundStyle(FFColor.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, FFSpace.xxl)
     }
 
     private var empty: some View {
@@ -191,6 +215,84 @@ enum ChatRoute: Hashable {
     case league(LeagueSummary)
     case dm(DMInboxEntry)
     case profile(String)
+}
+
+// MARK: - Filter
+
+enum ChatFilter: String, CaseIterable, Identifiable, Hashable {
+    case all, dms, leagues
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all:      return "All"
+        case .dms:      return "Direct"
+        case .leagues:  return "Leagues"
+        }
+    }
+
+    func includes(_ conv: Conversation) -> Bool {
+        switch (self, conv) {
+        case (.all, _):             return true
+        case (.dms, .dm):           return true
+        case (.leagues, .league):   return true
+        default:                    return false
+        }
+    }
+
+    var emptyIcon: String {
+        switch self {
+        case .all:      return "bubble.left.and.bubble.right"
+        case .dms:      return "bubble.left"
+        case .leagues:  return "trophy"
+        }
+    }
+
+    var emptyMessage: String {
+        switch self {
+        case .all:      return "No conversations yet."
+        case .dms:      return "No direct messages yet. Tap the pencil to start one."
+        case .leagues:  return "No league chats yet. Join or create a league to start one."
+        }
+    }
+}
+
+private struct ChatFilterPills: View {
+    @Binding var selection: ChatFilter
+
+    var body: some View {
+        HStack(spacing: FFSpace.s) {
+            ForEach(ChatFilter.allCases) { f in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { selection = f }
+                } label: {
+                    Text(f.label.uppercased())
+                        .font(.ffMicro)
+                        .padding(.horizontal, FFSpace.m)
+                        .padding(.vertical, 6)
+                        .background(
+                            selection == f
+                                ? AnyShapeStyle(FFGradient.brandSoft)
+                                : AnyShapeStyle(Color.clear),
+                            in: Capsule()
+                        )
+                        .overlay(
+                            Capsule().strokeBorder(
+                                selection == f ? Color.clear : FFColor.border,
+                                lineWidth: 1
+                            )
+                        )
+                        .foregroundStyle(
+                            selection == f
+                                ? AnyShapeStyle(FFGradient.brand)
+                                : AnyShapeStyle(FFColor.textSecondary)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+    }
 }
 
 // MARK: - Rows
