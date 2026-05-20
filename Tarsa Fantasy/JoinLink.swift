@@ -4,12 +4,12 @@ import Foundation
 // bare code; the existing 6-char join code remains the payload (and the DB
 // lookup key), so manual entry still works as a fallback.
 //
-// Primary (shared) link is a universal link served from tarsa.com:
-//   https://tarsa.com/join/ABC123
+// Primary (shared) link is a universal link served from tarsa.net:
+//   https://tarsa.net/join/ABC123
 // The custom scheme is still registered and parsed as a secondary fallback:
 //   tarsafantasy://join/ABC123
 enum JoinLink {
-    static let webHost = "tarsa.com"
+    static let webHost = "tarsa.net"
     static let pathPrefix = "join"
     static let scheme = "tarsafantasy"
 
@@ -25,7 +25,7 @@ enum JoinLink {
     }
 
     /// Extracts a join code from an incoming link, or nil if the URL isn't
-    /// one of ours. Accepts the universal link (https://tarsa.com/join/CODE)
+    /// one of ours. Accepts the universal link (https://tarsa.net/join/CODE)
     /// and the custom scheme (tarsafantasy://join/CODE or ?code=CODE).
     static func code(from url: URL) -> String? {
         switch url.scheme?.lowercased() {
