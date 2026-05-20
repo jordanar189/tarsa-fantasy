@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tarsa Fantasy</title>
+  <meta name="theme-color" content="#0a0d1a" />
+  <meta name="robots" content="noindex" />
+  <style>
+    :root {
+      --bg: #0a0d1a;
+      --surface: #12172a;
+      --border: #232a3d;
+      --text: #e8eaf2;
+      --text-dim: #9aa3bd;
+      --cyan: #46e4ff;
+      --violet: #7e5cff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      display: flex;
+      min-height: 100vh;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .glow {
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(60% 50% at 50% 0%, rgba(126, 92, 255, 0.22), transparent 70%);
+      pointer-events: none;
+    }
+    .card {
+      position: relative;
+      width: 100%;
+      max-width: 420px;
+      text-align: center;
+    }
+    .mark {
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.26em;
+      text-transform: uppercase;
+      background: linear-gradient(120deg, var(--cyan), var(--violet));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      margin-bottom: 24px;
+    }
+    h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.01em; }
+    p { margin-top: 12px; color: var(--text-dim); line-height: 1.5; }
+    .code-box {
+      margin: 28px auto 0;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      border-radius: 16px;
+      padding: 20px;
+    }
+    .code-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+    .code {
+      margin-top: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 40px;
+      font-weight: 800;
+      letter-spacing: 0.18em;
+      background: linear-gradient(120deg, var(--cyan), var(--violet));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .btn {
+      display: block;
+      margin-top: 16px;
+      padding: 15px 20px;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: 700;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: linear-gradient(120deg, var(--cyan), var(--violet));
+      color: #0a0d1a;
+    }
+    .btn-secondary {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .hint { margin-top: 18px; font-size: 13px; color: var(--text-dim); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="glow"></div>
+  <div class="card">
+    <div class="mark">Tarsa Fantasy</div>
+
+    <!-- Shown for /join/CODE links when the app isn't installed -->
+    <div id="invite" hidden>
+      <h1>You're invited to a league</h1>
+      <p>Open this on your iPhone with Tarsa Fantasy installed and you'll jump straight in. Otherwise, get the app and enter the code below.</p>
+      <div class="code-box">
+        <div class="code-label">Invite code</div>
+        <div class="code" id="code">------</div>
+      </div>
+      <a class="btn btn-primary" id="getApp" href="#">Get Tarsa Fantasy</a>
+      <a class="btn btn-secondary" id="openApp" href="#">Open in app</a>
+      <p class="hint">Already have the app? Tap &ldquo;Open in app,&rdquo; or enter the code on the Join a league screen.</p>
+    </div>
+
+    <!-- Generic not-found -->
+    <div id="notfound" hidden>
+      <h1>Page not found</h1>
+      <p>That link doesn't lead anywhere. Head back to the home page.</p>
+      <a class="btn btn-secondary" href="/">Go home</a>
+    </div>
+  </div>
+
+  <script>
+    // TODO: set this to your TestFlight public link (or App Store URL once live).
+    var APP_LINK = "https://testflight.apple.com/";
+
+    (function () {
+      var match = (window.location.pathname || "").match(/^\/join\/([A-Za-z0-9]+)/);
+      if (match) {
+        var code = match[1].toUpperCase();
+        document.getElementById("code").textContent = code;
+        document.getElementById("openApp").href = "tarsafantasy://join/" + code;
+        document.getElementById("getApp").href = APP_LINK;
+        document.getElementById("invite").hidden = false;
+        document.title = "Join a league · Tarsa Fantasy";
+      } else {
+        document.getElementById("notfound").hidden = false;
+      }
+    })();
+  </script>
+</body>
+</html>
