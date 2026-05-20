@@ -1,0 +1,15 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["VQHSK86XP2.com.personal.Tarsa-Fantasy"],
+        "components": [
+          {
+            "/": "/join/*",
+            "comment": "League invite links open the Tarsa Fantasy app to the join flow."
+          }
+        ]
+      }
+    ]
+  }
+}
