@@ -1084,7 +1084,26 @@ enum Fantasy {
             }
 
             roundsOut.append(PlayoffRound(round: r, week: week, name: roundName(r), games: games))
-            entrants = next
+
+            // Re-seed the field for the next round when configured: the highest
+            // remaining seed faces the lowest. Only possible once every advancing
+            // team is known — while games are undecided we keep bracket order and
+            // the next round shows TBD placeholders (the bracket is recomputed as
+            // results come in). Round 1 pairings already match best-vs-worst, so
+            // re-seeding only diverges from round 2 onward.
+            if league.playoffReseed, next.count >= 2, next.allSatisfy({ $0.teamID != nil }) {
+                let ordered = next.sorted { ($0.seed ?? Int.max) < ($1.seed ?? Int.max) }
+                var reseeded: [Entrant] = []
+                var lo = 0, hi = ordered.count - 1
+                while lo < hi {
+                    reseeded.append(ordered[lo]); reseeded.append(ordered[hi])
+                    lo += 1; hi -= 1
+                }
+                if lo == hi { reseeded.append(ordered[lo]) }
+                entrants = reseeded
+            } else {
+                entrants = next
+            }
         }
 
         return PlayoffBracket(
