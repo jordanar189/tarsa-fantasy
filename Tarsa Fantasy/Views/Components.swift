@@ -392,13 +392,21 @@ struct LeagueSwitcherBar: View {
 
     var body: some View {
         if !app.leagueSummaries.isEmpty {
-            VStack(spacing: FFSpace.s) {
-                bubble
-                if expanded { dropdown }
-            }
-            .padding(.horizontal, FFSpace.l)
-            .padding(.top, FFSpace.s)
-            .animation(.easeInOut(duration: 0.18), value: expanded)
+            bubble
+                // Float the list over the content below instead of pushing it
+                // down: anchor the dropdown's top to the bubble's bottom.
+                .overlay(alignment: .bottom) {
+                    if expanded {
+                        dropdown
+                            .padding(.top, FFSpace.s)
+                            .alignmentGuide(.bottom) { $0[.top] }
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                }
+                .padding(.horizontal, FFSpace.l)
+                .padding(.top, FFSpace.s)
+                .zIndex(1)
+                .animation(.easeInOut(duration: 0.18), value: expanded)
         }
     }
 
@@ -443,7 +451,7 @@ struct LeagueSwitcherBar: View {
             RoundedRectangle(cornerRadius: FFRadius.m)
                 .strokeBorder(FFColor.border, lineWidth: 1)
         )
-        .transition(.move(edge: .top).combined(with: .opacity))
+        .shadow(color: .black.opacity(0.22), radius: 12, y: 4)
     }
 
     private func leagueRow(_ lg: LeagueSummary) -> some View {

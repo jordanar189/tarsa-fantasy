@@ -109,32 +109,39 @@ struct ContentView: View {
 }
 
 // The league-focused experience: NFL + League tabs with a Sleeper-style
-// pull-up league chat. Shown once a league is selected.
+// pull-up league chat that peeks above the tab bar.
 struct LeagueShellView: View {
     @Environment(AppState.self) private var app
     @State private var showingChat = false
 
+    // Standard iPhone tab-bar height; lifts the chat peek so it sits just
+    // above the tab bar instead of covering it.
+    private let tabBarHeight: CGFloat = 49
+
     var body: some View {
         @Bindable var app = app
-        TabView(selection: $app.tab) {
-            NFLHubView()
-                .tabItem { Label("NFL", systemImage: "football.fill") }
-                .tag(AppTab.nfl)
+        ZStack(alignment: .bottom) {
+            TabView(selection: $app.tab) {
+                NFLHubView()
+                    .tabItem { Label("NFL", systemImage: "football.fill") }
+                    .tag(AppTab.nfl)
 
-            LeagueTabView()
-                .tabItem { Label("League", systemImage: "trophy.fill") }
-                .tag(AppTab.league)
-        }
-        // Sleeper-style pull-up league chat handle, sitting just above the tab
-        // bar on every tab.
-        .safeAreaInset(edge: .bottom) {
-            LeagueChatHandle { showingChat = true }
+                LeagueTabView()
+                    .tabItem { Label("League", systemImage: "trophy.fill") }
+                    .tag(AppTab.league)
+            }
+            LeagueChatPeek { showingChat = true }
+                .padding(.bottom, tabBarHeight)
         }
         .sheet(isPresented: $showingChat) {
             if let lg = app.selectedLeague {
-                NavigationStack { LeagueChatView(league: lg) }
-                    .presentationDetents([.large, .medium])
-                    .presentationDragIndicator(.visible)
+                VStack(spacing: 0) {
+                    LeagueChatTopBar(onClose: { showingChat = false })
+                    Divider().background(FFColor.border)
+                    LeagueChatView(league: lg)
+                }
+                .presentationDetents([.large])
+                .presentationDragIndicator(.hidden)
             }
         }
     }
@@ -156,37 +163,70 @@ struct LeagueTabView: View {
     }
 }
 
-// The pull-up handle that opens league chat — a thin bar above the tab bar.
-// Tap or swipe up to open. Uses tap + drag gestures (not a Button) so the
-// upward-swipe gesture and the tap coexist cleanly.
-struct LeagueChatHandle: View {
-    let open: () -> Void
+// The shared "top of the chat page": a grabber + title row. Used both as the
+// peek (above the tab bar) and as the header of the expanded chat sheet, so
+// pulling the peek up reads as the same page rising. `onClose` is nil for the
+// peek and set for the sheet (collapse button).
+struct LeagueChatTopBar: View {
+    var onClose: (() -> Void)? = nil
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "chevron.compact.up")
-                .font(.system(size: 15, weight: .bold))
-            Image(systemName: "bubble.left.and.bubble.right.fill")
-                .font(.system(size: 12, weight: .semibold))
-            Text("League chat")
-                .font(.ffMicro)
-                .tracking(0.6)
-        }
-        .foregroundStyle(FFColor.textSecondary)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .top) {
-            Rectangle().fill(FFColor.border).frame(height: 0.5)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { open() }
-        .gesture(
-            DragGesture(minimumDistance: 12)
-                .onEnded { value in
-                    if value.translation.height < -24 { open() }
+        VStack(spacing: 8) {
+            Capsule()
+                .fill(FFColor.borderStrong)
+                .frame(width: 38, height: 5)
+                .padding(.top, 8)
+            HStack(spacing: FFSpace.s) {
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(FFColor.accent)
+                Text("League chat")
+                    .font(.ffHeadline)
+                    .foregroundStyle(FFColor.textPrimary)
+                Spacer()
+                if let onClose {
+                    Button(action: onClose) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(FFColor.textTertiary)
+                    }
+                    .buttonStyle(.plain)
                 }
+            }
+            .padding(.horizontal, FFSpace.l)
+            .padding(.bottom, 10)
+        }
+        .frame(maxWidth: .infinity)
+        .background(FFColor.surface)
+    }
+}
+
+// The peek shown above the tab bar — the top of the chat page poking up over
+// the bottom. Looks identical to the expanded sheet's header. Tap or swipe up
+// to open the full chat.
+struct LeagueChatPeek: View {
+    let open: () -> Void
+
+    private var topCorners: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: 16, bottomLeadingRadius: 0,
+            bottomTrailingRadius: 0, topTrailingRadius: 16
         )
+    }
+
+    var body: some View {
+        LeagueChatTopBar()
+            .clipShape(topCorners)
+            .overlay(topCorners.strokeBorder(FFColor.border, lineWidth: 1))
+            .shadow(color: .black.opacity(0.25), radius: 10, y: -3)
+            .contentShape(Rectangle())
+            .onTapGesture { open() }
+            .gesture(
+                DragGesture(minimumDistance: 10)
+                    .onEnded { value in
+                        if value.translation.height < -20 { open() }
+                    }
+            )
     }
 }
 
