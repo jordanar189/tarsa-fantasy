@@ -3,11 +3,16 @@
 // Body (all optional):
 //   { "seasons": [2023, 2024, 2025] }       // explicit list
 //   { "from": 2023 }                         // from this year through current
-//   {}                                       // default: current year + previous
+//   {}                                       // default: previous + current + next
 //
 // Reads stats_player_week_{year}.csv from the new "stats_player" release tag
-// (nflverse renamed from "player_stats" in 2025). Also pulls rosters_{year}.csv
-// to populate espn_id for ESPN live-score cross-referencing.
+// (nflverse renamed from "player_stats" in 2025). Also pulls roster_{year}.csv
+// to populate espn_id for ESPN live-score cross-referencing + player bio.
+//
+// When a season's stats CSV 404s (off-season / pre-Week 1, e.g. the upcoming
+// year), it falls back to a roster-only refresh: players_cache is updated from
+// roster_{year}.csv so teams/rookies are ready for off-season drafts, with no
+// player_games or `seasons` row written.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
@@ -81,15 +86,21 @@ function pickSeasons(body: { seasons?: number[]; from?: number }): number[] {
         for (let y = body.from; y <= currentSeason; y++) out.push(y);
         return out;
     }
-    // Default: current season + the one before it (re-sync recent in case of corrections)
-    return [currentSeason - 1, currentSeason];
+    // Default: previous + current (re-sync recent in case of stat corrections)
+    // plus the upcoming season. The upcoming year has no weekly stats CSV until
+    // games are played; syncSeason falls back to a roster-only refresh so player
+    // teams and incoming rookies are ready for off-season drafts.
+    return [currentSeason - 1, currentSeason, currentSeason + 1];
 }
 
 async function syncSeason(year: number): Promise<unknown> {
     const url = STATS_URL_TEMPLATE.replace("{YEAR}", String(year));
     const resp = await fetch(url);
     if (resp.status === 404) {
-        return { skipped: "not_published_yet" };
+        // No weekly stats yet (off-season / pre-Week 1). Still refresh the
+        // roster so player teams reflect the upcoming season and rookies/free
+        // agents appear for draft prep. Best-effort: skips if rosters 404 too.
+        return await syncRostersOnly(year);
     }
     if (!resp.ok) {
         return { error: `stats HTTP ${resp.status}` };
@@ -133,8 +144,67 @@ async function syncSeason(year: number): Promise<unknown> {
     return { players: playerRows.length, games: gameRows.length };
 }
 
+// Off-season fallback: no weekly stats CSV yet, so refresh players_cache from
+// the rosters CSV alone. Updates each player's team to the upcoming season and
+// surfaces rookies / free-agent moves for draft prep. Writes no player_games
+// and no `seasons` row — season availability is driven by the schedule, and a
+// stats-less season must not look like it has stats. Skips cleanly if the
+// rosters CSV isn't published yet either.
+async function syncRostersOnly(year: number): Promise<unknown> {
+    const players = await fetchRosterPlayers(year);
+    if (players.length === 0) return { skipped: "not_published_yet" };
+    await upsertChunks("players_cache", players, 500, "id");
+    return { rosters_only: players.length };
+}
+
+async function fetchRosterPlayers(year: number): Promise<PlayerRow[]> {
+    const map = await fetchRosterMap(year);
+    const out: PlayerRow[] = [];
+    for (const [gsis, r] of map) {
+        if (!r.name || !r.position) continue;   // need at least identity + position
+        out.push({
+            id: gsis,
+            espn_id: r.espn_id ?? null,
+            name: r.name,
+            position: r.position,
+            position_group: positionGroup(r.position),
+            team: r.team ?? "",
+            headshot_url: r.headshot_url ?? "",
+            birth_date:    r.birth_date    ?? null,
+            height_in:     r.height_in     ?? null,
+            weight_lb:     r.weight_lb     ?? null,
+            college:       r.college       ?? null,
+            jersey_number: r.jersey_number ?? null,
+            draft_year:    r.draft_year    ?? null,
+            draft_round:   r.draft_round   ?? null,
+            draft_pick:    r.draft_pick    ?? null,
+            years_exp:     r.years_exp     ?? null,
+            status:        r.status        ?? null,
+        });
+    }
+    return out;
+}
+
+// Rosters CSV has no position_group column; derive a reasonable one. Display
+// only and overwritten with the authoritative value once the stats sync runs.
+function positionGroup(pos: string): string {
+    const p = pos.toUpperCase();
+    if (p === "QB") return "QB";
+    if (p === "RB" || p === "FB" || p === "HB") return "RB";
+    if (p === "WR") return "WR";
+    if (p === "TE") return "TE";
+    if (p === "K" || p === "PK") return "K";
+    return p;
+}
+
 interface RosterFields {
     espn_id?: string;
+    // Identity fields — only consumed by the roster-only sync path. The weekly
+    // stats path ignores these (it takes name/position/team from the stats CSV).
+    name?: string;
+    position?: string;
+    team?: string;
+    headshot_url?: string;
     birth_date?: string;
     height_in?: number;
     weight_lb?: number;
@@ -158,6 +228,10 @@ async function fetchRosterMap(year: number): Promise<Map<string, RosterFields>> 
     const ix = {
         gsis:       header.indexOf("gsis_id"),
         espn:       header.indexOf("espn_id"),
+        name:       header.indexOf("full_name") >= 0 ? header.indexOf("full_name") : header.indexOf("player_name"),
+        position:   header.indexOf("position"),
+        team:       header.indexOf("team"),
+        headshot:   header.indexOf("headshot_url"),
         birth:      header.indexOf("birth_date"),
         height:     header.indexOf("height"),
         weight:     header.indexOf("weight"),
@@ -177,6 +251,15 @@ async function fetchRosterMap(year: number): Promise<Map<string, RosterFields>> 
         const fields: RosterFields = {};
         const espn = ix.espn >= 0 ? r[ix.espn]?.trim() : "";
         if (espn && espn !== "NA") fields.espn_id = espn;
+
+        const name = ix.name >= 0 ? r[ix.name]?.trim() : "";
+        if (name && name !== "NA") fields.name = name;
+        const position = ix.position >= 0 ? r[ix.position]?.trim() : "";
+        if (position && position !== "NA") fields.position = position;
+        const team = ix.team >= 0 ? r[ix.team]?.trim() : "";
+        if (team && team !== "NA") fields.team = team;
+        const headshot = ix.headshot >= 0 ? r[ix.headshot]?.trim() : "";
+        if (headshot && headshot !== "NA") fields.headshot_url = headshot;
 
         const birth = ix.birth >= 0 ? r[ix.birth]?.trim() : "";
         if (birth && birth !== "NA") fields.birth_date = birth;

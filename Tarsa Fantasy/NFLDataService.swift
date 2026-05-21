@@ -44,7 +44,12 @@ actor NFLDataService {
         if let cached = seasonsCache { return cached }
         do {
             struct Row: Decodable { let season: Int }
-            let rows: [Row] = try await client.from("seasons")
+            // `available_seasons` is a view: the union of seasons that have
+            // player stats (the `seasons` table) and seasons that only have a
+            // schedule so far (distinct seasons in `nfl_schedules`). The latter
+            // surfaces an upcoming season for draft/league setup the moment its
+            // schedule is synced, before any games are played.
+            let rows: [Row] = try await client.from("available_seasons")
                 .select("season")
                 .order("season", ascending: false)
                 .execute().value

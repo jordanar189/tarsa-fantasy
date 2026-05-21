@@ -13,10 +13,17 @@ supabase/
     20260516000100_cron.sql           # pg_cron schedules + edge function helper
     20260516000200_plays.sql          # plays table (slim PBP, ~35 cols)
   functions/
-    sync_nflverse/index.ts            # daily: mirror stats_player CSVs
+    sync_nflverse/index.ts            # daily: mirror stats_player CSVs (roster-only fallback off-season)
     sync_espn_live/index.ts           # per-minute: live in-game scoring
     sync_pbp/index.ts                 # daily: mirror play-by-play (streamed gz)
+    sync_schedules/index.ts           # daily: mirror nflverse master schedule CSV
+    sync_schedules_espn/index.ts      # daily: mirror upcoming-season schedule from ESPN (earliest source)
 ```
+
+The app's season picker reads the `available_seasons` view (union of the
+`seasons` table and distinct seasons in `nfl_schedules`), so an upcoming season
+becomes selectable for league/draft setup as soon as its schedule is synced —
+before any games are played.
 
 ## One-time setup
 
@@ -68,6 +75,8 @@ Treat it like a password — only ever lives in Supabase vault and edge function
 supabase functions deploy sync_nflverse
 supabase functions deploy sync_espn_live
 supabase functions deploy sync_pbp
+supabase functions deploy sync_schedules
+supabase functions deploy sync_schedules_espn
 ```
 
 Both functions read `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from the
@@ -136,9 +145,17 @@ PBP per season ~75 MB on disk including indexes. Free tier (500 MB) fits
 After step 5, the cron in `20260516000100_cron.sql` runs automatically:
 
 - **`sync_nflverse_daily`** — every day at 09:00 UTC. Pulls
-  `stats_player_week_{year}.csv` from nflverse for the current season +
-  prior season; upserts to `players_cache` and `player_games`; updates
-  `seasons.last_synced_at`.
+  `stats_player_week_{year}.csv` from nflverse for the prior, current, and
+  upcoming season; upserts to `players_cache` and `player_games`; updates
+  `seasons.last_synced_at`. For the upcoming season (no stats CSV yet) it
+  falls back to a roster-only refresh of `players_cache` so teams/rookies
+  are ready for off-season drafts.
+- **`sync_schedules_espn_daily`** — every day at 09:20 UTC. Mirrors the
+  upcoming (and current) season's regular-season matchups from ESPN into
+  `nfl_schedules`, using nflverse-style `game_id`s so rows merge with
+  `sync_schedules`. ESPN publishes the schedule the moment the NFL releases
+  it, so this surfaces a new season for draft setup ahead of the nflverse
+  CSV. No-ops until ESPN has published the target season.
 - **`sync_espn_live_minute`** — every minute. No-op when no NFL games are
   in progress. When games are live, hits ESPN scoreboard + per-game box
   scores, cross-references ESPN athlete IDs to nflverse player IDs via
