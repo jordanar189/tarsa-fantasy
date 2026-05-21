@@ -1,10 +1,13 @@
 import SwiftUI
 
-struct LeaguesView: View {
+// The app's home base when no league is in focus: pick, create, or join a
+// league, and reach direct messages. Selecting a league hands off to the
+// league-centric tab shell.
+struct LeagueOverviewView: View {
     @Environment(AppState.self) private var app
     @State private var showingCreate = false
+    @State private var showingMessages = false
     @State private var joinSheet: JoinSheet? = nil
-    @State private var navPath = NavigationPath()
 
     // Drives the join sheet. `code` is non-nil when opened from an invite
     // link (pre-filled + auto-looked-up); nil for manual entry.
@@ -14,7 +17,7 @@ struct LeaguesView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $navPath) {
+        NavigationStack {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
                 if app.leagueSummaries.isEmpty {
@@ -22,18 +25,25 @@ struct LeaguesView: View {
                 }
                 content
             }
-            .navigationTitle("Leagues")
+            .navigationTitle("Your leagues")
             .toolbarBackground(FFColor.bg, for: .navigationBar)
             .toolbar {
-                SeasonPickerToolbar()
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showingMessages = true
+                    } label: {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .foregroundStyle(FFColor.textPrimary)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) { ProfileMenu() }
             }
-            .navigationDestination(for: String.self) { id in
-                LeagueDetailView(leagueID: id)
-            }
             .sheet(isPresented: $showingCreate) { CreateLeagueView() }
+            .sheet(isPresented: $showingMessages) { ChatView() }
             .sheet(item: $joinSheet) { sheet in
-                JoinLeagueView(initialCode: sheet.code) { id in navPath.append(id) }
+                JoinLeagueView(initialCode: sheet.code) { id in
+                    Task { await app.selectLeague(id) }
+                }
             }
             .task { await app.reloadLeagues() }
             .onAppear { consumePendingJoin() }
@@ -103,7 +113,9 @@ struct LeaguesView: View {
                 .padding(.top, FFSpace.s)
 
                 ForEach(app.leagueSummaries) { lg in
-                    NavigationLink(value: lg.id) {
+                    Button {
+                        Task { await app.selectLeague(lg.id) }
+                    } label: {
                         LeagueListRow(summary: lg)
                     }
                     .buttonStyle(.plain)

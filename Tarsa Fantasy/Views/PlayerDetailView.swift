@@ -32,6 +32,7 @@ struct PlayerDetailView: View {
     @State private var teamTargets: [String: [Int: Double]] = [:]
     @State private var teamTDs: [String: [Int: Double]] = [:]
     @State private var projection: PlayerProjection? = nil
+    @State private var nicknameHistory: [NicknameHistoryEntry] = []
 
     private var player: Player? { app.displaySelectedPlayers()[playerID] }
     private var isProjected: Bool { app.isProjectedSeason(app.selectedSeason) }
@@ -47,7 +48,6 @@ struct PlayerDetailView: View {
                             if let injury = app.injuries[player.id] {
                                 injuryCard(injury)
                             }
-                            scoringPicker
                             sectionPicker
                             switch section {
                             case .overview: overviewSection(for: player)
@@ -74,12 +74,15 @@ struct PlayerDetailView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .principal) { LeagueSwitcher() }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .foregroundStyle(FFColor.accent)
                 }
             }
             .task(id: playerID) {
+                // Stats inherit the selected league's scoring.
+                scoring = app.activeScoring
                 await app.ensureProjectedSnapshot(season: app.selectedSeason)
                 schedules = await app.schedules(season: app.selectedSeason)
                 snapCounts = await app.snapCounts(season: app.selectedSeason)
@@ -98,7 +101,9 @@ struct PlayerDetailView: View {
                 projection = await app.liveProjection(
                     playerID: playerID, season: app.selectedSeason, scoring: scoring
                 )
+                nicknameHistory = await app.playerNicknameHistory(playerID: playerID)
             }
+            .onChange(of: app.activeScoring) { _, new in scoring = new }
             .onChange(of: scoring) { _, _ in
                 rankByID = Fantasy.positionRanks(
                     players: app.displaySelectedPlayers(), scoring: scoring
@@ -358,35 +363,6 @@ struct PlayerDetailView: View {
         )
     }
 
-    // MARK: - Scoring picker (kept from prior version)
-
-    private var scoringPicker: some View {
-        HStack(spacing: FFSpace.s) {
-            ForEach(Scoring.allCases) { s in
-                Button {
-                    scoring = s
-                } label: {
-                    Text(s.label.uppercased())
-                        .font(.ffMicro).tracking(0.8)
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                        .background(
-                            scoring == s ? FFColor.accentSoft : Color.clear,
-                            in: Capsule()
-                        )
-                        .overlay(
-                            Capsule().strokeBorder(
-                                scoring == s ? FFColor.accent : FFColor.border,
-                                lineWidth: 1
-                            )
-                        )
-                        .foregroundStyle(scoring == s ? FFColor.accent : FFColor.textSecondary)
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer()
-        }
-    }
-
     // MARK: - Section picker
 
     private var sectionPicker: some View {
@@ -423,6 +399,7 @@ struct PlayerDetailView: View {
         VStack(alignment: .leading, spacing: FFSpace.l) {
             totalsCard(for: p)
             if let card = ranksCard(for: p) { card }
+            if !nicknameHistory.isEmpty { nicknameHistoryCard }
             if !p.games.isEmpty {
                 VStack(alignment: .leading, spacing: FFSpace.s) {
                     Text("WEEKLY POINTS").ffEyebrow().padding(.leading, FFSpace.s)
@@ -446,6 +423,50 @@ struct PlayerDetailView: View {
                 }
                 bestWorstCard(for: p)
             }
+        }
+    }
+
+    // Every nickname this player has been given by a fantasy team, active or
+    // archived (dropped). Active ones are tinted; archived show when they were
+    // retired so the history reads as a timeline.
+    private var nicknameHistoryCard: some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            Text("NICKNAMES").ffEyebrow().padding(.leading, FFSpace.s)
+            VStack(spacing: 0) {
+                ForEach(nicknameHistory) { entry in
+                    HStack(spacing: FFSpace.m) {
+                        Image(systemName: entry.isActive ? "quote.bubble.fill" : "quote.bubble")
+                            .font(.system(size: 15))
+                            .foregroundStyle(entry.isActive ? FFColor.accent : FFColor.textTertiary)
+                            .frame(width: 22)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("“\(entry.nickname)”")
+                                .font(.ffBody)
+                                .foregroundStyle(entry.isActive ? FFColor.textPrimary : FFColor.textSecondary)
+                                .lineLimit(1)
+                            Text("\(entry.teamName) · \(entry.leagueName)")
+                                .font(.ffMicro)
+                                .foregroundStyle(FFColor.textTertiary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        if entry.isActive {
+                            Text("ACTIVE").ffEyebrow(color: FFColor.accent)
+                        } else if let cleared = entry.clearedAt {
+                            Text("Dropped \(cleared.formatted(.dateTime.month(.abbreviated).day()))")
+                                .font(.ffMicro)
+                                .foregroundStyle(FFColor.textTertiary)
+                        }
+                    }
+                    .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.m)
+                    .ffHairlineBottom()
+                }
+            }
+            .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+            .overlay(
+                RoundedRectangle(cornerRadius: FFRadius.m)
+                    .strokeBorder(FFColor.border, lineWidth: 1)
+            )
         }
     }
 

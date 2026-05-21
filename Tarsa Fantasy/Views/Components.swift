@@ -41,6 +41,79 @@ struct PlayerAvatar: View {
     }
 }
 
+// MARK: - Team crest
+
+// A fantasy team's crest: the uploaded logo when present, otherwise a designed
+// generic default mark tinted by the team's accent color. Used everywhere a
+// team is shown compactly (standings, scoreboard, bracket, roster popups) so
+// teams without a custom logo still read as branded rather than blank.
+struct TeamCrestView: View {
+    let logoURL: String?
+    let colorHex: String?
+    var size: CGFloat = 28
+
+    init(team: FantasyTeam, size: CGFloat = 28) {
+        self.logoURL = team.logoURL
+        self.colorHex = team.colorHex
+        self.size = size
+    }
+
+    init(logoURL: String?, colorHex: String?, size: CGFloat = 28) {
+        self.logoURL = logoURL
+        self.colorHex = colorHex
+        self.size = size
+    }
+
+    private var accent: Color {
+        colorHex.flatMap { Color(hexString: $0) } ?? FFColor.accent
+    }
+
+    var body: some View {
+        Group {
+            if let logoURL, let url = URL(string: logoURL) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let img): img.resizable().scaledToFill()
+                    default: DefaultTeamCrest(accent: accent, size: size)
+                    }
+                }
+                .frame(width: size, height: size)
+                .clipShape(Circle())
+                .overlay(Circle().strokeBorder(accent.opacity(0.5),
+                                               lineWidth: max(1, size * 0.045)))
+            } else {
+                DefaultTeamCrest(accent: accent, size: size)
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+// The generic fallback logo for teams that haven't uploaded one. A football
+// glyph on an accent-tinted disc with a ring — intentional-looking, and it
+// picks up the team's accent color so two unset teams still look distinct.
+struct DefaultTeamCrest: View {
+    let accent: Color
+    var size: CGFloat = 28
+
+    var body: some View {
+        ZStack {
+            Circle().fill(
+                LinearGradient(
+                    colors: [accent.opacity(0.34), accent.opacity(0.12)],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+            )
+            Circle().strokeBorder(accent.opacity(0.55), lineWidth: max(1, size * 0.05))
+            Image(systemName: "football.fill")
+                .font(.system(size: size * 0.46, weight: .semibold))
+                .foregroundStyle(accent)
+                .rotationEffect(.degrees(-35))
+        }
+        .frame(width: size, height: size)
+    }
+}
+
 // MARK: - Prefetch helpers
 
 // Tiny convenience around Nuke's ImagePrefetcher: feed it the URLs from a
@@ -306,6 +379,52 @@ struct CommissionerBadge: View {
         .padding(.horizontal, compact ? 6 : 8).padding(.vertical, 4)
         .background(FFGradient.brand, in: Capsule())
         .foregroundStyle(.white)
+    }
+}
+
+// Title-position dropdown for switching the focused league from "most parts
+// of the app" (NFL tab, League tab, player detail). Switching updates the
+// surrounding league-specific numbers in place; "All leagues" returns to the
+// overview. Renders nothing until leagues exist.
+struct LeagueSwitcher: View {
+    @Environment(AppState.self) private var app
+
+    var body: some View {
+        if app.leagueSummaries.isEmpty {
+            EmptyView()
+        } else {
+            Menu {
+                ForEach(app.leagueSummaries) { lg in
+                    Button {
+                        guard lg.id != app.selectedLeagueID else { return }
+                        Task { await app.selectLeague(lg.id) }
+                    } label: {
+                        if lg.id == app.selectedLeagueID {
+                            Label(lg.name, systemImage: "checkmark")
+                        } else {
+                            Text(lg.name)
+                        }
+                    }
+                }
+                Divider()
+                Button {
+                    Task { await app.selectLeague(nil) }
+                } label: {
+                    Label("All leagues", systemImage: "square.grid.2x2")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(app.selectedLeague?.name ?? "Select league")
+                        .font(.ffHeadline)
+                        .foregroundStyle(FFColor.textPrimary)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                .frame(maxWidth: 220)
+            }
+        }
     }
 }
 

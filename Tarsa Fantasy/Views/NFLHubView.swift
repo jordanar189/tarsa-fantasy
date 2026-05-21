@@ -39,9 +39,12 @@ struct NFLHubView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .navigationTitle("NFL")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
-            .toolbar { SeasonPickerToolbar() }
+            .toolbar {
+                ToolbarItem(placement: .principal) { LeagueSwitcher() }
+                SeasonPickerToolbar()
+            }
             .sheet(item: $selectedPlayerID.asIdentifiable) { id in
                 PlayerDetailView(playerID: id.id)
                     .presentationDetents([.large])

@@ -133,32 +133,17 @@ struct TeamRosterSheet: View {
         .prefetchAvatars(urls: team.roster.compactMap { players[$0]?.headshotURL })
     }
 
-    // Team crest: uploaded logo if present, otherwise initials on the team's
-    // accent color.
+    // Team crest: uploaded logo if present, otherwise the designed default mark
+    // tinted by the team's accent color.
     private var teamCrest: some View {
-        let accent = team.colorHex.flatMap { Color(hexString: $0) } ?? FFColor.accent
-        return ZStack {
-            Circle().fill(accent.opacity(0.18))
-            if let logo = team.logoURL, let url = URL(string: logo) {
-                AsyncImage(url: url) { img in
-                    img.resizable().scaledToFill()
-                } placeholder: {
-                    Text(team.name.initialsFromName).font(.ffCaption.bold()).foregroundStyle(accent)
-                }
-                .frame(width: 28, height: 28)
-                .clipShape(Circle())
-            } else {
-                Text(team.name.initialsFromName).font(.ffCaption.bold()).foregroundStyle(accent)
-            }
-        }
-        .frame(width: 28, height: 28)
-        .overlay(Circle().strokeBorder(accent.opacity(0.4), lineWidth: 1))
+        TeamCrestView(team: team, size: 28)
     }
 
     private func lineupRow(slot: LineupSlot, playerID: String,
                            players: [String: Player]) -> some View {
         let player = playerID.isEmpty ? nil : players[playerID]
         let summary = player.map { Fantasy.summary($0, scoring: league.scoring) }
+        let nickname = app.nickname(teamID: team.id, playerID: playerID)
         return HStack(spacing: FFSpace.m) {
             Text(slot.label)
                 .font(.ffMicro)
@@ -167,8 +152,13 @@ struct TeamRosterSheet: View {
             if let summary, let player {
                 PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 32)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(summary.name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                    Text(nickname ?? summary.name)
+                        .font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                     HStack(spacing: 6) {
+                        if nickname != nil {
+                            Text(summary.name)
+                                .font(.ffMicro).foregroundStyle(FFColor.textTertiary).lineLimit(1)
+                        }
                         PositionPill(position: summary.position)
                         Text(summary.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
                     }

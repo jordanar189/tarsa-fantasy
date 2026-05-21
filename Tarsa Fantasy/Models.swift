@@ -1,6 +1,6 @@
 import Foundation
 
-enum AppTab: String, Hashable { case chat, nfl, leagues }
+enum AppTab: String, Hashable { case nfl, league }
 
 // Persisted UI theme. `system` follows the device setting; `light`/`dark`
 // force the app into that scheme regardless of the device. Default is
@@ -387,6 +387,20 @@ struct PlayerSummary: Identifiable, Hashable {
     let pointsPerGame: Double
 }
 
+// One entry in a player's nickname history — the nickname a fantasy team gave
+// them, the team/league it came from, and whether it's still active (the
+// player is still on that roster) or was archived when they were dropped.
+struct NicknameHistoryEntry: Identifiable, Hashable, Sendable {
+    let nickname: String
+    let teamName: String
+    let leagueName: String
+    let createdAt: Date
+    let clearedAt: Date?
+
+    var isActive: Bool { clearedAt == nil }
+    var id: String { "\(teamName)|\(nickname)|\(createdAt.timeIntervalSince1970)" }
+}
+
 struct SeasonTotals: Hashable {
     var gamesPlayed: Int = 0
     var completions: Double = 0
@@ -469,23 +483,27 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
     // divisions configured.
     var division: Int?
     // Team branding. logoURL points at an uploaded image; colorHex is a
-    // "#RRGGBB" accent used for the team's chrome. Both nil = use defaults.
+    // "#RRGGBB" accent used for the team's chrome. abbreviation is a short
+    // (≤4 char) tag for compact contexts. All nil = use defaults.
     var logoURL: String?
     var colorHex: String?
+    var abbreviation: String?
 
     init(id: String, name: String, roster: [String] = [],
          starters: [String] = [], ownerID: String? = nil,
          ir: [String] = [], weeklyLineups: [Int: [String]] = [:],
          division: Int? = nil,
-         logoURL: String? = nil, colorHex: String? = nil) {
+         logoURL: String? = nil, colorHex: String? = nil,
+         abbreviation: String? = nil) {
         self.id = id; self.name = name; self.roster = roster
         self.starters = starters; self.ownerID = ownerID
         self.ir = ir; self.weeklyLineups = weeklyLineups; self.division = division
         self.logoURL = logoURL; self.colorHex = colorHex
+        self.abbreviation = abbreviation
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ownerID, ir, weeklyLineups, division, logoURL, colorHex
+        case id, name, roster, starters, ownerID, ir, weeklyLineups, division, logoURL, colorHex, abbreviation
     }
 
     init(from decoder: Decoder) throws {
@@ -500,7 +518,19 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
         division = try c.decodeIfPresent(Int.self, forKey: .division)
         logoURL  = try c.decodeIfPresent(String.self, forKey: .logoURL)
         colorHex = try c.decodeIfPresent(String.self, forKey: .colorHex)
+        abbreviation = try c.decodeIfPresent(String.self, forKey: .abbreviation)
     }
+
+    // The short tag for compact contexts (scoreboard, bracket), or nil when
+    // the owner hasn't set one. Trimmed; empty is treated as unset.
+    var displayAbbreviation: String? {
+        guard let a = abbreviation?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !a.isEmpty else { return nil }
+        return a
+    }
+
+    // What to show in tight spaces: the abbreviation if set, else the name.
+    var shortLabel: String { displayAbbreviation ?? name }
 }
 
 struct ScheduleWeek: Codable, Hashable, Identifiable {

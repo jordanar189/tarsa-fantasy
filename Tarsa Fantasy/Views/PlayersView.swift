@@ -7,25 +7,72 @@ struct PlayersBrowser: View {
     @Binding var selectedPlayerID: String?
     @State private var query: String = ""
     @State private var position: Position = .all
+    @State private var availability: Availability = .all
     @State private var matchupMap: [String: (rating: MatchupRating, opponent: String, isHome: Bool)] = [:]
     @State private var comparing: Bool = false
     @State private var compareSelection: Set<String> = []
     @State private var showingCompareSheet: Bool = false
+    // Recently-dropped players in the selected league, so the claim action
+    // knows whether an add is instant (free agent) or a waiver claim.
+    @State private var dropped: [DroppedPlayer] = []
+    @State private var claimTarget: ClaimTarget? = nil
+
+    enum Availability: String, CaseIterable, Identifiable, Hashable {
+        case all = "All", available = "Available"
+        var id: String { rawValue }
+    }
+
+    struct ClaimTarget: Identifiable {
+        let team: FantasyTeam
+        let addPlayer: PlayerSummary
+        let isOnWaivers: Bool
+        let waiverUntil: Date?
+        var id: String { addPlayer.id }
+    }
+
+    // Player IDs already on some roster in the selected league.
+    private var rosteredIDs: Set<String> {
+        guard let lg = app.selectedLeague else { return [] }
+        return Set(lg.teams.flatMap { $0.roster })
+    }
+
+    // The team the signed-in user controls in the selected league (the sim's
+    // primary team when every team is creator-owned).
+    private var myTeam: FantasyTeam? {
+        guard let lg = app.selectedLeague else { return nil }
+        if lg.isTest, let id = AppState.primaryTeamID(in: lg) {
+            return lg.teams.first(where: { $0.id == id })
+        }
+        guard let uid = app.session?.userID else { return nil }
+        return lg.teams.first(where: { $0.ownerID == uid })
+    }
 
     private var results: [PlayerSummary] {
-        Fantasy.search(
+        let base = Fantasy.search(
             players: app.displaySelectedPlayers(),
             query: query,
             position: position,
-            scoring: .ppr,
-            limit: 150
+            scoring: app.activeScoring,
+            limit: availability == .available ? 0 : 150
         )
+        guard availability == .available, app.selectedLeague != nil else {
+            return Array(base.prefix(150))
+        }
+        let taken = rosteredIDs
+        return Array(base.lazy.filter { !taken.contains($0.id) }.prefix(150))
     }
 
     var body: some View {
         VStack(spacing: 0) {
             if comparing { compareHeaderBar }
             if app.isProjectedSeason(app.selectedSeason) { projectedBanner }
+            if app.selectedLeague != nil {
+                SegmentedTabPicker(items: Availability.allCases, selection: $availability) {
+                    Text($0.rawValue)
+                }
+                .padding(.horizontal, FFSpace.l)
+                .padding(.top, FFSpace.s)
+            }
             ChipRow(items: Position.allCases, selection: $position) { Text($0.label) }
                 .padding(.vertical, FFSpace.s)
 
@@ -60,6 +107,7 @@ struct PlayersBrowser: View {
                     } label: {
                         PlayerRow(
                             summary: row, source: app.displaySelectedPlayers(),
+                            scoring: app.activeScoring,
                             matchup: matchupMap[row.id],
                             selectedForCompare: comparing ? compareSelection.contains(row.id) : nil
                         )
@@ -67,6 +115,9 @@ struct PlayersBrowser: View {
                     .buttonStyle(.plain)
                     .listRowBackground(FFColor.bg)
                     .listRowSeparatorTint(FFColor.border)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        claimSwipeAction(for: row)
+                    }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
@@ -91,6 +142,45 @@ struct PlayersBrowser: View {
         .sheet(isPresented: $showingCompareSheet) {
             ComparePlayersView(playerIDs: Array(compareSelection))
         }
+        .sheet(item: $claimTarget) { ctx in
+            if let lg = app.selectedLeague {
+                WaiverClaimSheet(
+                    league: lg, team: ctx.team,
+                    addPlayer: ctx.addPlayer,
+                    isOnWaivers: ctx.isOnWaivers,
+                    waiverUntil: ctx.waiverUntil
+                ) { updated in
+                    if let updated { app.selectedLeague = updated }
+                    Task { await reloadDropped() }
+                }
+            }
+        }
+        .task(id: app.selectedLeagueID) { await reloadDropped() }
+    }
+
+    // Trailing swipe action to add a free agent / claim a waiver player onto the
+    // user's team in the selected league. Hidden for rostered players, while
+    // comparing, or when the user has no team.
+    @ViewBuilder
+    private func claimSwipeAction(for row: PlayerSummary) -> some View {
+        if !comparing, let team = myTeam, !rosteredIDs.contains(row.id) {
+            let drop = dropped.first(where: { $0.playerID == row.id && $0.isOnWaivers })
+            let onWaivers = drop != nil
+            Button {
+                claimTarget = ClaimTarget(
+                    team: team, addPlayer: row,
+                    isOnWaivers: onWaivers, waiverUntil: drop?.waiverUntil
+                )
+            } label: {
+                Label(onWaivers ? "Claim" : "Add", systemImage: "plus.circle.fill")
+            }
+            .tint(FFColor.accent)
+        }
+    }
+
+    private func reloadDropped() async {
+        guard let id = app.selectedLeagueID else { dropped = []; return }
+        dropped = await app.droppedPlayers(leagueID: id)
     }
 
     private func toggleCompare(_ id: String) {

@@ -431,26 +431,33 @@ actor RemoteService {
         return try await league(id: updated.leagueId.uuidString)
     }
 
-    // Team branding: name, logo URL, accent color. Any nil leaves that field
-    // unchanged (name "" is treated as no-op for name).
+    // Team branding: name, logo URL, accent color, abbreviation. Any nil
+    // leaves that field unchanged (name "" is treated as no-op for name);
+    // logo_url / color_hex / abbreviation are sent as explicit JSON so passing
+    // nil clears the stored value.
     @discardableResult
     func setTeamCustomization(
-        teamID: String, name: String?, logoURL: String?, colorHex: String?
+        teamID: String, name: String?, logoURL: String?, colorHex: String?,
+        abbreviation: String?
     ) async throws -> League? {
         guard let teamUUID = UUID(uuidString: teamID) else { return nil }
-        // logo_url / color_hex are sent as explicit JSON (null clears them);
-        // name is omitted when blank so it stays unchanged.
         struct BrandUpdate: Encodable {
             let name: String?
             let logo_url: AnyJSON
             let color_hex: AnyJSON
+            let abbreviation: AnyJSON
         }
         let cleanedName = name?.trimmingCharacters(in: .whitespaces)
+        let cleanedAbbr = abbreviation?.trimmingCharacters(in: .whitespaces)
+        let abbrJSON: AnyJSON = cleanedAbbr.flatMap {
+            $0.isEmpty ? nil : AnyJSON.string($0)
+        } ?? .null
         let updated: TeamRow = try await client.from("teams")
             .update(BrandUpdate(
                 name: (cleanedName?.isEmpty == false) ? cleanedName : nil,
                 logo_url: logoURL.map { AnyJSON.string($0) } ?? .null,
-                color_hex: colorHex.map { AnyJSON.string($0) } ?? .null
+                color_hex: colorHex.map { AnyJSON.string($0) } ?? .null,
+                abbreviation: abbrJSON
             ))
             .eq("id", value: teamUUID)
             .select()
@@ -458,6 +465,77 @@ actor RemoteService {
             .execute()
             .value
         return try await league(id: updated.leagueId.uuidString)
+    }
+
+    // MARK: - Player nicknames
+
+    // Active nicknames for every team in a league, keyed teamID → (playerID →
+    // nickname). Archived (post-drop) nicknames are excluded. Reads are open to
+    // authenticated users, matching the rest of the league data model.
+    func leagueNicknames(leagueID: String) async -> [String: [String: String]] {
+        guard let uuid = UUID(uuidString: leagueID) else { return [:] }
+        struct Row: Decodable {
+            let teamId: UUID
+            let playerId: String
+            let nickname: String
+            enum CodingKeys: String, CodingKey {
+                case teamId = "team_id", playerId = "player_id", nickname
+            }
+        }
+        let rows: [Row] = (try? await client.from("player_nicknames")
+            .select("team_id, player_id, nickname")
+            .eq("league_id", value: uuid)
+            .is("cleared_at", value: nil as Bool?)
+            .execute()
+            .value) ?? []
+        var out: [String: [String: String]] = [:]
+        for r in rows {
+            out[r.teamId.uuidString, default: [:]][r.playerId] = r.nickname
+        }
+        return out
+    }
+
+    // Set, update, or (with a blank value) clear a player's nickname. The RPC
+    // enforces ownership/commish + roster membership server-side.
+    func setPlayerNickname(teamID: String, playerID: String, nickname: String) async throws {
+        guard let uuid = UUID(uuidString: teamID) else { return }
+        struct Args: Encodable {
+            let p_team_id: UUID
+            let p_player_id: String
+            let p_nickname: String
+        }
+        _ = try await client.rpc("set_player_nickname", params: Args(
+            p_team_id: uuid, p_player_id: playerID, p_nickname: nickname
+        )).execute()
+    }
+
+    // Full nickname history for a player (active + archived), newest first.
+    func playerNicknameHistory(playerID: String) async -> [NicknameHistoryEntry] {
+        struct Args: Encodable { let p_player_id: String }
+        struct Row: Decodable {
+            let nickname: String
+            let teamName: String
+            let leagueName: String
+            let createdAt: Date
+            let clearedAt: Date?
+            enum CodingKeys: String, CodingKey {
+                case nickname
+                case teamName   = "team_name"
+                case leagueName = "league_name"
+                case createdAt  = "created_at"
+                case clearedAt  = "cleared_at"
+            }
+        }
+        let rows: [Row] = (try? await client.rpc(
+            "player_nickname_history", params: Args(p_player_id: playerID)
+        ).execute().value) ?? []
+        return rows.map {
+            NicknameHistoryEntry(
+                nickname: $0.nickname, teamName: $0.teamName,
+                leagueName: $0.leagueName, createdAt: $0.createdAt,
+                clearedAt: $0.clearedAt
+            )
+        }
     }
 
     // MARK: - Row → model assembly
@@ -488,7 +566,8 @@ actor RemoteService {
                         }),
                     division: t.division,
                     logoURL: t.logoUrl,
-                    colorHex: t.colorHex
+                    colorHex: t.colorHex,
+                    abbreviation: t.abbreviation
                 )
             },
             schedule: row.schedule,
@@ -2763,9 +2842,10 @@ struct TeamRow: Codable, Hashable {
     let division: Int?
     let logoUrl: String?
     let colorHex: String?
+    let abbreviation: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ir, division
+        case id, name, roster, starters, ir, division, abbreviation
         case leagueId      = "league_id"
         case ownerId       = "owner_id"
         case sortIndex     = "sort_index"
@@ -2788,6 +2868,7 @@ struct TeamRow: Codable, Hashable {
         division  = try c.decodeIfPresent(Int.self, forKey: .division)
         logoUrl   = try c.decodeIfPresent(String.self, forKey: .logoUrl)
         colorHex  = try c.decodeIfPresent(String.self, forKey: .colorHex)
+        abbreviation = try c.decodeIfPresent(String.self, forKey: .abbreviation)
     }
 }
 

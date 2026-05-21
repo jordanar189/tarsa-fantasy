@@ -42,6 +42,13 @@ The codebase opts into `SWIFT_APPROACHABLE_CONCURRENCY = YES`. Isolation is decl
 - **Leagues**: `LeagueStore` persists a single `leagues.json` envelope to `Documents/` using ISO-8601 dates and atomic writes via `replaceItemAt`. Schedule is generated at creation time by `Fantasy.generateSchedule` (circle/round-robin algorithm; teams count made even with a `__bye__` sentinel).
 - **Scoring**: `Scoring` enum (`.standard | .ppr | .half`) flows through every points calculation — `Game.points(scoring:)` and `SeasonTotals.points(scoring:)` pick the right pre-computed field.
 
+## Pull requests & review
+
+- This repo is auto-reviewed by Codex (GitHub author `chatgpt-codex-connector`), which leaves **inline review comments** tagged with severity (P1/P2/P3). These are *not* CI checks and never show up in commit status / check runs — you must fetch them explicitly.
+- After creating **or updating** a PR, always pull the review threads with the GitHub MCP tools: `pull_request_read` with `method: get_review_comments` (inline threads) and `get_comments` (issue-level). Do this on a delay/again after pushing, since the bot reviews asynchronously.
+- For each unresolved comment: fix it if it's correct and tractable, then reply on the thread (`add_reply_to_pull_request_comment`) linking the fixing commit SHA; if it's wrong or out of scope, reply explaining why instead of silently skipping. Resolve threads when possible.
+- Migrations only apply on merge to `main` (via the `supabase-db-push` workflow), so a not-yet-merged migration file can be edited in place to fix a review finding rather than stacking a follow-up migration.
+
 ## Conventions
 
 - Comments are sparse and explain *why*, not *what*. Most files open with a 1–2 line header describing intent (see `Fantasy.swift`, `NFLDataService.swift`, `LeagueStore.swift`); match that style.

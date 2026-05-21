@@ -8,6 +8,20 @@ final class AppState {
     // Tab selection
     var tab: AppTab = .nfl
 
+    // The league currently in focus. nil = show the league overview/landing
+    // screen; non-nil = the tabbed (NFL + League) experience for this league.
+    // selectedLeague holds the fully-loaded League so league-specific numbers
+    // (scoring, ownership, free agents) can be computed app-wide.
+    var selectedLeagueID: String? = nil
+    var selectedLeague: League? = nil
+    // Guards against an older selectLeague load landing after a newer one.
+    private var selectLeagueToken = 0
+
+    // Scoring/season the rest of the app inherits from the selected league.
+    // Player stat surfaces read these instead of carrying their own toggle.
+    var activeScoring: Scoring { selectedLeague?.scoring ?? .ppr }
+    var activeScoringSettings: ScoringSettings? { selectedLeague?.scoringSettings }
+
     // Season picking
     var seasons: [Int] = []
     var selectedSeason: Int = Calendar.current.component(.year, from: Date())
@@ -96,6 +110,7 @@ final class AppState {
         }
         if !force && !seasons.isEmpty {
             await reloadLeagues()
+            await applyInitialLeagueSelection()
             return
         }
         bootstrapError = nil
@@ -110,10 +125,45 @@ final class AppState {
         }
         await loadSeason(selectedSeason)
         await reloadLeagues()
+        await applyInitialLeagueSelection()
         await reloadFriendsAndDMs()
         await loadProfileTheme()
         await loadInjuries()
         await loadMarketSignals()
+    }
+
+    // Where to land on launch: a sole league drops you straight in; with
+    // several leagues a cold launch starts on the overview so you choose.
+    // No-op once something is already selected (warm re-bootstrap / returning).
+    private func applyInitialLeagueSelection() async {
+        guard selectedLeagueID == nil else { return }
+        if leagueSummaries.count == 1, let only = leagueSummaries.first {
+            await selectLeague(only.id)
+        }
+    }
+
+    // Focus a league (or nil to return to the overview). Loads the full league
+    // plus its season + nicknames so league-specific numbers are ready. Keeps
+    // the user wherever they are — only the surrounding data changes.
+    func selectLeague(_ id: String?) async {
+        selectedLeagueID = id
+        guard let id else { selectedLeague = nil; return }
+        selectLeagueToken &+= 1
+        let token = selectLeagueToken
+        guard let lg = await league(id) else { return }
+        guard token == selectLeagueToken else { return }
+        selectedLeague = lg
+        if selectedSeason != lg.season { selectedSeason = lg.season }
+        await loadSeason(lg.season)
+        await loadLeagueNicknames(leagueID: id)
+    }
+
+    // Re-pull the selected league after a mutation so the switcher, NFL tab,
+    // and league views all see fresh rosters/numbers.
+    func refreshSelectedLeague() async {
+        guard let id = selectedLeagueID else { return }
+        if let lg = await league(id) { selectedLeague = lg }
+        await loadLeagueNicknames(leagueID: id)
     }
 
     // MARK: - Auth
@@ -130,6 +180,8 @@ final class AppState {
         try? await remote.signOut()
         session = nil
         leagueSummaries = []
+        selectedLeagueID = nil
+        selectedLeague = nil
         friendships = []
         dmInbox = []
     }
@@ -145,6 +197,7 @@ final class AppState {
             // the old LeagueStore — the user opted to discard it.
             Self.removeLocalLeaguesFileIfPresent()
             await reloadLeagues()
+            await applyInitialLeagueSelection()
             await reloadFriendsAndDMs()
             await loadProfileTheme()
         } catch {
@@ -492,6 +545,11 @@ final class AppState {
         guard let session else { leagueSummaries = []; return }
         do {
             leagueSummaries = try await remote.myLeagues(userID: session.userID)
+            // Drop the selection if that league is gone (deleted / left).
+            if let id = selectedLeagueID, !leagueSummaries.contains(where: { $0.id == id }) {
+                selectedLeagueID = nil
+                selectedLeague = nil
+            }
         } catch {
             leagueSummaries = []
             bootstrapError = error.localizedDescription
@@ -524,7 +582,7 @@ final class AppState {
             scoringSettings: scoringSettings
         )
         await reloadLeagues()
-        await loadSeason(season)
+        await selectLeague(league.id)
         return league
     }
 
@@ -548,6 +606,7 @@ final class AppState {
             throw AppError.leagueNotFound
         }
         await reloadLeagues()
+        await refreshSelectedNicknames()
         return updated
     }
 
@@ -774,7 +833,9 @@ final class AppState {
     func handleInvite(url: URL) {
         guard let code = JoinLink.code(from: url) else { return }
         pendingJoinCode = code
-        tab = .leagues
+        // Surface the overview (join sheet lives there) so the code can be used.
+        selectedLeagueID = nil
+        selectedLeague = nil
     }
 
     func claimTeam(teamID: String) async throws -> League? {
@@ -802,14 +863,18 @@ final class AppState {
         league: League, team: FantasyTeam,
         addPlayerID: String, dropPlayerID: String?
     ) async throws -> League? {
-        try await remote.addFreeAgent(
+        let updated = try await remote.addFreeAgent(
             league: league, team: team,
             addPlayerID: addPlayerID, dropPlayerID: dropPlayerID
         )
+        await refreshSelectedNicknames()
+        return updated
     }
 
     func dropPlayer(league: League, team: FantasyTeam, playerID: String) async throws -> League? {
-        try await remote.dropPlayer(league: league, team: team, playerID: playerID)
+        let updated = try await remote.dropPlayer(league: league, team: team, playerID: playerID)
+        await refreshSelectedNicknames()
+        return updated
     }
 
     @discardableResult
@@ -834,7 +899,9 @@ final class AppState {
     @discardableResult
     func approveTransaction(_ txID: String) async throws -> League? {
         guard let session else { throw AppError.notSignedIn }
-        return try await remote.approveTransaction(txID, commissionerID: session.userID)
+        let updated = try await remote.approveTransaction(txID, commissionerID: session.userID)
+        await refreshSelectedNicknames()
+        return updated
     }
 
     func rejectTransaction(_ txID: String, note: String? = nil) async throws {
@@ -882,13 +949,62 @@ final class AppState {
 
     @discardableResult
     func setTeamCustomization(
-        teamID: String, name: String?, logoURL: String?, colorHex: String?
+        teamID: String, name: String?, logoURL: String?, colorHex: String?,
+        abbreviation: String?
     ) async throws -> League? {
         let updated = try await remote.setTeamCustomization(
-            teamID: teamID, name: name, logoURL: logoURL, colorHex: colorHex
+            teamID: teamID, name: name, logoURL: logoURL, colorHex: colorHex,
+            abbreviation: abbreviation
         )
         await reloadLeagues()
         return updated
+    }
+
+    // MARK: - Player nicknames
+
+    // Active nicknames for the currently-viewed league, keyed teamID →
+    // (playerID → nickname). Populated by loadLeagueNicknames when a league
+    // view opens; views read it synchronously to relabel rostered players.
+    var leagueNicknames: [String: [String: String]] = [:]
+
+    func loadLeagueNicknames(leagueID: String) async {
+        leagueNicknames = await remote.leagueNicknames(leagueID: leagueID)
+    }
+
+    // Refresh the nickname cache for the focused league after a roster change.
+    // The DB trigger archives a nickname server-side the moment its player
+    // leaves a roster, so without this the cache would keep serving a stale
+    // nickname for a dropped (and possibly re-added) player until the next
+    // full league load — breaking the "reset on drop" behavior in-session.
+    func refreshSelectedNicknames() async {
+        guard let id = selectedLeagueID else { return }
+        await loadLeagueNicknames(leagueID: id)
+    }
+
+    // The nickname a team has given a player on its roster, or nil.
+    func nickname(teamID: String, playerID: String) -> String? {
+        leagueNicknames[teamID]?[playerID]
+    }
+
+    // What to display for a player on a given team: the nickname if set,
+    // otherwise the supplied real name.
+    func displayName(teamID: String, playerID: String, realName: String) -> String {
+        nickname(teamID: teamID, playerID: playerID) ?? realName
+    }
+
+    @discardableResult
+    func setPlayerNickname(
+        leagueID: String, teamID: String, playerID: String, nickname: String
+    ) async throws -> League? {
+        try await remote.setPlayerNickname(
+            teamID: teamID, playerID: playerID, nickname: nickname
+        )
+        await loadLeagueNicknames(leagueID: leagueID)
+        return try await remote.league(id: leagueID)
+    }
+
+    func playerNicknameHistory(playerID: String) async -> [NicknameHistoryEntry] {
+        await remote.playerNicknameHistory(playerID: playerID)
     }
 
     @discardableResult
@@ -938,7 +1054,9 @@ final class AppState {
 
     @discardableResult
     func acceptTrade(_ tradeID: String) async throws -> Trade? {
-        try await remote.acceptTrade(tradeID)
+        let trade = try await remote.acceptTrade(tradeID)
+        await refreshSelectedNicknames()
+        return trade
     }
 
     @discardableResult
@@ -953,12 +1071,16 @@ final class AppState {
 
     @discardableResult
     func commishResolveTrade(_ tradeID: String, approve: Bool, note: String?) async throws -> Trade? {
-        try await remote.commishResolveTrade(tradeID, approve: approve, note: note)
+        let trade = try await remote.commishResolveTrade(tradeID, approve: approve, note: note)
+        await refreshSelectedNicknames()
+        return trade
     }
 
     @discardableResult
     func voteTrade(_ tradeID: String, vote: String) async throws -> Trade? {
-        try await remote.voteTrade(tradeID, vote: vote)
+        let trade = try await remote.voteTrade(tradeID, vote: vote)
+        await refreshSelectedNicknames()
+        return trade
     }
 
     @discardableResult
@@ -1246,6 +1368,7 @@ final class AppState {
             try await remote.snapshotTeams(leagueID: league.id, week: 0)
         }
         await reloadLeagues()
+        await selectLeague(league.id)
         return league
     }
 
@@ -1266,17 +1389,22 @@ final class AppState {
             try? await remote.snapshotTeams(leagueID: leagueID, week: next)
             await runAutoProcessing(league: updated)
         }
+        await refreshSelectedNicknames()
         return updated
     }
 
     @discardableResult
     func resetCurrentPeriod(leagueID: String) async -> League? {
-        (try? await remote.resetPeriod(leagueID: leagueID)) ?? nil
+        let updated = (try? await remote.resetPeriod(leagueID: leagueID)) ?? nil
+        await refreshSelectedNicknames()
+        return updated
     }
 
     @discardableResult
     func resetAll(leagueID: String) async -> League? {
-        (try? await remote.resetAll(leagueID: leagueID)) ?? nil
+        let updated = (try? await remote.resetAll(leagueID: leagueID)) ?? nil
+        await refreshSelectedNicknames()
+        return updated
     }
 
     private func runAutoProcessing(league: League) async {
@@ -1334,6 +1462,7 @@ final class AppState {
         for move in moves {
             try? await execute(move: move, in: fresh, session: session)
         }
+        await refreshSelectedNicknames()
     }
 
     private func execute(move: BotMove, in league: League, session: Session) async throws {

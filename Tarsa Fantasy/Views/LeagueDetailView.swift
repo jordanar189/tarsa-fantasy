@@ -2,7 +2,6 @@ import SwiftUI
 
 struct LeagueDetailView: View {
     @Environment(AppState.self) private var app
-    @Environment(\.dismiss) private var dismiss
     let leagueID: String
 
     @State private var league: League? = nil
@@ -85,6 +84,11 @@ struct LeagueDetailView: View {
             }
         }
         .task(id: leagueID) { await loadLeague() }
+        // Keep the app-wide selected league in sync with in-detail edits so the
+        // switcher and NFL tab read fresh rosters/numbers.
+        .onChange(of: league) { _, new in
+            if app.selectedLeagueID == leagueID { app.selectedLeague = new }
+        }
         .onChange(of: showingDraftRoom) { _, visible in
             if !visible {
                 Task { draft = await app.draft(leagueID: leagueID) }
@@ -133,10 +137,12 @@ struct LeagueDetailView: View {
                     league: league,
                     onSave: { updated in self.league = updated },
                     onDelete: {
-                        // League is gone — pop back to the leagues list and
-                        // refresh summaries so the deleted row drops out.
-                        Task { await app.reloadLeagues() }
-                        dismiss()
+                        // League is gone — return to the overview and refresh
+                        // summaries so the deleted row drops out.
+                        Task {
+                            await app.reloadLeagues()
+                            await app.selectLeague(nil)
+                        }
                     }
                 )
             }
@@ -234,6 +240,7 @@ struct LeagueDetailView: View {
     private func loadLeague() async {
         league = await app.league(leagueID)
         await app.loadSeason(league?.season ?? app.selectedSeason)
+        await app.loadLeagueNicknames(leagueID: leagueID)
         if let plan = league?.schedule.first { week = plan.week }
         draft = await app.draft(leagueID: leagueID)
     }
