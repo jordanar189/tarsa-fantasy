@@ -15,6 +15,9 @@ verify_jwt = false
 [functions.sync_schedules]
 verify_jwt = false
 
+[functions.sync_schedules_espn]
+verify_jwt = false
+
 [functions.sync_snap_counts]
 verify_jwt = false
 
