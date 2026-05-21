@@ -1,13 +1,6 @@
 name: TestFlight upload
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'Tarsa Fantasy/**'
-      - 'Tarsa Fantasy.xcodeproj/**'
-      - 'scripts/upload-testflight.sh'
-      - '.github/workflows/testflight.yml'
   workflow_dispatch:
 
 concurrency:
