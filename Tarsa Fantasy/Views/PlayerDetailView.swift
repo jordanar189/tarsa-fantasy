@@ -33,7 +33,8 @@ struct PlayerDetailView: View {
     @State private var teamTDs: [String: [Int: Double]] = [:]
     @State private var projection: PlayerProjection? = nil
 
-    private var player: Player? { app.selectedPlayers()[playerID] }
+    private var player: Player? { app.displaySelectedPlayers()[playerID] }
+    private var isProjected: Bool { app.isProjectedSeason(app.selectedSeason) }
 
     var body: some View {
         NavigationStack {
@@ -79,12 +80,13 @@ struct PlayerDetailView: View {
                 }
             }
             .task(id: playerID) {
+                await app.ensureProjectedSnapshot(season: app.selectedSeason)
                 schedules = await app.schedules(season: app.selectedSeason)
                 snapCounts = await app.snapCounts(season: app.selectedSeason)
                 rankByID = Fantasy.positionRanks(
-                    players: app.selectedPlayers(), scoring: scoring
+                    players: app.displaySelectedPlayers(), scoring: scoring
                 )
-                let players = app.selectedPlayers()
+                let players = app.displaySelectedPlayers()
                 teamTargets = Fantasy.teamTargetsPerWeek(players: players)
                 teamTDs     = Fantasy.teamTouchdownsPerWeek(players: players)
                 // Load DvP for the player's own position only — that's the
@@ -99,7 +101,7 @@ struct PlayerDetailView: View {
             }
             .onChange(of: scoring) { _, _ in
                 rankByID = Fantasy.positionRanks(
-                    players: app.selectedPlayers(), scoring: scoring
+                    players: app.displaySelectedPlayers(), scoring: scoring
                 )
                 Task {
                     projection = await app.liveProjection(
@@ -158,7 +160,7 @@ struct PlayerDetailView: View {
 
     private func heroStats(for p: Player) -> some View {
         HStack(spacing: FFSpace.l) {
-            if let projection {
+            if let projection, !isProjected {
                 heroStat(
                     label: "PROJ",
                     value: String(format: "%.1f", projection.points),
@@ -454,7 +456,7 @@ struct PlayerDetailView: View {
         return VStack(alignment: .leading, spacing: FFSpace.l) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("SEASON").ffEyebrow(color: FFColor.textTertiary)
+                    Text(isProjected ? "PROJECTED" : "SEASON").ffEyebrow(color: isProjected ? FFColor.accent : FFColor.textTertiary)
                     Text(Fantasy.round2(pts).fpString)
                         .font(.ffStatLarge)
                         .foregroundStyle(FFColor.textPrimary)
@@ -465,7 +467,13 @@ struct PlayerDetailView: View {
                 Spacer()
             }
             Rectangle().fill(FFColor.border).frame(height: 1)
-            statsGrid(t)
+            if isProjected {
+                Text("Projected over \(t.gamesPlayed) scheduled games · box-score detail begins Week 1")
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textTertiary)
+            } else {
+                statsGrid(t)
+            }
         }
         .ffCard(padding: FFSpace.l)
     }
@@ -529,7 +537,7 @@ struct PlayerDetailView: View {
 
     private func gameLogSection(for p: Player) -> some View {
         VStack(alignment: .leading, spacing: FFSpace.s) {
-            Text("GAME LOG").ffEyebrow().padding(.leading, FFSpace.s)
+            Text(isProjected ? "PROJECTED GAME LOG" : "GAME LOG").ffEyebrow().padding(.leading, FFSpace.s)
             if p.games.isEmpty {
                 Text("No games played yet.")
                     .font(.ffBody).foregroundStyle(FFColor.textSecondary)
@@ -673,7 +681,27 @@ struct PlayerDetailView: View {
 
     // MARK: - Advanced (Phase 3)
 
+    @ViewBuilder
     private func advancedSection(for p: Player) -> some View {
+        if isProjected {
+            VStack(alignment: .leading, spacing: FFSpace.s) {
+                Text("ADVANCED").ffEyebrow().padding(.leading, FFSpace.s)
+                Text("Usage projections (snaps, target share, etc.) aren't available in the preseason. They'll populate once the season kicks off.")
+                    .font(.ffBody).foregroundStyle(FFColor.textSecondary)
+                    .padding(FFSpace.l)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: FFRadius.m)
+                            .strokeBorder(FFColor.border, lineWidth: 1)
+                    )
+            }
+        } else {
+            advancedSectionReal(for: p)
+        }
+    }
+
+    private func advancedSectionReal(for p: Player) -> some View {
         let rows = Fantasy.weeklyAdvanced(
             player: p, snapMap: snapCounts[p.id],
             teamTargets: teamTargets, teamTouchdowns: teamTDs

@@ -15,6 +15,13 @@ final class AppState {
     // Loaded player data, keyed by season
     var playersBySeason: [Int: [String: Player]] = [:]
 
+    // Display-only projected snapshots for not-yet-started seasons, keyed by
+    // season. Each player's `games` are synthetic per-week projections so the
+    // browse/draft surfaces show a "preseason feel". NEVER used for league
+    // scoring — leagues always read playersBySeason.
+    var projectedBySeason: [Int: [String: Player]] = [:]
+    private var projectionInFlight: Set<Int> = []
+
     // Auth / account
     var session: Session? = nil
     var authError: String? = nil
@@ -243,6 +250,73 @@ final class AppState {
 
     func selectedPlayers() -> [String: Player] {
         players(season: selectedSeason)
+    }
+
+    // MARK: - Preseason projection snapshots
+
+    // A season is "preseason" when its roster is loaded but no games have been
+    // played yet — nflverse has no weekly stats, only the schedule exists.
+    func isPreseason(season: Int) -> Bool {
+        let snap = players(season: season)
+        guard !snap.isEmpty else { return false }
+        return snap.values.allSatisfy { $0.games.isEmpty }
+    }
+
+    // True once a projected snapshot has been built for the season — i.e. the
+    // browse/draft surfaces are showing projections rather than real stats.
+    func isProjectedSeason(_ season: Int) -> Bool { projectedBySeason[season] != nil }
+
+    // Players to display in browse/draft surfaces: the projected snapshot in
+    // preseason, otherwise the real snapshot. Distinct from players(season:),
+    // which league scoring uses.
+    func displayPlayers(season: Int) -> [String: Player] {
+        projectedBySeason[season] ?? players(season: season)
+    }
+
+    func displaySelectedPlayers() -> [String: Player] {
+        displayPlayers(season: selectedSeason)
+    }
+
+    // Builds the preseason projection snapshot once per season (idempotent).
+    // Seeds from the most recent prior season that actually has games, applies
+    // that season's defense-vs-position to the new schedule, and caches the
+    // result. No-op when the season isn't preseason or has no usable prior data.
+    func ensureProjectedSnapshot(season: Int) async {
+        if projectedBySeason[season] != nil || projectionInFlight.contains(season) { return }
+        guard isPreseason(season: season) else { return }
+        let current = players(season: season)
+        guard !current.isEmpty else { return }
+        projectionInFlight.insert(season)
+        defer { projectionInFlight.remove(season) }
+
+        // Walk back to the latest season that has real game data to seed from.
+        let floor = seasons.min() ?? (season - 5)
+        var priorPlayers: [String: Player] = [:]
+        var priorSeason = season - 1
+        while priorSeason >= floor {
+            let snap = await loadSeason(priorSeason) ?? [:]
+            if snap.values.contains(where: { !$0.games.isEmpty }) {
+                priorPlayers = snap
+                break
+            }
+            priorSeason -= 1
+        }
+        guard !priorPlayers.isEmpty else { return }
+
+        let schedule = await schedules(season: season)
+        guard !schedule.isEmpty else { return }
+
+        var dvpByPos: [String: [String: DvPEntry]] = [:]
+        for pos in ["QB", "RB", "WR", "TE"] {
+            dvpByPos[pos] = await dvp(season: priorSeason, position: pos)
+        }
+
+        // Guard against the snapshot having been built while we awaited.
+        if projectedBySeason[season] != nil { return }
+        projectedBySeason[season] = Fantasy.preseasonProjectedSnapshot(
+            season: season, players: current, priorPlayers: priorPlayers,
+            schedule: schedule, dvpByPosition: dvpByPos, injuries: injuries
+        )
     }
 
     // MARK: - NFL data (Phase 1 stats overhaul)

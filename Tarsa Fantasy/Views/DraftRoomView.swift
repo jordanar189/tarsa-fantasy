@@ -133,6 +133,10 @@ struct DraftRoomView: View {
             if adp.isEmpty {
                 adp = await app.adp(season: lg.season, scoring: lg.scoring)
             }
+            // Surface projected points on the board when drafting a season that
+            // hasn't kicked off yet (display only — pick logic stays on real data).
+            await app.loadSeason(lg.season)
+            await app.ensureProjectedSnapshot(season: lg.season)
         }
     }
 
@@ -358,7 +362,10 @@ struct DraftRoomView: View {
 
     @ViewBuilder
     private func playersList(draft: Draft, league: League) -> some View {
-        let players = Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
+        // Display snapshot — projected points in preseason. Pick/auto-pick logic
+        // below still runs on the real snapshot (app.players), so projections
+        // never affect what gets drafted or scored.
+        let players = Fantasy.playersFor(league: league, snapshot: app.displayPlayers(season: league.season))
         let pickedIDs = Set(picks.map(\.playerID))
         let myTeam = league.teams.first(where: { $0.ownerID == app.session?.userID })
         let onClock = draft.teamOnClock(forPick: draft.currentPick)

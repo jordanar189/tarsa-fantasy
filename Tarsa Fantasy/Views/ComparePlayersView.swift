@@ -14,7 +14,7 @@ struct ComparePlayersView: View {
     @State private var snapCounts: [String: [Int: SnapCount]] = [:]
 
     private var players: [Player] {
-        playerIDs.compactMap { app.selectedPlayers()[$0] }
+        playerIDs.compactMap { app.displaySelectedPlayers()[$0] }
     }
 
     var body: some View {
@@ -48,7 +48,8 @@ struct ComparePlayersView: View {
                 }
             }
             .task {
-                let players = app.selectedPlayers()
+                await app.ensureProjectedSnapshot(season: app.selectedSeason)
+                let players = app.displaySelectedPlayers()
                 teamTargets = Fantasy.teamTargetsPerWeek(players: players)
                 teamTDs     = Fantasy.teamTouchdownsPerWeek(players: players)
                 snapCounts  = await app.snapCounts(season: app.selectedSeason)

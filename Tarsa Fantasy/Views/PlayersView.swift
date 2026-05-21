@@ -14,7 +14,7 @@ struct PlayersBrowser: View {
 
     private var results: [PlayerSummary] {
         Fantasy.search(
-            players: app.selectedPlayers(),
+            players: app.displaySelectedPlayers(),
             query: query,
             position: position,
             scoring: .ppr,
@@ -25,6 +25,7 @@ struct PlayersBrowser: View {
     var body: some View {
         VStack(spacing: 0) {
             if comparing { compareHeaderBar }
+            if app.isProjectedSeason(app.selectedSeason) { projectedBanner }
             ChipRow(items: Position.allCases, selection: $position) { Text($0.label) }
                 .padding(.vertical, FFSpace.s)
 
@@ -58,7 +59,7 @@ struct PlayersBrowser: View {
                         }
                     } label: {
                         PlayerRow(
-                            summary: row, source: app.selectedPlayers(),
+                            summary: row, source: app.displaySelectedPlayers(),
                             matchup: matchupMap[row.id],
                             selectedForCompare: comparing ? compareSelection.contains(row.id) : nil
                         )
@@ -74,7 +75,10 @@ struct PlayersBrowser: View {
         }
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
                     prompt: "Search players")
-        .task(id: app.selectedSeason) { await loadMatchups() }
+        .task(id: app.selectedSeason) {
+            await app.ensureProjectedSnapshot(season: app.selectedSeason)
+            await loadMatchups()
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button(comparing ? "Done" : "Compare") {
@@ -132,10 +136,26 @@ struct PlayersBrowser: View {
         let dvp = Dictionary(uniqueKeysWithValues: await dvpRows)
         let nextOpp = Fantasy.nextOpponentByTeam(schedules: sched)
         matchupMap = Fantasy.matchupRatingsByPlayer(
-            players: app.selectedPlayers(),
+            players: app.displaySelectedPlayers(),
             nextOppByTeam: nextOpp,
             dvpByPosition: dvp
         )
+    }
+
+    private var projectedBanner: some View {
+        HStack(spacing: FFSpace.s) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(FFColor.accent)
+            Text("PROJECTED · \(String(app.selectedSeason)) preseason — model projections, not real stats")
+                .font(.ffMicro)
+                .foregroundStyle(FFColor.textSecondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, FFSpace.l)
+        .padding(.vertical, FFSpace.s)
+        .background(FFColor.accentSoft)
+        .ffHairlineBottom()
     }
 }
 

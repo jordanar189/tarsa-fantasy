@@ -882,6 +882,82 @@ enum Fantasy {
         return out
     }
 
+    // Builds a display-only snapshot for a not-yet-started season: each player's
+    // `games` are replaced with synthetic per-week projections (points only, in
+    // all three scoring fields) seeded from prior-season data. Feeding this into
+    // the existing stat surfaces makes totals, rankings, sparklines and the game
+    // log render projections for a preseason feel — without touching league
+    // scoring, which always runs on the real snapshot.
+    //
+    // Projections vary by week via the (best-available) prior-season DvP for the
+    // scheduled opponent and any published Vegas line; players with no prior-
+    // season games fall back to the position mean (e.g. rookies).
+    static func preseasonProjectedSnapshot(
+        season: Int,
+        players currentPlayers: [String: Player],
+        priorPlayers: [String: Player],
+        schedule: [NFLGame],
+        dvpByPosition: [String: [String: DvPEntry]],
+        injuries: [String: Injury],
+        config: ProjectionConfig = .default
+    ) -> [String: Player] {
+        let meanStd  = positionMeans(players: priorPlayers, scoring: .standard)
+        let meanPpr  = positionMeans(players: priorPlayers, scoring: .ppr)
+        let meanHalf = positionMeans(players: priorPlayers, scoring: .half)
+
+        var gamesByTeam: [String: [NFLGame]] = [:]
+        for g in schedule {
+            gamesByTeam[g.home, default: []].append(g)
+            gamesByTeam[g.away, default: []].append(g)
+        }
+        for k in gamesByTeam.keys { gamesByTeam[k]?.sort { $0.week < $1.week } }
+
+        var out: [String: Player] = [:]
+        out.reserveCapacity(currentPlayers.count)
+        for (id, p) in currentPlayers {
+            let pos = p.position.uppercased()
+            guard isFantasyPosition(pos), !p.team.isEmpty, let teamGames = gamesByTeam[p.team] else {
+                out[id] = p
+                continue
+            }
+            let prior = priorPlayers[id]?.games ?? []
+            let baseStd  = recencyWeightedBase(games: prior, scoring: .standard, posMean: meanStd[pos]  ?? 0, config: config)
+            let basePpr  = recencyWeightedBase(games: prior, scoring: .ppr,      posMean: meanPpr[pos]  ?? 0, config: config)
+            let baseHalf = recencyWeightedBase(games: prior, scoring: .half,     posMean: meanHalf[pos] ?? 0, config: config)
+            let avail = config.enableAvailability
+                ? availabilityFactor(playerID: id, injuries: injuries, inactives: [])
+                : 1.0
+
+            var projected: [Game] = []
+            projected.reserveCapacity(teamGames.count)
+            for ng in teamGames {
+                guard let opp = ng.opponent(of: p.team) else { continue }
+                var matchup = 1.0
+                if config.enableMatchup, let rank = dvpByPosition[pos]?[opp]?.rank {
+                    matchup = matchupMultiplier(rank: rank, range: config.matchupRange)
+                }
+                var script = 1.0
+                if config.enableScript, let implied = ng.impliedTotal(for: p.team) {
+                    script = scriptMultiplier(impliedTotal: implied, config: config)
+                }
+                let mult = matchup * script * avail
+                var game = Game()
+                game.season = season
+                game.week = ng.week
+                game.team = p.team
+                game.opponent = opp
+                game.fantasyPoints        = round2(max(0, baseStd  * mult))
+                game.fantasyPointsPPR     = round2(max(0, basePpr  * mult))
+                game.fantasyPointsHalfPPR = round2(max(0, baseHalf * mult))
+                projected.append(game)
+            }
+            var copy = p
+            copy.games = projected
+            out[id] = copy
+        }
+        return out
+    }
+
     // Game-weighted points/game per position across the snapshot — the
     // shrinkage target for thin samples.
     static func positionMeans(players: [String: Player], scoring: Scoring) -> [String: Double] {
@@ -931,8 +1007,14 @@ enum Fantasy {
     }
 
     private static func availabilityFactor(playerID: String, context: ProjectionContext) -> Double {
-        if context.inactives.contains(playerID) { return 0 }
-        guard let injury = context.injuries[playerID] else { return 1 }
+        availabilityFactor(playerID: playerID, injuries: context.injuries, inactives: context.inactives)
+    }
+
+    private static func availabilityFactor(
+        playerID: String, injuries: [String: Injury], inactives: Set<String>
+    ) -> Double {
+        if inactives.contains(playerID) { return 0 }
+        guard let injury = injuries[playerID] else { return 1 }
         switch injury.status.uppercased() {
         case "OUT", "IR", "INJURED RESERVE", "PUP", "SUSPENDED", "SUS", "NFI", "DNR":
             return 0
