@@ -41,6 +41,8 @@ struct PlayerDetailView: View {
         NavigationStack {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
+                VStack(spacing: 0) {
+                    LeagueSwitcherBar()
                 if let player {
                     ScrollView {
                         VStack(spacing: FFSpace.l) {
@@ -68,13 +70,14 @@ struct PlayerDetailView: View {
                             .foregroundStyle(FFColor.textTertiary)
                         Text("Player not found").font(.ffTitle).foregroundStyle(FFColor.textPrimary)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 }
             }
             .navigationTitle(player?.name ?? "Player")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .principal) { LeagueSwitcher() }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .foregroundStyle(FFColor.accent)

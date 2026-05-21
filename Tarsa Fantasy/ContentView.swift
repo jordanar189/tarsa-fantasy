@@ -140,22 +140,17 @@ struct LeagueShellView: View {
     }
 }
 
-// Hosts the selected league's detail screen as a tab root, with the league
-// switcher in the title position.
+// Hosts the selected league's detail screen as a tab root. The league switcher
+// bubble lives at the top of LeagueDetailView's content.
 struct LeagueTabView: View {
     @Environment(AppState.self) private var app
 
     var body: some View {
         NavigationStack {
-            Group {
-                if let id = app.selectedLeagueID {
-                    LeagueDetailView(leagueID: id)
-                } else {
-                    Color.clear
-                }
-            }
-            .toolbar {
-                ToolbarItem(placement: .principal) { LeagueSwitcher() }
+            if let id = app.selectedLeagueID {
+                LeagueDetailView(leagueID: id)
+            } else {
+                Color.clear
             }
         }
     }
