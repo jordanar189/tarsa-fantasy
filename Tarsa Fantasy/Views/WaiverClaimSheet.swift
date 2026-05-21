@@ -21,8 +21,15 @@ struct WaiverClaimSheet: View {
     @State private var saving: Bool = false
     @State private var error: String? = nil
 
+    // IR players occupy extra capacity, so only active (non-IR) players count
+    // against the roster limit.
+    private var activeRosterCount: Int {
+        let irSet = Set(team.ir)
+        return team.roster.filter { !irSet.contains($0) }.count
+    }
+
     private var rosterFull: Bool {
-        team.roster.count >= league.rosterConfig.totalSize
+        activeRosterCount >= league.rosterConfig.totalSize
     }
 
     private var dropRequired: Bool { rosterFull }
@@ -140,7 +147,7 @@ struct WaiverClaimSheet: View {
                     .strokeBorder(FFColor.border, lineWidth: 1)
             )
             if required {
-                Text("Your roster is full (\(team.roster.count)/\(league.rosterConfig.totalSize)). Pick someone to drop.")
+                Text("Your roster is full (\(activeRosterCount)/\(league.rosterConfig.totalSize)). Pick someone to drop.")
                     .font(.ffCaption)
                     .foregroundStyle(FFColor.textTertiary)
             }

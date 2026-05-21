@@ -32,7 +32,9 @@ struct LineupEditorView: View {
             base = Array(repeating: "", count: config.starterCount)
         }
         _starters = State(initialValue: base)
-        _ir = State(initialValue: team.ir)
+        // Drop any IR ids that are no longer on the roster (e.g. dropped while
+        // on IR) so the IR slot count stays accurate.
+        _ir = State(initialValue: team.ir.filter { team.roster.contains($0) })
     }
 
     private var config: RosterConfig { league.rosterConfig }

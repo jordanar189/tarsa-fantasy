@@ -669,7 +669,11 @@ actor RemoteService {
             roster.removeAll { $0 == drop }
         }
         if !roster.contains(addPlayerID) { roster.append(addPlayerID) }
-        guard roster.count <= league.rosterConfig.totalSize else {
+        // IR players sit outside the active roster, so they don't count toward
+        // the size limit — only active (non-IR) players do.
+        let irSet = Set(team.ir)
+        let activeCount = roster.filter { !irSet.contains($0) }.count
+        guard activeCount <= league.rosterConfig.totalSize else {
             throw RemoteError.rosterFull
         }
 
