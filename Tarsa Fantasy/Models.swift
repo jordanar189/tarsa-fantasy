@@ -167,15 +167,16 @@ struct ScoringSettings: Codable, Hashable {
                 rushingYards: Double, rushingTDs: Double,
                 receivingYards: Double, receivingTDs: Double,
                 receptions: Double, fumblesLost: Double) -> Double {
-        passingYards   * perYard(passingYardsPerPoint)
-        + passingTDs   * passingTD
-        + interceptions * interception
-        + rushingYards * perYard(rushingYardsPerPoint)
-        + rushingTDs   * rushingTD
-        + receivingYards * perYard(receivingYardsPerPoint)
-        + receivingTDs * receivingTD
-        + receptions   * reception
-        + fumblesLost  * fumbleLost
+        var total = passingYards * perYard(passingYardsPerPoint)
+        total += passingTDs * passingTD
+        total += interceptions * interception
+        total += rushingYards * perYard(rushingYardsPerPoint)
+        total += rushingTDs * rushingTD
+        total += receivingYards * perYard(receivingYardsPerPoint)
+        total += receivingTDs * receivingTD
+        total += receptions * reception
+        total += fumblesLost * fumbleLost
+        return total
     }
 
     // Whether these settings match the named preset exactly. When they do, the

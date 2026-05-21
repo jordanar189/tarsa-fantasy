@@ -50,6 +50,7 @@ struct TeamRosterSheet: View {
 
         return VStack(alignment: .leading, spacing: FFSpace.m) {
             HStack(spacing: FFSpace.s) {
+                teamCrest
                 Text(team.name).font(.ffHeadline).foregroundStyle(FFColor.textPrimary)
                 if isMine {
                     Text("YOU").ffEyebrow(color: FFColor.accent)
@@ -130,6 +131,28 @@ struct TeamRosterSheet: View {
         }
         .ffCard()
         .prefetchAvatars(urls: team.roster.compactMap { players[$0]?.headshotURL })
+    }
+
+    // Team crest: uploaded logo if present, otherwise initials on the team's
+    // accent color.
+    private var teamCrest: some View {
+        let accent = team.colorHex.flatMap { Color(hexString: $0) } ?? FFColor.accent
+        return ZStack {
+            Circle().fill(accent.opacity(0.18))
+            if let logo = team.logoURL, let url = URL(string: logo) {
+                AsyncImage(url: url) { img in
+                    img.resizable().scaledToFill()
+                } placeholder: {
+                    Text(team.name.initialsFromName).font(.ffCaption.bold()).foregroundStyle(accent)
+                }
+                .frame(width: 28, height: 28)
+                .clipShape(Circle())
+            } else {
+                Text(team.name.initialsFromName).font(.ffCaption.bold()).foregroundStyle(accent)
+            }
+        }
+        .frame(width: 28, height: 28)
+        .overlay(Circle().strokeBorder(accent.opacity(0.4), lineWidth: 1))
     }
 
     private func lineupRow(slot: LineupSlot, playerID: String,
