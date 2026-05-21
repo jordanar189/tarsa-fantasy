@@ -166,6 +166,40 @@ final class AppState {
         await loadLeagueNicknames(leagueID: id)
     }
 
+    // The team the signed-in user controls in a league (the sim's primary team
+    // when every team is creator-owned).
+    func myTeam(in league: League) -> FantasyTeam? {
+        if league.isTest, let id = AppState.primaryTeamID(in: league) {
+            return league.teams.first(where: { $0.id == id })
+        }
+        guard let uid = session?.userID else { return nil }
+        return league.teams.first(where: { $0.ownerID == uid })
+    }
+
+    // Bundles everything the Lineup / Matchup tabs need for one week: schedule,
+    // DvP-by-position, injuries, inactives, and a full projection pass.
+    func weekContext(league: League, week: Int) async -> WeekContext {
+        let snapshot = players(season: league.season)
+        let schedule = await schedules(season: league.season)
+        var dvp: [String: [String: DvPEntry]] = [:]
+        for pos in ["QB", "RB", "WR", "TE", "K", "DEF"] {
+            dvp[pos] = await self.dvp(for: league, position: pos)
+        }
+        let inj = await injuries(for: league)
+        let inactive = await inactives(season: league.season, week: week)
+        let ctx = Fantasy.ProjectionContext(
+            season: league.season, week: week, scoring: league.scoring,
+            players: snapshot, schedule: schedule,
+            dvpByPosition: dvp, injuries: inj, inactives: inactive, config: .default
+        )
+        let projections = Fantasy.projectAll(context: ctx)
+        return WeekContext(
+            week: week, scoring: league.scoring, players: snapshot,
+            schedule: schedule, dvpByPosition: dvp, injuries: inj,
+            inactives: inactive, projections: projections
+        )
+    }
+
     // MARK: - Auth
 
     func signUp(username: String, password: String) async {

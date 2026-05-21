@@ -7,32 +7,23 @@ struct LeagueDetailView: View {
     @State private var league: League? = nil
     @State private var draft: Draft? = nil
     @State private var simSection: SimSection = .overview
-    @State private var week: Int = 1
     @State private var editingTeam: FantasyTeam? = nil
     @State private var viewingTeam: FantasyTeam? = nil
     @State private var showingSettings: Bool = false
     @State private var showingDraftRoom: Bool = false
     @State private var showingDraftSettings: Bool = false
-    @State private var lineupEdit: LineupEditTarget? = nil
     @State private var customizingTeam: FantasyTeam? = nil
 
-    struct LineupEditTarget: Identifiable {
-        let team: FantasyTeam
-        let week: Int
-        var id: String { "\(team.id)-\(week)" }
-    }
-
     // Unified section set used for both simulation and standard leagues.
-    // Standard leagues additionally surface History (when available);
-    // sims keep the original four-tab strategy-testing layout. Chat
-    // lives at the top-level Chat tab, not in here.
+    // Standard leagues additionally surface History (when available).
+    // Matchup and Lineup now live in their own top-level tabs; chat is the
+    // pull-up. What's left here is league-scoped context.
     enum SimSection: String, CaseIterable, Identifiable {
-        case overview, week, playoffs, draft, manage, history
+        case overview, playoffs, draft, manage, history
         var id: String { rawValue }
         var label: String {
             switch self {
             case .overview: return "Overview"
-            case .week:     return "Matchup"
             case .playoffs: return "Playoffs"
             case .draft:    return "Draft"
             case .manage:   return "Manage"
@@ -163,13 +154,6 @@ struct LeagueDetailView: View {
                 }
             }
         }
-        .sheet(item: $lineupEdit) { target in
-            if let league {
-                LineupEditorView(league: league, team: target.team, week: target.week) { updated in
-                    self.league = updated
-                }
-            }
-        }
     }
 
     // Unified page composition. Strategy-testing layout for both sim and
@@ -194,8 +178,6 @@ struct LeagueDetailView: View {
                 onLeagueUpdate: { updated in self.league = updated },
                 onTapTeam: { team in viewingTeam = team }
             )
-        case .week:
-            simulationWeekTab(lg)
         case .playoffs:
             PlayoffBracketView(league: lg)
         case .draft:
@@ -208,7 +190,7 @@ struct LeagueDetailView: View {
     }
 
     private func visibleSections(for lg: League) -> [SimSection] {
-        var sections: [SimSection] = [.overview, .week]
+        var sections: [SimSection] = [.overview]
         if lg.playoffTeams >= 2 { sections.append(.playoffs) }
         sections.append(contentsOf: [.draft, .manage])
         if !lg.isTest, lg.seasonCompleted || lg.parentLeagueID != nil {
@@ -230,24 +212,10 @@ struct LeagueDetailView: View {
         }
     }
 
-    private func simulationWeekTab(_ lg: League) -> some View {
-        let weeks = lg.schedule.map(\.week)
-        let simWeek = max(1, min(lg.schedule.count, lg.simulatedWeek ?? 1))
-        return MatchupView(league: lg, week: $week, onEditLineup: { team, w in
-            lineupEdit = LineupEditTarget(team: team, week: w)
-        })
-            .onAppear {
-                // Snap to the simulated week the first time the tab opens
-                // so the user lands on the "live" matchup.
-                if !weeks.contains(week) { week = simWeek }
-            }
-    }
-
     private func loadLeague() async {
         league = await app.league(leagueID)
         await app.loadSeason(league?.season ?? app.selectedSeason)
         await app.loadLeagueNicknames(leagueID: leagueID)
-        if let plan = league?.schedule.first { week = plan.week }
         draft = await app.draft(leagueID: leagueID)
     }
 

@@ -129,6 +129,14 @@ struct LeagueShellView: View {
                 LeagueTabView()
                     .tabItem { Label("League", systemImage: "trophy.fill") }
                     .tag(AppTab.league)
+
+                LineupTabView()
+                    .tabItem { Label("Lineup", systemImage: "list.bullet.rectangle.portrait") }
+                    .tag(AppTab.lineup)
+
+                MatchupTabView()
+                    .tabItem { Label("Matchup", systemImage: "person.2.fill") }
+                    .tag(AppTab.matchup)
             }
             LeagueChatPeek { showingChat = true }
                 .padding(.bottom, tabBarHeight)

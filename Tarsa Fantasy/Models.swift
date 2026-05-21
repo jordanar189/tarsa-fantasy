@@ -1,6 +1,6 @@
 import Foundation
 
-enum AppTab: String, Hashable { case nfl, league }
+enum AppTab: String, Hashable { case nfl, league, lineup, matchup }
 
 // Persisted UI theme. `system` follows the device setting; `light`/`dark`
 // force the app into that scheme regardless of the device. Default is
