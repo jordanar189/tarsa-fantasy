@@ -28,7 +28,6 @@ struct ComparePlayersView: View {
                 } else {
                     ScrollView {
                         VStack(spacing: FFSpace.l) {
-                            scoringPicker
                             headers
                             statTable
                         }
@@ -48,37 +47,13 @@ struct ComparePlayersView: View {
                 }
             }
             .task {
+                scoring = app.activeScoring
                 await app.ensureProjectedSnapshot(season: app.selectedSeason)
                 let players = app.displaySelectedPlayers()
                 teamTargets = Fantasy.teamTargetsPerWeek(players: players)
                 teamTDs     = Fantasy.teamTouchdownsPerWeek(players: players)
                 snapCounts  = await app.snapCounts(season: app.selectedSeason)
             }
-        }
-    }
-
-    private var scoringPicker: some View {
-        HStack(spacing: FFSpace.s) {
-            ForEach(Scoring.allCases) { s in
-                Button { scoring = s } label: {
-                    Text(s.label.uppercased())
-                        .font(.ffMicro).tracking(0.8)
-                        .padding(.horizontal, 14).padding(.vertical, 6)
-                        .background(
-                            scoring == s ? FFColor.accentSoft : Color.clear,
-                            in: Capsule()
-                        )
-                        .overlay(
-                            Capsule().strokeBorder(
-                                scoring == s ? FFColor.accent : FFColor.border,
-                                lineWidth: 1
-                            )
-                        )
-                        .foregroundStyle(scoring == s ? FFColor.accent : FFColor.textSecondary)
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer()
         }
     }
 

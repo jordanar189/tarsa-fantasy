@@ -113,8 +113,8 @@ struct TeamProfileView: View {
                         Text(pos).ffEyebrow().padding(.leading, FFSpace.s)
                         VStack(spacing: 0) {
                             ForEach(players.sorted {
-                                Fantasy.seasonTotals($0.games).points(scoring: .ppr) >
-                                Fantasy.seasonTotals($1.games).points(scoring: .ppr)
+                                Fantasy.seasonTotals($0.games).points(scoring: app.activeScoring) >
+                                Fantasy.seasonTotals($1.games).points(scoring: app.activeScoring)
                             }) { p in
                                 Button { selectedPlayerID = p.id } label: { rosterRow(p) }
                                     .buttonStyle(.plain)
@@ -139,7 +139,7 @@ struct TeamProfileView: View {
     }
 
     private func rosterRow(_ p: Player) -> some View {
-        let summary = Fantasy.summary(p, scoring: .ppr)
+        let summary = Fantasy.summary(p, scoring: app.activeScoring)
         return HStack(spacing: FFSpace.m) {
             PlayerAvatar(url: p.headshotURL, fallback: p.name.initialsFromName, size: 36)
             VStack(alignment: .leading, spacing: 2) {
@@ -156,7 +156,7 @@ struct TeamProfileView: View {
                 }
             }
             Spacer()
-            Sparkline(series: Fantasy.sparklineSeries(games: p.games, scoring: .ppr))
+            Sparkline(series: Fantasy.sparklineSeries(games: p.games, scoring: app.activeScoring))
             VStack(alignment: .trailing, spacing: 2) {
                 Text(summary.points.fpString).font(.ffStatSmall).foregroundStyle(FFColor.textPrimary)
                 Text("\(summary.pointsPerGame.fpString)/g")
@@ -228,8 +228,8 @@ struct TeamProfileView: View {
 
     private var topPerformersSection: some View {
         let ranked = roster.sorted {
-            Fantasy.seasonTotals($0.games).points(scoring: .ppr) >
-            Fantasy.seasonTotals($1.games).points(scoring: .ppr)
+            Fantasy.seasonTotals($0.games).points(scoring: app.activeScoring) >
+            Fantasy.seasonTotals($1.games).points(scoring: app.activeScoring)
         }.prefix(10)
         return VStack(alignment: .leading, spacing: FFSpace.s) {
             Text("TOP 10 FANTASY PRODUCERS").ffEyebrow().padding(.leading, FFSpace.s)
@@ -251,7 +251,7 @@ struct TeamProfileView: View {
                                 }
                             }
                             Spacer()
-                            Text(Fantasy.summary(p, scoring: .ppr).points.fpString)
+                            Text(Fantasy.summary(p, scoring: app.activeScoring).points.fpString)
                                 .font(.ffStatMedium)
                                 .foregroundStyle(FFColor.textPrimary)
                         }

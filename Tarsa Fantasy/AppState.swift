@@ -8,6 +8,20 @@ final class AppState {
     // Tab selection
     var tab: AppTab = .nfl
 
+    // The league currently in focus. nil = show the league overview/landing
+    // screen; non-nil = the tabbed (NFL + League) experience for this league.
+    // selectedLeague holds the fully-loaded League so league-specific numbers
+    // (scoring, ownership, free agents) can be computed app-wide.
+    var selectedLeagueID: String? = nil
+    var selectedLeague: League? = nil
+    // Guards against an older selectLeague load landing after a newer one.
+    private var selectLeagueToken = 0
+
+    // Scoring/season the rest of the app inherits from the selected league.
+    // Player stat surfaces read these instead of carrying their own toggle.
+    var activeScoring: Scoring { selectedLeague?.scoring ?? .ppr }
+    var activeScoringSettings: ScoringSettings? { selectedLeague?.scoringSettings }
+
     // Season picking
     var seasons: [Int] = []
     var selectedSeason: Int = Calendar.current.component(.year, from: Date())
@@ -96,6 +110,7 @@ final class AppState {
         }
         if !force && !seasons.isEmpty {
             await reloadLeagues()
+            await applyInitialLeagueSelection()
             return
         }
         bootstrapError = nil
@@ -110,10 +125,45 @@ final class AppState {
         }
         await loadSeason(selectedSeason)
         await reloadLeagues()
+        await applyInitialLeagueSelection()
         await reloadFriendsAndDMs()
         await loadProfileTheme()
         await loadInjuries()
         await loadMarketSignals()
+    }
+
+    // Where to land on launch: a sole league drops you straight in; with
+    // several leagues a cold launch starts on the overview so you choose.
+    // No-op once something is already selected (warm re-bootstrap / returning).
+    private func applyInitialLeagueSelection() async {
+        guard selectedLeagueID == nil else { return }
+        if leagueSummaries.count == 1, let only = leagueSummaries.first {
+            await selectLeague(only.id)
+        }
+    }
+
+    // Focus a league (or nil to return to the overview). Loads the full league
+    // plus its season + nicknames so league-specific numbers are ready. Keeps
+    // the user wherever they are — only the surrounding data changes.
+    func selectLeague(_ id: String?) async {
+        selectedLeagueID = id
+        guard let id else { selectedLeague = nil; return }
+        selectLeagueToken &+= 1
+        let token = selectLeagueToken
+        guard let lg = await league(id) else { return }
+        guard token == selectLeagueToken else { return }
+        selectedLeague = lg
+        if selectedSeason != lg.season { selectedSeason = lg.season }
+        await loadSeason(lg.season)
+        await loadLeagueNicknames(leagueID: id)
+    }
+
+    // Re-pull the selected league after a mutation so the switcher, NFL tab,
+    // and league views all see fresh rosters/numbers.
+    func refreshSelectedLeague() async {
+        guard let id = selectedLeagueID else { return }
+        if let lg = await league(id) { selectedLeague = lg }
+        await loadLeagueNicknames(leagueID: id)
     }
 
     // MARK: - Auth
@@ -130,6 +180,8 @@ final class AppState {
         try? await remote.signOut()
         session = nil
         leagueSummaries = []
+        selectedLeagueID = nil
+        selectedLeague = nil
         friendships = []
         dmInbox = []
     }
@@ -145,6 +197,7 @@ final class AppState {
             // the old LeagueStore — the user opted to discard it.
             Self.removeLocalLeaguesFileIfPresent()
             await reloadLeagues()
+            await applyInitialLeagueSelection()
             await reloadFriendsAndDMs()
             await loadProfileTheme()
         } catch {
@@ -492,6 +545,11 @@ final class AppState {
         guard let session else { leagueSummaries = []; return }
         do {
             leagueSummaries = try await remote.myLeagues(userID: session.userID)
+            // Drop the selection if that league is gone (deleted / left).
+            if let id = selectedLeagueID, !leagueSummaries.contains(where: { $0.id == id }) {
+                selectedLeagueID = nil
+                selectedLeague = nil
+            }
         } catch {
             leagueSummaries = []
             bootstrapError = error.localizedDescription
@@ -524,7 +582,7 @@ final class AppState {
             scoringSettings: scoringSettings
         )
         await reloadLeagues()
-        await loadSeason(season)
+        await selectLeague(league.id)
         return league
     }
 
@@ -774,7 +832,9 @@ final class AppState {
     func handleInvite(url: URL) {
         guard let code = JoinLink.code(from: url) else { return }
         pendingJoinCode = code
-        tab = .leagues
+        // Surface the overview (join sheet lives there) so the code can be used.
+        selectedLeagueID = nil
+        selectedLeague = nil
     }
 
     func claimTeam(teamID: String) async throws -> League? {
@@ -1285,6 +1345,7 @@ final class AppState {
             try await remote.snapshotTeams(leagueID: league.id, week: 0)
         }
         await reloadLeagues()
+        await selectLeague(league.id)
         return league
     }
 

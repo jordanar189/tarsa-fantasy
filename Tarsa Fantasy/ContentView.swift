@@ -47,6 +47,10 @@ struct ContentView: View {
         Group {
             if app.session == nil {
                 AuthGateView()
+            } else if app.selectedLeagueID == nil {
+                // No league in focus → the overview/landing screen, where you
+                // pick, create, or join a league (and reach DMs).
+                LeagueOverviewView()
             } else {
                 mainTabs
             }
@@ -56,37 +60,22 @@ struct ContentView: View {
     }
 
     private var mainTabs: some View {
-        @Bindable var app = app
-        return TabView(selection: $app.tab) {
-            ChatView()
-                .tabItem { Label("Chat", systemImage: "message.fill") }
-                .tag(AppTab.chat)
-
-            NFLHubView()
-                .tabItem { Label("NFL", systemImage: "football.fill") }
-                .tag(AppTab.nfl)
-
-            LeaguesView()
-                .tabItem { Label("Leagues", systemImage: "trophy.fill") }
-                .tag(AppTab.leagues)
-        }
-        // Pinned to the top edge so it doesn't shift any content. Ignores
-        // safe areas so it sits flush against the navigation bar's bottom
-        // border on every tab.
-        .overlay(alignment: .top) {
-            TopRefreshIndicator(isActive: app.isRefreshingSeason)
-        }
-        .overlay {
-            if let error = app.bootstrapError {
-                bootstrapErrorOverlay(error)
+        LeagueShellView()
+            // Pinned to the top edge so it doesn't shift any content.
+            .overlay(alignment: .top) {
+                TopRefreshIndicator(isActive: app.isRefreshingSeason)
             }
-        }
-        // App-wide feedback button, shown only to testers/admins.
-        .overlay {
-            if app.canGiveFeedback {
-                FeedbackButton()
+            .overlay {
+                if let error = app.bootstrapError {
+                    bootstrapErrorOverlay(error)
+                }
             }
-        }
+            // App-wide feedback button, shown only to testers/admins.
+            .overlay {
+                if app.canGiveFeedback {
+                    FeedbackButton()
+                }
+            }
     }
 
     private func bootstrapErrorOverlay(_ error: String) -> some View {
@@ -116,6 +105,93 @@ struct ContentView: View {
                 .strokeBorder(FFColor.border, lineWidth: 1)
         )
         .padding(40)
+    }
+}
+
+// The league-focused experience: NFL + League tabs with a Sleeper-style
+// pull-up league chat. Shown once a league is selected.
+struct LeagueShellView: View {
+    @Environment(AppState.self) private var app
+    @State private var showingChat = false
+
+    var body: some View {
+        @Bindable var app = app
+        TabView(selection: $app.tab) {
+            NFLHubView()
+                .tabItem { Label("NFL", systemImage: "football.fill") }
+                .tag(AppTab.nfl)
+
+            LeagueTabView()
+                .tabItem { Label("League", systemImage: "trophy.fill") }
+                .tag(AppTab.league)
+        }
+        // Sleeper-style pull-up league chat handle, sitting just above the tab
+        // bar on every tab.
+        .safeAreaInset(edge: .bottom) {
+            LeagueChatHandle { showingChat = true }
+        }
+        .sheet(isPresented: $showingChat) {
+            if let lg = app.selectedLeague {
+                NavigationStack { LeagueChatView(league: lg) }
+                    .presentationDetents([.large, .medium])
+                    .presentationDragIndicator(.visible)
+            }
+        }
+    }
+}
+
+// Hosts the selected league's detail screen as a tab root, with the league
+// switcher in the title position.
+struct LeagueTabView: View {
+    @Environment(AppState.self) private var app
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let id = app.selectedLeagueID {
+                    LeagueDetailView(leagueID: id)
+                } else {
+                    Color.clear
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .principal) { LeagueSwitcher() }
+            }
+        }
+    }
+}
+
+// The pull-up handle that opens league chat — a thin bar above the tab bar.
+// Tap or swipe up to open. Uses tap + drag gestures (not a Button) so the
+// upward-swipe gesture and the tap coexist cleanly.
+struct LeagueChatHandle: View {
+    let open: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.compact.up")
+                .font(.system(size: 15, weight: .bold))
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(.system(size: 12, weight: .semibold))
+            Text("League chat")
+                .font(.ffMicro)
+                .tracking(0.6)
+        }
+        .foregroundStyle(FFColor.textSecondary)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .top) {
+            Rectangle().fill(FFColor.border).frame(height: 0.5)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { open() }
+        .gesture(
+            DragGesture(minimumDistance: 12)
+                .onEnded { value in
+                    if value.translation.height < -24 { open() }
+                }
+        )
     }
 }
 

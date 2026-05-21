@@ -48,7 +48,6 @@ struct PlayerDetailView: View {
                             if let injury = app.injuries[player.id] {
                                 injuryCard(injury)
                             }
-                            scoringPicker
                             sectionPicker
                             switch section {
                             case .overview: overviewSection(for: player)
@@ -75,12 +74,15 @@ struct PlayerDetailView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .principal) { LeagueSwitcher() }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .foregroundStyle(FFColor.accent)
                 }
             }
             .task(id: playerID) {
+                // Stats inherit the selected league's scoring.
+                scoring = app.activeScoring
                 await app.ensureProjectedSnapshot(season: app.selectedSeason)
                 schedules = await app.schedules(season: app.selectedSeason)
                 snapCounts = await app.snapCounts(season: app.selectedSeason)
@@ -101,6 +103,7 @@ struct PlayerDetailView: View {
                 )
                 nicknameHistory = await app.playerNicknameHistory(playerID: playerID)
             }
+            .onChange(of: app.activeScoring) { _, new in scoring = new }
             .onChange(of: scoring) { _, _ in
                 rankByID = Fantasy.positionRanks(
                     players: app.displaySelectedPlayers(), scoring: scoring
@@ -358,35 +361,6 @@ struct PlayerDetailView: View {
             RoundedRectangle(cornerRadius: FFRadius.s)
                 .strokeBorder(color.opacity(0.35), lineWidth: 1)
         )
-    }
-
-    // MARK: - Scoring picker (kept from prior version)
-
-    private var scoringPicker: some View {
-        HStack(spacing: FFSpace.s) {
-            ForEach(Scoring.allCases) { s in
-                Button {
-                    scoring = s
-                } label: {
-                    Text(s.label.uppercased())
-                        .font(.ffMicro).tracking(0.8)
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                        .background(
-                            scoring == s ? FFColor.accentSoft : Color.clear,
-                            in: Capsule()
-                        )
-                        .overlay(
-                            Capsule().strokeBorder(
-                                scoring == s ? FFColor.accent : FFColor.border,
-                                lineWidth: 1
-                            )
-                        )
-                        .foregroundStyle(scoring == s ? FFColor.accent : FFColor.textSecondary)
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer()
-        }
     }
 
     // MARK: - Section picker

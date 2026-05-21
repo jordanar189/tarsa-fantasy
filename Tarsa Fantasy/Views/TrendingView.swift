@@ -147,7 +147,7 @@ struct TrendingView: View {
             guard Fantasy.isFantasyPosition(p.position) else { return nil }
             let recent = p.games.filter { $0.week >= lowerWeek && $0.week <= maxWeek }
             guard recent.count >= 2 else { return nil }
-            let avg = recent.reduce(0.0) { $0 + $1.points(scoring: .ppr) } / Double(recent.count)
+            let avg = recent.reduce(0.0) { $0 + $1.points(scoring: app.activeScoring) } / Double(recent.count)
             return StreakEntry(player: p, avgRecent: Fantasy.round2(avg), gamesRecent: recent.count)
         }
         let sorted = entries.sorted { top ? $0.avgRecent > $1.avgRecent : $0.avgRecent < $1.avgRecent }
@@ -195,7 +195,7 @@ struct TrendingView: View {
                 }
             }
             Spacer()
-            Sparkline(series: Fantasy.sparklineSeries(games: p.games, scoring: .ppr))
+            Sparkline(series: Fantasy.sparklineSeries(games: p.games, scoring: app.activeScoring))
             Text("\(entry.avgRecent.fpString)/g")
                 .font(.ffStatSmall)
                 .foregroundStyle(top ? FFColor.positive : FFColor.negative)
