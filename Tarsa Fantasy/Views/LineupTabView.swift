@@ -39,14 +39,12 @@ struct LineupTabView: View {
         NavigationStack {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
-                VStack(spacing: 0) {
-                    LeagueSwitcherBar()
-                    content
-                }
+                content
             }
             .navigationTitle("Lineup")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
+            .leagueSwitcher()
         }
         .onAppear {
             if !didInit { week = defaultWeek; didInit = true }
@@ -226,8 +224,11 @@ struct LineupTabView: View {
                 }
                 ForEach(suggestions, id: \.benchID) { s in
                     if let p = leaguePlayers[s.benchID] {
-                        Text("Start \(name(s.benchID, p)) (\(p.position)) — projected +\(s.gain.fpString)")
-                            .font(.ffCaption).foregroundStyle(FFColor.textSecondary)
+                        (Text("Start \(name(s.benchID, p)) (\(p.position)) — projected ")
+                            .foregroundColor(FFColor.textSecondary)
+                         + Text("+\(s.gain.fpString)")
+                            .foregroundColor(FFColor.positive).bold())
+                            .font(.ffCaption)
                     }
                 }
             }
