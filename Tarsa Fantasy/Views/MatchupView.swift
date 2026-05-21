@@ -44,8 +44,19 @@ struct MatchupView: View {
 
     // MARK: - Week picker
 
+    // Regular-season weeks plus any postseason weeks, so a manager can review
+    // and set lineups for their playoff games too.
+    private var selectableWeeks: [Int] {
+        var weeks = league.schedule.map(\.week)
+        if league.playoffTeams >= 2 {
+            let rounds = max(1, Int(ceil(log2(Double(league.playoffTeams)))))
+            for r in 0..<rounds { weeks.append(league.playoffStartWeek + r) }
+        }
+        return weeks
+    }
+
     private var weekPicker: some View {
-        let weeks = league.schedule.map(\.week)
+        let weeks = selectableWeeks
         return HStack {
             Text("WEEK").ffEyebrow()
             Spacer()
@@ -73,6 +84,8 @@ struct MatchupView: View {
     private var content: some View {
         if myTeam == nil {
             spectatorMessage
+        } else if week > league.regularSeasonWeeks {
+            playoffContent
         } else {
             let players = Fantasy.playersFor(league: league,
                                              snapshot: app.players(season: league.season))
@@ -86,6 +99,63 @@ struct MatchupView: View {
                 emptyMessage
             }
         }
+    }
+
+    // Playoff weeks aren't in the stored schedule — derive the viewer's game
+    // from the bracket and render it like a regular matchup.
+    @ViewBuilder
+    private var playoffContent: some View {
+        let players = Fantasy.playersFor(league: league,
+                                         snapshot: app.players(season: league.season))
+        let bracket = Fantasy.playoffBracket(league: league, players: players)
+        if let id = myTeam?.id,
+           let round = bracket.rounds.first(where: { $0.week == week }),
+           let game = round.games.first(where: { $0.top.teamID == id || $0.bottom.teamID == id }) {
+            let iAmTop = game.top.teamID == id
+            let opp = iAmTop ? game.bottom : game.top
+            if opp.placeholder == "BYE" {
+                emptyState(icon: "calendar.badge.clock",
+                           title: "First-round bye",
+                           detail: "You're seeded into the next round — no game this week.")
+                lineupButton
+            } else if let m = buildPlayoffMatchup(myID: id, oppTeamID: opp.teamID, players: players) {
+                VStack(spacing: FFSpace.l) {
+                    Text(round.name.uppercased()).ffEyebrow(color: FFColor.accent)
+                    matchupBody(matchup: m, myTeamID: id)
+                }
+            } else {
+                emptyState(icon: "hourglass",
+                           title: "\(round.name) · Week \(week)",
+                           detail: "Your opponent is decided once this round's prior games finish.")
+                lineupButton
+            }
+        } else {
+            emptyState(icon: "trophy",
+                       title: bracket.started ? "Season over for your team" : "Playoffs not started",
+                       detail: bracket.started
+                            ? "Your team isn't in the bracket this week."
+                            : "The bracket begins Week \(league.playoffStartWeek).")
+        }
+    }
+
+    private func buildPlayoffMatchup(myID: String, oppTeamID: String?, players: [String: Player]) -> LeagueMatchup? {
+        func side(_ tid: String) -> LeagueSide? {
+            guard let team = league.teams.first(where: { $0.id == tid }) else { return nil }
+            let s = Fantasy.teamWeekScore(
+                players: players, team: team, config: league.rosterConfig,
+                week: week, scoring: league.scoring, settings: league.scoringSettings
+            )
+            return LeagueSide(teamID: tid, name: team.name, points: s.total, roster: s.roster)
+        }
+        guard let mine = side(myID) else { return nil }
+        let theirs: LeagueSide
+        if let oppTeamID, let s = side(oppTeamID) {
+            theirs = s
+        } else {
+            theirs = LeagueSide(teamID: "", name: "TBD", points: 0, roster: [])
+        }
+        let played = mine.roster.contains { $0.played } || theirs.roster.contains { $0.played }
+        return LeagueMatchup(id: "po-\(week)-\(myID)", home: mine, away: theirs, played: played)
     }
 
     private var spectatorMessage: some View {

@@ -25,8 +25,15 @@ struct CreateLeagueView: View {
     @State private var rosterConfig: RosterConfig = .default
     @State private var simDraftMode: AppState.SimulationDraftMode = .preDrafted
     @State private var simBotCount: Int = 7
+    @State private var regularSeasonWeeks: Int = 14
+    @State private var playoffTeams: Int = 6
+    @State private var divisionsEnabled: Bool = false
+    @State private var divisionCount: Int = 2
     @State private var error: String? = nil
     @State private var saving: Bool = false
+
+    private static let divisionDefaults = ["East", "West", "North", "South"]
+    private var teamCount: Int { 1 + otherCount }
 
     var body: some View {
         NavigationStack {
@@ -105,6 +112,35 @@ struct CreateLeagueView: View {
                             rosterStepper("K",     value: $rosterConfig.k,     range: 0...2)
                             rosterStepper("DEF",   value: $rosterConfig.def,   range: 0...2)
                             rosterStepper("Bench", value: $rosterConfig.bench, range: 0...12)
+                            rosterStepper("IR",    value: $rosterConfig.ir,    range: 0...6)
+                        }
+
+                        if leagueType == .standard {
+                            section("Season format",
+                                    footer: playoffSummaryFooter) {
+                                stepperRow("Regular season", value: $regularSeasonWeeks, range: 4...17) {
+                                    "\($0) weeks"
+                                }
+                                stepperRow("Playoff teams", value: $playoffTeams, range: 0...teamCount) {
+                                    $0 == 0 ? "Off" : "\($0) teams"
+                                }
+                            }
+
+                            section("Divisions",
+                                    footer: "Division winners are seeded ahead of wildcards in the playoffs. You can rename divisions and reassign teams later in settings.") {
+                                Toggle(isOn: $divisionsEnabled) {
+                                    Text("Use divisions").font(.ffBody).foregroundStyle(FFColor.textSecondary)
+                                }
+                                .tint(FFColor.accent)
+                                .padding(.horizontal, FFSpace.l).padding(.vertical, 10)
+                                .ffHairlineBottom()
+                                if divisionsEnabled {
+                                    stepperRow("Divisions", value: $divisionCount,
+                                               range: 2...max(2, min(4, teamCount))) {
+                                        "\($0) divisions"
+                                    }
+                                }
+                            }
                         }
 
                         if let error {
@@ -151,6 +187,17 @@ struct CreateLeagueView: View {
         case .simulation:
             return simBotCount >= 1
         }
+    }
+
+    private var playoffSummaryFooter: String {
+        let teams = min(playoffTeams, teamCount)
+        guard teams >= 2 else {
+            return "No postseason — final standings after \(regularSeasonWeeks) weeks decide it."
+        }
+        let rounds = max(1, Int(ceil(log2(Double(teams)))))
+        let start = regularSeasonWeeks + 1
+        let end = regularSeasonWeeks + rounds
+        return "Top \(teams) make the playoffs (weeks \(start)–\(end)). Higher seeds get first-round byes when needed."
     }
 
     private var seasonChoices: [Int] {
@@ -272,10 +319,17 @@ struct CreateLeagueView: View {
                 : name
             switch leagueType {
             case .standard:
+                let divisions = divisionsEnabled
+                    ? Array(Self.divisionDefaults.prefix(min(divisionCount, 4)))
+                    : []
                 _ = try await app.createLeague(
                     name: resolvedName, season: season, scoring: scoring,
                     yourTeamName: yourTeamName, otherTeamNames: otherTeamNames,
-                    rosterConfig: rosterConfig
+                    rosterConfig: rosterConfig,
+                    regularSeasonWeeks: regularSeasonWeeks,
+                    playoffTeams: min(playoffTeams, teamCount),
+                    playoffReseed: true,
+                    divisionNames: divisions
                 )
             case .simulation:
                 _ = try await app.createSimulation(
