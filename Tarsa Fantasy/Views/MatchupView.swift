@@ -12,6 +12,9 @@ struct MatchupView: View {
     @Environment(AppState.self) private var app
     let league: League
     @Binding var week: Int
+    // Invoked when the viewer taps "Set lineup" — the parent owns league state
+    // and presents the editor so it can refresh on save.
+    var onEditLineup: ((FantasyTeam, Int) -> Void)? = nil
 
     @State private var dvpByPosition: [String: [String: DvPEntry]] = [:]
     @State private var schedule: [NFLGame] = []
@@ -41,8 +44,19 @@ struct MatchupView: View {
 
     // MARK: - Week picker
 
+    // Regular-season weeks plus any postseason weeks, so a manager can review
+    // and set lineups for their playoff games too.
+    private var selectableWeeks: [Int] {
+        var weeks = league.schedule.map(\.week)
+        if league.playoffTeams >= 2 {
+            let rounds = max(1, Int(ceil(log2(Double(league.playoffTeams)))))
+            for r in 0..<rounds { weeks.append(league.playoffStartWeek + r) }
+        }
+        return weeks
+    }
+
     private var weekPicker: some View {
-        let weeks = league.schedule.map(\.week)
+        let weeks = selectableWeeks
         return HStack {
             Text("WEEK").ffEyebrow()
             Spacer()
@@ -70,6 +84,8 @@ struct MatchupView: View {
     private var content: some View {
         if myTeam == nil {
             spectatorMessage
+        } else if week > league.regularSeasonWeeks {
+            playoffContent
         } else {
             let players = Fantasy.playersFor(league: league,
                                              snapshot: app.players(season: league.season))
@@ -83,6 +99,63 @@ struct MatchupView: View {
                 emptyMessage
             }
         }
+    }
+
+    // Playoff weeks aren't in the stored schedule — derive the viewer's game
+    // from the bracket and render it like a regular matchup.
+    @ViewBuilder
+    private var playoffContent: some View {
+        let players = Fantasy.playersFor(league: league,
+                                         snapshot: app.players(season: league.season))
+        let bracket = Fantasy.playoffBracket(league: league, players: players)
+        if let id = myTeam?.id,
+           let round = bracket.rounds.first(where: { $0.week == week }),
+           let game = round.games.first(where: { $0.top.teamID == id || $0.bottom.teamID == id }) {
+            let iAmTop = game.top.teamID == id
+            let opp = iAmTop ? game.bottom : game.top
+            if opp.placeholder == "BYE" {
+                emptyState(icon: "calendar.badge.clock",
+                           title: "First-round bye",
+                           detail: "You're seeded into the next round — no game this week.")
+                lineupButton
+            } else if let m = buildPlayoffMatchup(myID: id, oppTeamID: opp.teamID, players: players) {
+                VStack(spacing: FFSpace.l) {
+                    Text(round.name.uppercased()).ffEyebrow(color: FFColor.accent)
+                    matchupBody(matchup: m, myTeamID: id)
+                }
+            } else {
+                emptyState(icon: "hourglass",
+                           title: "\(round.name) · Week \(week)",
+                           detail: "Your opponent is decided once this round's prior games finish.")
+                lineupButton
+            }
+        } else {
+            emptyState(icon: "trophy",
+                       title: bracket.started ? "Season over for your team" : "Playoffs not started",
+                       detail: bracket.started
+                            ? "Your team isn't in the bracket this week."
+                            : "The bracket begins Week \(league.playoffStartWeek).")
+        }
+    }
+
+    private func buildPlayoffMatchup(myID: String, oppTeamID: String?, players: [String: Player]) -> LeagueMatchup? {
+        func side(_ tid: String) -> LeagueSide? {
+            guard let team = league.teams.first(where: { $0.id == tid }) else { return nil }
+            let s = Fantasy.teamWeekScore(
+                players: players, team: team, config: league.rosterConfig,
+                week: week, scoring: league.scoring, settings: league.scoringSettings
+            )
+            return LeagueSide(teamID: tid, name: team.name, points: s.total, roster: s.roster)
+        }
+        guard let mine = side(myID) else { return nil }
+        let theirs: LeagueSide
+        if let oppTeamID, let s = side(oppTeamID) {
+            theirs = s
+        } else {
+            theirs = LeagueSide(teamID: "", name: "TBD", points: 0, roster: [])
+        }
+        let played = mine.roster.contains { $0.played } || theirs.roster.contains { $0.played }
+        return LeagueMatchup(id: "po-\(week)-\(myID)", home: mine, away: theirs, played: played)
     }
 
     private var spectatorMessage: some View {
@@ -130,8 +203,38 @@ struct MatchupView: View {
 
         VStack(spacing: FFSpace.l) {
             scoreHeader(mine: mine, theirs: theirs, played: m.played)
+            lineupButton
             slotByPlot(mine: mine.roster, theirs: theirs.roster)
         }
+    }
+
+    // "Set lineup" — only the team's owner (or sim controller) can edit, and
+    // only when there's an edit handler wired up.
+    @ViewBuilder
+    private var lineupButton: some View {
+        if let onEditLineup, let team = myTeam, canEditLineup {
+            Button {
+                onEditLineup(team, week)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "slider.horizontal.3")
+                    Text("Set Week \(week) lineup")
+                }
+                .font(.ffHeadline)
+                .foregroundStyle(FFColor.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .overlay(RoundedRectangle(cornerRadius: FFRadius.s).strokeBorder(FFColor.border, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    // Owner of the team, or the sim's controller (every team is creator-owned).
+    private var canEditLineup: Bool {
+        guard let team = myTeam else { return false }
+        if league.isTest { return true }
+        return team.ownerID == app.session?.userID || league.creatorID == app.session?.userID
     }
 
     // MARK: - Score header

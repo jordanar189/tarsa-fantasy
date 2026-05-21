@@ -331,15 +331,22 @@ enum Fantasy {
         return ranked.first?.id
     }
 
-    static func generateSchedule(teamIDs: [String]) -> [ScheduleWeek] {
+    // Round-robin schedule. When `weeks` is nil, produces a single full
+    // round-robin (count-1 weeks) for backward compatibility. When `weeks` is
+    // given, cycles the round-robin rounds to fill exactly that many weeks —
+    // so a real-length regular season (e.g. 14 weeks) can be built from any
+    // team count. Rematches flip home/away on each subsequent cycle.
+    static func generateSchedule(teamIDs: [String], weeks: Int? = nil) -> [ScheduleWeek] {
         var teams = teamIDs
         let byeMarker = "__bye__"
         if teams.count % 2 == 1 { teams.append(byeMarker) }
         let count = teams.count
         guard count >= 2 else { return [] }
+
+        // Build the base set of round-robin rounds.
         var rotation = teams
-        var schedule: [ScheduleWeek] = []
-        for week in 1..<count {
+        var baseRounds: [(matchups: [[String]], byes: [String])] = []
+        for _ in 1..<count {
             var matchups: [[String]] = []
             var byes: [String] = []
             for i in 0..<(count / 2) {
@@ -349,11 +356,24 @@ enum Fantasy {
                 else if b == byeMarker { byes.append(a) }
                 else                   { matchups.append([a, b]) }
             }
-            schedule.append(ScheduleWeek(week: week, matchups: matchups, byes: byes))
+            baseRounds.append((matchups, byes))
             let first = rotation[0]
             let last  = rotation[count - 1]
             let mid   = Array(rotation[1..<(count - 1)])
             rotation = [first, last] + mid
+        }
+        guard !baseRounds.isEmpty else { return [] }
+
+        let target = weeks ?? baseRounds.count
+        var schedule: [ScheduleWeek] = []
+        for i in 0..<max(0, target) {
+            let base = baseRounds[i % baseRounds.count]
+            let cycle = i / baseRounds.count
+            // Flip home/away every other cycle so repeat matchups alternate.
+            let matchups = cycle.isMultiple(of: 2)
+                ? base.matchups
+                : base.matchups.map { [$0[1], $0[0]] }
+            schedule.append(ScheduleWeek(week: i + 1, matchups: matchups, byes: base.byes))
         }
         return schedule
     }
@@ -374,12 +394,15 @@ enum Fantasy {
         roster: [String],
         players: [String: Player],
         config: RosterConfig,
-        scoring: Scoring
+        scoring: Scoring,
+        settings: ScoringSettings? = nil,
+        ir: Set<String> = []
     ) -> [String] {
         let ranked = roster
+            .filter { !ir.contains($0) }
             .compactMap { pid -> (id: String, position: String, points: Double)? in
                 guard let p = players[pid] else { return nil }
-                let pts = seasonTotals(p.games).points(scoring: scoring)
+                let pts = seasonTotals(p.games).points(scoring: scoring, settings: settings)
                 return (pid, p.position, pts)
             }
             .sorted { $0.points > $1.points }
@@ -411,22 +434,41 @@ enum Fantasy {
         team: FantasyTeam,
         players: [String: Player],
         config: RosterConfig,
-        scoring: Scoring
+        scoring: Scoring,
+        settings: ScoringSettings? = nil,
+        week: Int? = nil
     ) -> (starters: [String], bench: [String]) {
+        let irSet = Set(team.ir)
+        // Prefer the frozen lineup for the requested week, then the live
+        // lineup, then an auto-fill.
+        let chosen: [String]? = {
+            if let week, let frozen = team.weeklyLineups[week],
+               frozen.count == config.starterCount,
+               frozen.contains(where: { !$0.isEmpty }) {
+                return frozen
+            }
+            return nil
+        }()
         let starters: [String]
-        if team.starters.count == config.starterCount
-            && team.starters.contains(where: { !$0.isEmpty }) {
-            // Drop starter IDs no longer on the roster.
+        if let chosen {
             let onRoster = Set(team.roster)
-            starters = team.starters.map { onRoster.contains($0) ? $0 : "" }
+            starters = chosen.map { onRoster.contains($0) ? $0 : "" }
+        } else if team.starters.count == config.starterCount
+            && team.starters.contains(where: { !$0.isEmpty }) {
+            // Drop starter IDs no longer on the roster (or moved to IR).
+            let onRoster = Set(team.roster)
+            starters = team.starters.map {
+                (onRoster.contains($0) && !irSet.contains($0)) ? $0 : ""
+            }
         } else {
             starters = autoFillLineup(
                 roster: team.roster, players: players,
-                config: config, scoring: scoring
+                config: config, scoring: scoring, settings: settings, ir: irSet
             )
         }
         let startingSet = Set(starters.filter { !$0.isEmpty })
-        let bench = team.roster.filter { !startingSet.contains($0) }
+        // Bench excludes both starters and IR-stashed players.
+        let bench = team.roster.filter { !startingSet.contains($0) && !irSet.contains($0) }
         return (starters, bench)
     }
 
@@ -435,10 +477,11 @@ enum Fantasy {
         team: FantasyTeam,
         config: RosterConfig,
         week: Int,
-        scoring: Scoring
+        scoring: Scoring,
+        settings: ScoringSettings? = nil
     ) -> TeamWeekScore {
         let (starters, bench) = resolveLineup(
-            team: team, players: players, config: config, scoring: scoring
+            team: team, players: players, config: config, scoring: scoring, settings: settings, week: week
         )
         var total: Double = 0
         var rows: [LeagueRosterEntry] = []
@@ -461,7 +504,7 @@ enum Fantasy {
             }
             let player = players[pid]
             let game = player?.games.first { $0.week == week }
-            let pts = game?.points(scoring: scoring) ?? 0
+            let pts = game?.points(scoring: scoring, settings: settings) ?? 0
             total += pts
             rows.append(LeagueRosterEntry(
                 id: "s\(i)-\(pid)",
@@ -478,7 +521,7 @@ enum Fantasy {
         for (i, pid) in bench.enumerated() {
             let player = players[pid]
             let game = player?.games.first { $0.week == week }
-            let pts = game?.points(scoring: scoring) ?? 0
+            let pts = game?.points(scoring: scoring, settings: settings) ?? 0
             rows.append(LeagueRosterEntry(
                 id: "b\(i)-\(pid)",
                 playerID: pid,
@@ -503,13 +546,14 @@ enum Fantasy {
         guard let plan = league.schedule.first(where: { $0.week == week }) else {
             return ([], [])
         }
+        let settings = league.scoringSettings
         var matchups: [LeagueMatchup] = []
         for pair in plan.matchups {
             guard pair.count == 2,
                   let home = teamsByID[pair[0]],
                   let away = teamsByID[pair[1]] else { continue }
-            let h = teamWeekScore(players: players, team: home, config: league.rosterConfig, week: week, scoring: league.scoring)
-            let a = teamWeekScore(players: players, team: away, config: league.rosterConfig, week: week, scoring: league.scoring)
+            let h = teamWeekScore(players: players, team: home, config: league.rosterConfig, week: week, scoring: league.scoring, settings: settings)
+            let a = teamWeekScore(players: players, team: away, config: league.rosterConfig, week: week, scoring: league.scoring, settings: settings)
             let played = h.roster.contains { $0.played } || a.roster.contains { $0.played }
             matchups.append(LeagueMatchup(
                 id: "\(week)-\(home.id)-\(away.id)",
@@ -755,19 +799,21 @@ enum Fantasy {
     }
 
     static func standings(league: League, players: [String: Player]) -> [StandingsRow] {
-        struct Acc { var w = 0; var l = 0; var t = 0; var pf = 0.0; var pa = 0.0; var name = "" }
+        struct Acc { var w = 0; var l = 0; var t = 0; var pf = 0.0; var pa = 0.0; var name = ""; var division: Int? }
         var rows: [String: Acc] = [:]
         for team in league.teams {
-            rows[team.id] = Acc(name: team.name)
+            rows[team.id] = Acc(name: team.name, division: team.division)
         }
         let teamsByID = Dictionary(uniqueKeysWithValues: league.teams.map { ($0.id, $0) })
-        for plan in league.schedule {
+        let settings = league.scoringSettings
+        // Only head-to-head regular-season weeks count toward the standings.
+        for plan in league.schedule where plan.week <= league.regularSeasonWeeks {
             for pair in plan.matchups {
                 guard pair.count == 2,
                       let home = teamsByID[pair[0]],
                       let away = teamsByID[pair[1]] else { continue }
-                let h = teamWeekScore(players: players, team: home, config: league.rosterConfig, week: plan.week, scoring: league.scoring)
-                let a = teamWeekScore(players: players, team: away, config: league.rosterConfig, week: plan.week, scoring: league.scoring)
+                let h = teamWeekScore(players: players, team: home, config: league.rosterConfig, week: plan.week, scoring: league.scoring, settings: settings)
+                let a = teamWeekScore(players: players, team: away, config: league.rosterConfig, week: plan.week, scoring: league.scoring, settings: settings)
                 if !(h.roster.contains { $0.played } || a.roster.contains { $0.played }) { continue }
                 rows[home.id]!.pf += h.total
                 rows[home.id]!.pa += a.total
@@ -785,8 +831,36 @@ enum Fantasy {
                 }
             }
         }
+        // Overall order: win% then points-for. (Ties in record broken by PF.)
         let sorted = rows.map { (id: $0.key, acc: $0.value) }
-            .sorted { ($0.acc.w, $0.acc.pf) > ($1.acc.w, $1.acc.pf) }
+            .sorted { lhs, rhs in
+                if lhs.acc.w != rhs.acc.w { return lhs.acc.w > rhs.acc.w }
+                return lhs.acc.pf > rhs.acc.pf
+            }
+        let orderedIDs = sorted.map(\.id)
+
+        // Division rank: position within the team's own division, in overall order.
+        var divisionRank: [String: Int] = [:]
+        if league.hasDivisions {
+            var perDivCount: [Int: Int] = [:]
+            for id in orderedIDs {
+                guard let d = sorted.first(where: { $0.id == id })?.acc.division else { continue }
+                perDivCount[d, default: 0] += 1
+                divisionRank[id] = perDivCount[d]
+            }
+        }
+
+        // Playoff seeds (division winners first when divisions are on).
+        let teamDivision = Dictionary(uniqueKeysWithValues: league.teams.map { ($0.id, $0.division) })
+        let seededIDs = playoffSeededTeamIDs(
+            orderedTeamIDs: orderedIDs,
+            teamDivision: teamDivision,
+            divisionCount: league.divisionNames.count,
+            playoffTeams: league.playoffTeams
+        )
+        var seedByTeam: [String: Int] = [:]
+        for (i, id) in seededIDs.enumerated() { seedByTeam[id] = i + 1 }
+
         return sorted.enumerated().map { (i, item) in
             StandingsRow(
                 id: item.id,
@@ -797,9 +871,248 @@ enum Fantasy {
                 pointsFor: round2(item.acc.pf),
                 pointsAgainst: round2(item.acc.pa),
                 games: item.acc.w + item.acc.l + item.acc.t,
-                rank: i + 1
+                rank: i + 1,
+                division: item.acc.division,
+                divisionRank: divisionRank[item.id],
+                playoffSeed: seedByTeam[item.id]
             )
         }
+    }
+
+    // Ordered team IDs that make the playoffs, seed 1..N. Division winners are
+    // seeded ahead of wildcards (each division's best team by overall order),
+    // then the best remaining teams fill the rest.
+    static func playoffSeededTeamIDs(
+        orderedTeamIDs: [String],
+        teamDivision: [String: Int?],
+        divisionCount: Int,
+        playoffTeams: Int
+    ) -> [String] {
+        let n = min(max(playoffTeams, 0), orderedTeamIDs.count)
+        guard n > 0 else { return [] }
+        guard divisionCount >= 2 else { return Array(orderedTeamIDs.prefix(n)) }
+
+        var winners: [String] = []
+        var seenDiv = Set<Int>()
+        for tid in orderedTeamIDs {
+            if let d = teamDivision[tid] ?? nil, !seenDiv.contains(d) {
+                seenDiv.insert(d)
+                winners.append(tid)
+            }
+        }
+        var seeds = Array(winners.prefix(n))
+        if seeds.count < n {
+            let winnerSet = Set(winners)
+            for tid in orderedTeamIDs where !winnerSet.contains(tid) {
+                seeds.append(tid)
+                if seeds.count == n { break }
+            }
+        }
+        return seeds
+    }
+
+    // MARK: - Playoffs
+
+    // Standard single-elimination seeding order for a bracket of `size`
+    // (a power of two). e.g. size 8 → [1,8,4,5,2,7,3,6] so the top seed only
+    // meets the 2-seed in the final.
+    static func seedSlots(_ size: Int) -> [Int] {
+        var slots = [1, 2]
+        while slots.count < size {
+            let n = slots.count * 2
+            var next: [Int] = []
+            for s in slots { next.append(s); next.append(n + 1 - s) }
+            slots = next
+        }
+        return Array(slots.prefix(max(size, 1)))
+    }
+
+    // Builds the postseason bracket from the current standings. Stateless: each
+    // round maps to a real fantasy week (playoffStartWeek onward) and winners
+    // advance by their actual weekly score, exactly like the regular season is
+    // scored. Top seeds receive first-round byes when the field isn't a power
+    // of two. Returns .empty when the league has no postseason configured.
+    static func playoffBracket(league: League, players: [String: Player]) -> PlayoffBracket {
+        guard league.playoffTeams >= 2 else { return .empty }
+        let rows = standings(league: league, players: players)
+        let seeded = rows
+            .compactMap { row -> (seed: Int, row: StandingsRow)? in
+                row.playoffSeed.map { (seed: $0, row: row) }
+            }
+            .sorted { $0.seed < $1.seed }
+        let p = seeded.count
+        guard p >= 2 else { return .empty }
+
+        let teamsByID = Dictionary(uniqueKeysWithValues: league.teams.map { ($0.id, $0) })
+        let nameByID  = Dictionary(uniqueKeysWithValues: league.teams.map { ($0.id, $0.name) })
+        let settings  = league.scoringSettings
+
+        var teamForSeed: [Int: String] = [:]
+        var seedForTeam: [String: Int] = [:]
+        var seedEntries: [PlayoffSeedEntry] = []
+        for (seed, row) in seeded {
+            teamForSeed[seed] = row.id
+            seedForTeam[row.id] = seed
+            seedEntries.append(PlayoffSeedEntry(
+                seed: seed, teamID: row.id, teamName: row.name,
+                division: row.division,
+                isDivisionWinner: league.hasDivisions && row.divisionRank == 1
+            ))
+        }
+
+        let rounds = max(1, Int(ceil(log2(Double(p)))))
+        let bracketSize = 1 << rounds
+        let byesCount = bracketSize - p
+        let startWeek = league.playoffStartWeek
+        let asOfWeek = currentWeek(players: players)
+
+        // An entrant flowing into a round: a concrete team (by seed), a bye, or
+        // an undecided "winner of the feeding game".
+        struct Entrant { var teamID: String?; var seed: Int?; var isBye: Bool }
+
+        func score(_ teamID: String, week: Int) -> (pts: Double, played: Bool) {
+            guard let t = teamsByID[teamID] else { return (0, false) }
+            let s = teamWeekScore(
+                players: players, team: t, config: league.rosterConfig,
+                week: week, scoring: league.scoring, settings: settings
+            )
+            return (s.total, s.roster.contains { $0.played })
+        }
+
+        func roundName(_ r: Int) -> String {
+            if r == rounds { return "Championship" }
+            if r == 1 && byesCount > 0 { return "Wild Card" }
+            switch rounds - r {
+            case 1:  return "Semifinals"
+            case 2:  return "Quarterfinals"
+            default: return "Round \(r)"
+            }
+        }
+
+        var entrants: [Entrant] = seedSlots(bracketSize).map { seed in
+            seed > p
+                ? Entrant(teamID: nil, seed: nil, isBye: true)
+                : Entrant(teamID: teamForSeed[seed], seed: seed, isBye: false)
+        }
+
+        var roundsOut: [PlayoffRound] = []
+        var championID: String? = nil
+        var runnerUpID: String? = nil
+
+        for r in 1...rounds {
+            let week = startWeek + (r - 1)
+            let weekReached = asOfWeek >= week
+            var games: [PlayoffGame] = []
+            var next: [Entrant] = []
+
+            for k in 0..<(entrants.count / 2) {
+                let a = entrants[2 * k]
+                let b = entrants[2 * k + 1]
+
+                // Resolve a bye: the real team advances without playing.
+                if a.isBye != b.isBye {
+                    let real = a.isBye ? b : a
+                    let realSide = PlayoffSide(
+                        teamID: real.teamID,
+                        teamName: real.teamID.flatMap { nameByID[$0] },
+                        seed: real.seed, placeholder: nil, points: nil, won: true
+                    )
+                    games.append(PlayoffGame(
+                        id: "r\(r)-g\(k)", round: r, week: week,
+                        top: realSide, bottom: .bye,
+                        played: false, winnerTeamID: real.teamID
+                    ))
+                    next.append(Entrant(teamID: real.teamID, seed: real.seed, isBye: false))
+                    continue
+                }
+
+                // Build each side; undecided when the feeding team is unknown.
+                func makeSide(_ e: Entrant) -> (side: PlayoffSide, decided: Bool, pts: Double, played: Bool) {
+                    guard let tid = e.teamID else {
+                        return (PlayoffSide(teamID: nil, teamName: nil, seed: nil,
+                                            placeholder: "TBD", points: nil, won: false),
+                                false, 0, false)
+                    }
+                    let s = weekReached ? score(tid, week: week) : (pts: 0.0, played: false)
+                    return (PlayoffSide(teamID: tid, teamName: nameByID[tid], seed: e.seed,
+                                        placeholder: nil,
+                                        points: s.played ? round2(s.pts) : nil, won: false),
+                            true, s.pts, s.played)
+                }
+
+                let top = makeSide(a)
+                let bottom = makeSide(b)
+                let bothKnown = top.decided && bottom.decided
+                let anyPlayed = top.played || bottom.played
+                // Decided once the week's games are in (or the week has fully passed).
+                let resolved = bothKnown && anyPlayed && (top.pts != bottom.pts || week < asOfWeek)
+
+                var winnerID: String? = nil
+                var topSide = top.side
+                var bottomSide = bottom.side
+                if resolved {
+                    let topWins: Bool
+                    if top.pts != bottom.pts {
+                        topWins = top.pts > bottom.pts
+                    } else {
+                        // Exact tie at week's end → higher seed advances.
+                        topWins = (a.seed ?? Int.max) <= (b.seed ?? Int.max)
+                    }
+                    winnerID = topWins ? a.teamID : b.teamID
+                    topSide = PlayoffSide(teamID: top.side.teamID, teamName: top.side.teamName,
+                                          seed: top.side.seed, placeholder: top.side.placeholder,
+                                          points: top.side.points, won: topWins)
+                    bottomSide = PlayoffSide(teamID: bottom.side.teamID, teamName: bottom.side.teamName,
+                                             seed: bottom.side.seed, placeholder: bottom.side.placeholder,
+                                             points: bottom.side.points, won: !topWins)
+                }
+
+                games.append(PlayoffGame(
+                    id: "r\(r)-g\(k)", round: r, week: week,
+                    top: topSide, bottom: bottomSide,
+                    played: anyPlayed, winnerTeamID: winnerID
+                ))
+                let winnerSeed = winnerID.flatMap { seedForTeam[$0] }
+                next.append(Entrant(teamID: winnerID, seed: winnerSeed, isBye: false))
+
+                if r == rounds {
+                    championID = winnerID
+                    if let win = winnerID {
+                        runnerUpID = (win == a.teamID) ? b.teamID : a.teamID
+                    }
+                }
+            }
+
+            roundsOut.append(PlayoffRound(round: r, week: week, name: roundName(r), games: games))
+
+            // Re-seed the field for the next round when configured: the highest
+            // remaining seed faces the lowest. Only possible once every advancing
+            // team is known — while games are undecided we keep bracket order and
+            // the next round shows TBD placeholders (the bracket is recomputed as
+            // results come in). Round 1 pairings already match best-vs-worst, so
+            // re-seeding only diverges from round 2 onward.
+            if league.playoffReseed, next.count >= 2, next.allSatisfy({ $0.teamID != nil }) {
+                let ordered = next.sorted { ($0.seed ?? Int.max) < ($1.seed ?? Int.max) }
+                var reseeded: [Entrant] = []
+                var lo = 0, hi = ordered.count - 1
+                while lo < hi {
+                    reseeded.append(ordered[lo]); reseeded.append(ordered[hi])
+                    lo += 1; hi -= 1
+                }
+                if lo == hi { reseeded.append(ordered[lo]) }
+                entrants = reseeded
+            } else {
+                entrants = next
+            }
+        }
+
+        return PlayoffBracket(
+            rounds: roundsOut, seeds: seedEntries,
+            championTeamID: championID,
+            championTeamName: championID.flatMap { nameByID[$0] },
+            runnerUpTeamID: runnerUpID,
+            started: asOfWeek >= startWeek
+        )
     }
 
     // MARK: - Player projections (baseline model)

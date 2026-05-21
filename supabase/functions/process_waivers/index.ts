@@ -214,8 +214,12 @@ async function attemptClaim(
     const { data: lg } = await supa.from("leagues").select("roster_config").eq("id", claim.league_id).single();
     const cfg = (lg?.roster_config ?? {}) as Record<string, number>;
     const totalSize = (cfg.qb ?? 1) + (cfg.rb ?? 2) + (cfg.wr ?? 2) + (cfg.te ?? 1)
-        + (cfg.flex ?? 1) + (cfg.k ?? 1) + (cfg.bench ?? 6);
-    if (roster.length > totalSize) {
+        + (cfg.flex ?? 1) + (cfg.k ?? 1) + (cfg.def ?? 1) + (cfg.bench ?? 6);
+    // IR players sit outside the active roster, so they don't count toward the
+    // limit — only active (non-IR) players do.
+    const irSet = new Set((latest.ir ?? []) as string[]);
+    const activeCount = roster.filter((p: string) => !irSet.has(p)).length;
+    if (activeCount > totalSize) {
         await failClaim(claim.id, "Adding this player would exceed your roster size — set a drop.");
         return { id: claim.id, status: "failed", reason: "roster_full" };
     }

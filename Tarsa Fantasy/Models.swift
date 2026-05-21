@@ -43,10 +43,11 @@ enum Position: String, CaseIterable, Identifiable, Hashable {
 }
 
 enum LineupSlot: String, Codable, Hashable, CaseIterable, Identifiable {
-    case qb = "QB", rb = "RB", wr = "WR", te = "TE", flex = "FLEX", k = "K", def = "DEF", bench = "BN"
+    case qb = "QB", rb = "RB", wr = "WR", te = "TE", flex = "FLEX", k = "K", def = "DEF", bench = "BN", ir = "IR"
     var id: String { rawValue }
     var label: String { rawValue }
-    var isStarter: Bool { self != .bench }
+    // Only lineup slots that contribute points each week. Bench and IR sit out.
+    var isStarter: Bool { self != .bench && self != .ir }
 
     func accepts(position: String) -> Bool {
         let p = position.uppercased()
@@ -59,6 +60,7 @@ enum LineupSlot: String, Codable, Hashable, CaseIterable, Identifiable {
         case .def:   return p == "DEF"
         case .flex:  return p == "RB" || p == "WR" || p == "TE"
         case .bench: return true
+        case .ir:    return true
         }
     }
 }
@@ -72,11 +74,19 @@ struct RosterConfig: Codable, Hashable {
     var k: Int
     var def: Int
     var bench: Int
+    // Injured-reserve slots. Extra capacity beyond the active roster that only
+    // accepts injured (OUT/IR/PUP/etc.) players. IR players never score and
+    // aren't drafted into; membership is tracked on FantasyTeam.ir.
+    var ir: Int
 
-    static let `default` = RosterConfig(qb: 1, rb: 2, wr: 2, te: 1, flex: 1, k: 1, def: 1, bench: 6)
+    static let `default` = RosterConfig(qb: 1, rb: 2, wr: 2, te: 1, flex: 1, k: 1, def: 1, bench: 6, ir: 0)
 
     var starterCount: Int { qb + rb + wr + te + flex + k + def }
+    // Active roster size (starters + bench). Drives drafting and roster limits.
+    // IR is deliberately excluded — IR players sit outside the active roster.
     var totalSize: Int { starterCount + bench }
+    // Active roster plus IR — the maximum number of players a team can hold.
+    var fullSize: Int { totalSize + ir }
 
     // Slots in display order, starters first then bench. Index into this array
     // matches the index of the matching entry in FantasyTeam.starters.
@@ -96,12 +106,12 @@ struct RosterConfig: Codable, Hashable {
     var starterSlots: [LineupSlot] { Array(slots.prefix(starterCount)) }
 
     init(qb: Int = 1, rb: Int = 2, wr: Int = 2, te: Int = 1,
-         flex: Int = 1, k: Int = 1, def: Int = 1, bench: Int = 6) {
+         flex: Int = 1, k: Int = 1, def: Int = 1, bench: Int = 6, ir: Int = 0) {
         self.qb = qb; self.rb = rb; self.wr = wr; self.te = te
-        self.flex = flex; self.k = k; self.def = def; self.bench = bench
+        self.flex = flex; self.k = k; self.def = def; self.bench = bench; self.ir = ir
     }
 
-    private enum CodingKeys: String, CodingKey { case qb, rb, wr, te, flex, k, def, bench }
+    private enum CodingKeys: String, CodingKey { case qb, rb, wr, te, flex, k, def, bench, ir }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -113,6 +123,100 @@ struct RosterConfig: Codable, Hashable {
         k     = try c.decodeIfPresent(Int.self, forKey: .k)     ?? 1
         def   = try c.decodeIfPresent(Int.self, forKey: .def)   ?? 1
         bench = try c.decodeIfPresent(Int.self, forKey: .bench) ?? 6
+        ir    = try c.decodeIfPresent(Int.self, forKey: .ir)    ?? 0
+    }
+}
+
+// Per-stat fantasy scoring. The three named presets reproduce nflverse's
+// standard formula (PPR adds 1/reception, Half-PPR 0.5). A league with a
+// non-nil `scoringSettings` computes points from each Game's raw stat line
+// instead of the precomputed fantasyPoints fields, which is what makes fully
+// custom scoring possible. `Scoring` (the preset enum) is still the carrier
+// everywhere; settings refine it when present.
+struct ScoringSettings: Codable, Hashable {
+    var passingYardsPerPoint: Double    // yards needed for 1 point (e.g. 25 → 0.04/yd)
+    var passingTD: Double
+    var interception: Double
+    var rushingYardsPerPoint: Double    // yards per point (e.g. 10 → 0.1/yd)
+    var rushingTD: Double
+    var receivingYardsPerPoint: Double  // yards per point
+    var receivingTD: Double
+    var reception: Double               // PPR knob
+    var fumbleLost: Double
+
+    static let standard = ScoringSettings(
+        passingYardsPerPoint: 25, passingTD: 4, interception: -2,
+        rushingYardsPerPoint: 10, rushingTD: 6,
+        receivingYardsPerPoint: 10, receivingTD: 6,
+        reception: 0, fumbleLost: -2
+    )
+    static var ppr: ScoringSettings  { var s = standard; s.reception = 1.0; return s }
+    static var half: ScoringSettings { var s = standard; s.reception = 0.5; return s }
+
+    static func preset(_ scoring: Scoring) -> ScoringSettings {
+        switch scoring {
+        case .standard: return .standard
+        case .ppr:      return .ppr
+        case .half:     return .half
+        }
+    }
+
+    private func perYard(_ divisor: Double) -> Double { divisor > 0 ? 1.0 / divisor : 0 }
+
+    func points(passingYards: Double, passingTDs: Double, interceptions: Double,
+                rushingYards: Double, rushingTDs: Double,
+                receivingYards: Double, receivingTDs: Double,
+                receptions: Double, fumblesLost: Double) -> Double {
+        var total = passingYards * perYard(passingYardsPerPoint)
+        total += passingTDs * passingTD
+        total += interceptions * interception
+        total += rushingYards * perYard(rushingYardsPerPoint)
+        total += rushingTDs * rushingTD
+        total += receivingYards * perYard(receivingYardsPerPoint)
+        total += receivingTDs * receivingTD
+        total += receptions * reception
+        total += fumblesLost * fumbleLost
+        return total
+    }
+
+    // Whether these settings match the named preset exactly. When they do, the
+    // league can keep using the precomputed nflverse fields (which also include
+    // 2-pt conversions / return TDs that the raw Game line omits).
+    func matchesPreset(_ scoring: Scoring) -> Bool { self == ScoringSettings.preset(scoring) }
+
+    private enum CodingKeys: String, CodingKey {
+        case passingYardsPerPoint, passingTD, interception,
+             rushingYardsPerPoint, rushingTD, receivingYardsPerPoint,
+             receivingTD, reception, fumbleLost
+    }
+
+    init(passingYardsPerPoint: Double, passingTD: Double, interception: Double,
+         rushingYardsPerPoint: Double, rushingTD: Double,
+         receivingYardsPerPoint: Double, receivingTD: Double,
+         reception: Double, fumbleLost: Double) {
+        self.passingYardsPerPoint = passingYardsPerPoint
+        self.passingTD = passingTD
+        self.interception = interception
+        self.rushingYardsPerPoint = rushingYardsPerPoint
+        self.rushingTD = rushingTD
+        self.receivingYardsPerPoint = receivingYardsPerPoint
+        self.receivingTD = receivingTD
+        self.reception = reception
+        self.fumbleLost = fumbleLost
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = ScoringSettings.standard
+        passingYardsPerPoint   = try c.decodeIfPresent(Double.self, forKey: .passingYardsPerPoint)   ?? d.passingYardsPerPoint
+        passingTD              = try c.decodeIfPresent(Double.self, forKey: .passingTD)               ?? d.passingTD
+        interception           = try c.decodeIfPresent(Double.self, forKey: .interception)           ?? d.interception
+        rushingYardsPerPoint   = try c.decodeIfPresent(Double.self, forKey: .rushingYardsPerPoint)   ?? d.rushingYardsPerPoint
+        rushingTD              = try c.decodeIfPresent(Double.self, forKey: .rushingTD)               ?? d.rushingTD
+        receivingYardsPerPoint = try c.decodeIfPresent(Double.self, forKey: .receivingYardsPerPoint) ?? d.receivingYardsPerPoint
+        receivingTD            = try c.decodeIfPresent(Double.self, forKey: .receivingTD)            ?? d.receivingTD
+        reception              = try c.decodeIfPresent(Double.self, forKey: .reception)              ?? d.reception
+        fumbleLost             = try c.decodeIfPresent(Double.self, forKey: .fumbleLost)             ?? d.fumbleLost
     }
 }
 
@@ -146,6 +250,26 @@ struct Game: Codable, Hashable, Identifiable {
         case .ppr:      return fantasyPointsPPR
         case .half:     return fantasyPointsHalfPPR
         }
+    }
+
+    func points(settings: ScoringSettings) -> Double {
+        settings.points(
+            passingYards: passingYards, passingTDs: passingTDs,
+            interceptions: passingInterceptions,
+            rushingYards: rushingYards, rushingTDs: rushingTDs,
+            receivingYards: receivingYards, receivingTDs: receivingTDs,
+            receptions: receptions, fumblesLost: fumblesLost
+        )
+    }
+
+    // Single funnel for league scoring: when custom settings are present and
+    // they differ from the named preset, compute from the raw stat line;
+    // otherwise fall back to nflverse's precomputed field for the preset.
+    func points(scoring: Scoring, settings: ScoringSettings?) -> Double {
+        if let settings, !settings.matchesPreset(scoring) {
+            return points(settings: settings)
+        }
+        return points(scoring: scoring)
     }
 }
 
@@ -289,6 +413,23 @@ struct SeasonTotals: Hashable {
         case .half:     return fantasyPointsHalfPPR
         }
     }
+
+    func points(settings: ScoringSettings) -> Double {
+        settings.points(
+            passingYards: passingYards, passingTDs: passingTDs,
+            interceptions: passingInterceptions,
+            rushingYards: rushingYards, rushingTDs: rushingTDs,
+            receivingYards: receivingYards, receivingTDs: receivingTDs,
+            receptions: receptions, fumblesLost: fumblesLost
+        )
+    }
+
+    func points(scoring: Scoring, settings: ScoringSettings?) -> Double {
+        if let settings, !settings.matchesPreset(scoring) {
+            return points(settings: settings)
+        }
+        return points(scoring: scoring)
+    }
 }
 
 struct Rank: Identifiable, Hashable {
@@ -316,11 +457,49 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
     // The signed-in user's ID who owns this team, or nil if the team is
     // unclaimed (available to join).
     var ownerID: String?
+    // Player IDs parked on injured reserve. A subset of `roster`; these never
+    // score and don't count against the active roster size.
+    var ir: [String]
+    // Per-week frozen lineups, keyed by fantasy week. When a week has an entry,
+    // that week is scored from it (the lineup the manager locked in for that
+    // week); weeks without an entry fall back to the live `starters`. This is
+    // what keeps editing next week's lineup from rewriting past results.
+    var weeklyLineups: [Int: [String]]
+    // Division index into League.divisionNames, or nil when the league has no
+    // divisions configured.
+    var division: Int?
+    // Team branding. logoURL points at an uploaded image; colorHex is a
+    // "#RRGGBB" accent used for the team's chrome. Both nil = use defaults.
+    var logoURL: String?
+    var colorHex: String?
 
     init(id: String, name: String, roster: [String] = [],
-         starters: [String] = [], ownerID: String? = nil) {
+         starters: [String] = [], ownerID: String? = nil,
+         ir: [String] = [], weeklyLineups: [Int: [String]] = [:],
+         division: Int? = nil,
+         logoURL: String? = nil, colorHex: String? = nil) {
         self.id = id; self.name = name; self.roster = roster
         self.starters = starters; self.ownerID = ownerID
+        self.ir = ir; self.weeklyLineups = weeklyLineups; self.division = division
+        self.logoURL = logoURL; self.colorHex = colorHex
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, roster, starters, ownerID, ir, weeklyLineups, division, logoURL, colorHex
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id       = try c.decode(String.self, forKey: .id)
+        name     = try c.decode(String.self, forKey: .name)
+        roster   = try c.decodeIfPresent([String].self, forKey: .roster)   ?? []
+        starters = try c.decodeIfPresent([String].self, forKey: .starters) ?? []
+        ownerID  = try c.decodeIfPresent(String.self, forKey: .ownerID)
+        ir       = try c.decodeIfPresent([String].self, forKey: .ir)       ?? []
+        weeklyLineups = try c.decodeIfPresent([Int: [String]].self, forKey: .weeklyLineups) ?? [:]
+        division = try c.decodeIfPresent(Int.self, forKey: .division)
+        logoURL  = try c.decodeIfPresent(String.self, forKey: .logoURL)
+        colorHex = try c.decodeIfPresent(String.self, forKey: .colorHex)
     }
 }
 
@@ -384,6 +563,24 @@ struct League: Codable, Identifiable, Hashable {
     var parentLeagueID: String?
     var seasonCompleted: Bool
     var seasonCompletedAt: Date?
+    // Number of head-to-head weeks before the postseason. The stored `schedule`
+    // covers exactly these weeks; playoff weeks are derived, not stored.
+    var regularSeasonWeeks: Int
+    // How many top teams make the playoffs (0 = no postseason). Bracket math
+    // (byes, rounds, start week) lives in Fantasy.playoffBracket.
+    var playoffTeams: Int
+    // Re-seed each round (higher seed always faces lowest remaining) vs. a
+    // fixed bracket.
+    var playoffReseed: Bool
+    // Custom per-stat scoring. Nil = use the `scoring` preset's precomputed
+    // fields. Non-nil overrides scoring league-wide.
+    var scoringSettings: ScoringSettings?
+    // Division names (empty = single division / no divisions). Teams reference
+    // these by index via FantasyTeam.division.
+    var divisionNames: [String]
+    // Frozen champion once the postseason completes (set by completeLeagueSeason).
+    var championTeamID: String?
+    var championTeamName: String?
 
     init(id: String, name: String, season: Int, scoring: Scoring, createdAt: Date,
          teams: [FantasyTeam], schedule: [ScheduleWeek],
@@ -397,7 +594,14 @@ struct League: Codable, Identifiable, Hashable {
          simulatedWeek: Int? = nil,
          parentLeagueID: String? = nil,
          seasonCompleted: Bool = false,
-         seasonCompletedAt: Date? = nil) {
+         seasonCompletedAt: Date? = nil,
+         regularSeasonWeeks: Int? = nil,
+         playoffTeams: Int = 6,
+         playoffReseed: Bool = true,
+         scoringSettings: ScoringSettings? = nil,
+         divisionNames: [String] = [],
+         championTeamID: String? = nil,
+         championTeamName: String? = nil) {
         self.id = id; self.name = name; self.season = season; self.scoring = scoring
         self.createdAt = createdAt; self.teams = teams; self.schedule = schedule
         self.rosterConfig = rosterConfig
@@ -411,7 +615,28 @@ struct League: Codable, Identifiable, Hashable {
         self.parentLeagueID = parentLeagueID
         self.seasonCompleted = seasonCompleted
         self.seasonCompletedAt = seasonCompletedAt
+        // Fall back to the stored schedule length so legacy leagues (created
+        // before configurable seasons) keep their original regular-season span.
+        self.regularSeasonWeeks = regularSeasonWeeks ?? schedule.count
+        self.playoffTeams = playoffTeams
+        self.playoffReseed = playoffReseed
+        self.scoringSettings = scoringSettings
+        self.divisionNames = divisionNames
+        self.championTeamID = championTeamID
+        self.championTeamName = championTeamName
     }
+
+    // Effective scoring used by league computations: custom settings if set,
+    // otherwise the named preset mapped to its weights.
+    var effectiveScoringSettings: ScoringSettings {
+        scoringSettings ?? ScoringSettings.preset(scoring)
+    }
+
+    var hasDivisions: Bool { divisionNames.count >= 2 }
+
+    // First postseason week (one past the regular season). Only meaningful
+    // when playoffTeams > 0.
+    var playoffStartWeek: Int { regularSeasonWeeks + 1 }
 }
 
 // One frozen snapshot per (league, season). Created by complete_league_season
@@ -423,7 +648,22 @@ struct LeagueSeasonArchive: Identifiable, Hashable {
     let standings: [StandingsRow]
     let scoringLeaderTeamID: String?
     let scoringLeaderTeamName: String?
+    let championTeamID: String?
+    let championTeamName: String?
     let archivedAt: Date
+
+    init(id: String, leagueID: String, season: Int, standings: [StandingsRow],
+         scoringLeaderTeamID: String?, scoringLeaderTeamName: String?,
+         championTeamID: String? = nil, championTeamName: String? = nil,
+         archivedAt: Date) {
+        self.id = id; self.leagueID = leagueID; self.season = season
+        self.standings = standings
+        self.scoringLeaderTeamID = scoringLeaderTeamID
+        self.scoringLeaderTeamName = scoringLeaderTeamName
+        self.championTeamID = championTeamID
+        self.championTeamName = championTeamName
+        self.archivedAt = archivedAt
+    }
 }
 
 // Wire payload for the write_league_matchups RPC. Constructed app-side
@@ -1117,6 +1357,84 @@ struct StandingsRow: Identifiable, Hashable {
     let pointsAgainst: Double
     let games: Int
     let rank: Int
+    // Division index this team belongs to (nil = league has no divisions).
+    let division: Int?
+    // Rank within the team's division (1-based), nil when no divisions.
+    let divisionRank: Int?
+    // Playoff seed (1-based) when this team currently occupies a postseason
+    // slot, otherwise nil. Division winners are seeded ahead of wildcards.
+    let playoffSeed: Int?
+
+    init(id: String, name: String, wins: Int, losses: Int, ties: Int,
+         pointsFor: Double, pointsAgainst: Double, games: Int, rank: Int,
+         division: Int? = nil, divisionRank: Int? = nil, playoffSeed: Int? = nil) {
+        self.id = id; self.name = name
+        self.wins = wins; self.losses = losses; self.ties = ties
+        self.pointsFor = pointsFor; self.pointsAgainst = pointsAgainst
+        self.games = games; self.rank = rank
+        self.division = division; self.divisionRank = divisionRank
+        self.playoffSeed = playoffSeed
+    }
+
+    var record: String {
+        ties > 0 ? "\(wins)-\(losses)-\(ties)" : "\(wins)-\(losses)"
+    }
+}
+
+// MARK: - Playoffs (postseason bracket)
+
+// One side of a bracket game. Either a known team, a bye, or a
+// "winner of an earlier game" placeholder until that game decides.
+struct PlayoffSide: Hashable {
+    let teamID: String?
+    let teamName: String?
+    let seed: Int?
+    let placeholder: String?    // "BYE", "Winner of …" — shown when teamID is nil
+    let points: Double?         // weekly score once the round's games begin
+    let won: Bool
+
+    static let bye = PlayoffSide(teamID: nil, teamName: nil, seed: nil,
+                                 placeholder: "BYE", points: nil, won: false)
+}
+
+struct PlayoffGame: Identifiable, Hashable {
+    let id: String
+    let round: Int              // 1-based
+    let week: Int              // fantasy week this round is contested
+    let top: PlayoffSide
+    let bottom: PlayoffSide
+    let played: Bool
+    let winnerTeamID: String?
+}
+
+struct PlayoffRound: Identifiable, Hashable {
+    let round: Int
+    let week: Int
+    let name: String           // "Wild Card", "Semifinals", "Championship"
+    let games: [PlayoffGame]
+    var id: Int { round }
+}
+
+struct PlayoffBracket: Hashable {
+    let rounds: [PlayoffRound]
+    let seeds: [PlayoffSeedEntry]
+    let championTeamID: String?
+    let championTeamName: String?
+    let runnerUpTeamID: String?
+    let started: Bool          // has the postseason begun (first round's week reached)?
+
+    static let empty = PlayoffBracket(rounds: [], seeds: [], championTeamID: nil,
+                                      championTeamName: nil, runnerUpTeamID: nil,
+                                      started: false)
+}
+
+struct PlayoffSeedEntry: Identifiable, Hashable {
+    let seed: Int
+    let teamID: String
+    let teamName: String
+    let division: Int?
+    let isDivisionWinner: Bool
+    var id: String { teamID }
 }
 
 // MARK: - Player projections (baseline model)

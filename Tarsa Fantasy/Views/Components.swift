@@ -309,6 +309,21 @@ struct CommissionerBadge: View {
     }
 }
 
+extension Color {
+    // Parses "#RRGGBB" / "RRGGBB" into a Color. Returns nil for malformed
+    // input so callers can fall back to a default accent.
+    init?(hexString: String) {
+        var s = hexString.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let v = UInt64(s, radix: 16) else { return nil }
+        self.init(
+            red:   Double((v & 0xFF0000) >> 16) / 255,
+            green: Double((v & 0x00FF00) >> 8) / 255,
+            blue:  Double(v & 0x0000FF) / 255
+        )
+    }
+}
+
 extension Double {
     var fpString: String { String(format: "%.1f", self) }
     var statString: String {

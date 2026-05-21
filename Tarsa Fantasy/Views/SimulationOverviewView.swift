@@ -43,6 +43,7 @@ struct SimulationOverviewView: View {
     var body: some View {
         VStack(spacing: FFSpace.l) {
             controlStrip
+            championBanner
             standingsSnapshot
             scoreboardCard
             standingsCard
@@ -50,6 +51,34 @@ struct SimulationOverviewView: View {
         }
         .task(id: "\(league.id)-\(currentWeek)") {
             await refreshContext()
+        }
+    }
+
+    // Crowned champion — the frozen one once the season is completed, or the
+    // live bracket winner if the final has resolved.
+    private var championName: String? {
+        if let name = league.championTeamName { return name }
+        guard league.playoffTeams >= 2 else { return nil }
+        let players = Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
+        // Only crunch the bracket once the postseason has actually begun.
+        guard Fantasy.currentWeek(players: players) >= league.playoffStartWeek else { return nil }
+        return Fantasy.playoffBracket(league: league, players: players).championTeamName
+    }
+
+    @ViewBuilder
+    private var championBanner: some View {
+        if let name = championName {
+            HStack(spacing: FFSpace.m) {
+                Image(systemName: "trophy.fill")
+                    .font(.system(size: 24))
+                    .foregroundStyle(FFColor.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("LEAGUE CHAMPION").ffEyebrow(color: FFColor.accent)
+                    Text(name).font(.ffHeadline).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                }
+                Spacer()
+            }
+            .ffCard()
         }
     }
 
@@ -278,23 +307,44 @@ struct SimulationOverviewView: View {
                     .foregroundStyle(FFColor.textTertiary)
             }
             VStack(spacing: 0) {
-                ForEach(standings) { row in
+                ForEach(Array(standings.enumerated()), id: \.element.id) { idx, row in
                     standingsRow(row, isMine: teamByID(row.id)?.ownerID == uid)
+                    // Playoff cut line: after the last seeded team.
+                    if league.playoffTeams >= 2, row.playoffSeed == league.playoffTeams,
+                       idx < standings.count - 1 {
+                        playoffCutLine
+                    }
                 }
+            }
+            if league.playoffTeams >= 2 {
+                Text("Top \(league.playoffTeams) make the playoffs" +
+                     (league.hasDivisions ? " · division winners seeded first." : "."))
+                    .font(.ffMicro)
+                    .foregroundStyle(FFColor.textTertiary)
             }
         }
         .ffCard()
     }
 
+    private var playoffCutLine: some View {
+        HStack(spacing: FFSpace.s) {
+            Rectangle().fill(FFColor.accent.opacity(0.5)).frame(height: 1)
+            Text("PLAYOFF CUT").font(.ffMicro.bold()).foregroundStyle(FFColor.accent)
+            Rectangle().fill(FFColor.accent.opacity(0.5)).frame(height: 1)
+        }
+        .padding(.vertical, 4)
+    }
+
     private func standingsRow(_ row: StandingsRow, isMine: Bool) -> some View {
         let team = teamByID(row.id)
+        let inPlayoffs = row.playoffSeed != nil
         return Button {
             if let team { onTapTeam(team) }
         } label: {
             HStack(spacing: FFSpace.s) {
                 Text("\(row.rank)")
                     .font(.ffStatSmall)
-                    .foregroundStyle(row.rank == 1 ? FFColor.accent : FFColor.textTertiary)
+                    .foregroundStyle(inPlayoffs ? FFColor.accent : FFColor.textTertiary)
                     .frame(width: 24, alignment: .leading)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
@@ -305,12 +355,24 @@ struct SimulationOverviewView: View {
                         if isMine {
                             Text("YOU").ffEyebrow(color: FFColor.accent)
                         }
+                        if let d = row.division, league.divisionNames.indices.contains(d) {
+                            Text(league.divisionNames[d].uppercased())
+                                .font(.ffMicro)
+                                .foregroundStyle(FFColor.textTertiary)
+                        }
                     }
                     Text(formatRecord(row))
                         .font(.ffCaption)
                         .foregroundStyle(FFColor.textSecondary)
                 }
                 Spacer()
+                if let seed = row.playoffSeed {
+                    Text("#\(seed)")
+                        .font(.ffMicro.bold())
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(FFColor.accent.opacity(0.18), in: Capsule())
+                        .foregroundStyle(FFColor.accent)
+                }
                 Text(row.pointsFor.fpString)
                     .font(.ffStatSmall)
                     .foregroundStyle(FFColor.textPrimary)
