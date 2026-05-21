@@ -163,6 +163,29 @@ struct PositionPill: View {
     }
 }
 
+// Win–loss(–tie) record with each number semantically colored — wins green,
+// losses red, ties amber — so a record reads at a glance. Separators stay dim
+// so the digits carry the signal. Mirrors the W/L/T color language already used
+// for head-to-head result badges.
+struct RecordText: View {
+    let wins: Int
+    let losses: Int
+    var ties: Int = 0
+    var font: Font = .ffStatSmall
+
+    var body: some View {
+        var text = Text("\(wins)").foregroundStyle(FFColor.positive)
+            + Text("–").foregroundStyle(FFColor.textTertiary)
+            + Text("\(losses)").foregroundStyle(FFColor.negative)
+        if ties > 0 {
+            text = text
+                + Text("–").foregroundStyle(FFColor.textTertiary)
+                + Text("\(ties)").foregroundStyle(FFColor.warning)
+        }
+        return text.font(font)
+    }
+}
+
 // Compact health-status chip. Red for game-locking (Out/IR/PUP/Susp), yellow
 // for game-day decisions (Q/D). Pair with PositionPill on dense player rows.
 struct InjuryBadge: View {

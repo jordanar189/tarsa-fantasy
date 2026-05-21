@@ -492,8 +492,7 @@ struct MatchupTabView: View {
             HStack {
                 Text("HEAD TO HEAD").ffEyebrow()
                 Spacer()
-                Text("\(myWins)-\(losses)\(ties > 0 ? "-\(ties)" : "")")
-                    .font(.ffStatSmall).foregroundStyle(FFColor.textSecondary)
+                RecordText(wins: myWins, losses: losses, ties: ties)
             }
             VStack(spacing: 0) {
                 ForEach(h2h.prefix(8)) { e in
