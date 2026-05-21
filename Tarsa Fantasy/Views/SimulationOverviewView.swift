@@ -334,9 +334,9 @@ struct SimulationOverviewView: View {
 
     private var playoffCutLine: some View {
         HStack(spacing: FFSpace.s) {
-            Rectangle().fill(FFColor.accent.opacity(0.5)).frame(height: 1)
-            Text("PLAYOFF CUT").font(.ffMicro.bold()).foregroundStyle(FFColor.accent)
-            Rectangle().fill(FFColor.accent.opacity(0.5)).frame(height: 1)
+            Rectangle().fill(FFColor.negative.opacity(0.55)).frame(height: 1)
+            Text("PLAYOFF CUT").font(.ffMicro.bold()).foregroundStyle(FFColor.negative)
+            Rectangle().fill(FFColor.negative.opacity(0.55)).frame(height: 1)
         }
         .padding(.vertical, 4)
     }
@@ -373,9 +373,7 @@ struct SimulationOverviewView: View {
                                 .foregroundStyle(FFColor.textTertiary)
                         }
                     }
-                    Text(formatRecord(row))
-                        .font(.ffCaption)
-                        .foregroundStyle(FFColor.textSecondary)
+                    ColoredRecord(wins: row.wins, losses: row.losses, ties: row.ties)
                 }
                 Spacer()
                 if let seed = row.playoffSeed {

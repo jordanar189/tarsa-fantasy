@@ -145,21 +145,49 @@ extension View {
     }
 }
 
-// Monochrome — same shape and tone for every position. Position is encoded
-// in the letterforms, not the color. Reduces visual noise on dense lists.
+// Win-loss(-tie) record with wins in green and losses in red so standings and
+// matchup headers read at a glance.
+struct ColoredRecord: View {
+    let wins: Int
+    let losses: Int
+    let ties: Int
+    var font: Font = .ffCaption
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Text("\(wins)").foregroundStyle(FFColor.positive)
+            Text("–").foregroundStyle(FFColor.textTertiary)
+            Text("\(losses)").foregroundStyle(FFColor.negative)
+            if ties > 0 {
+                Text("–").foregroundStyle(FFColor.textTertiary)
+                Text("\(ties)").foregroundStyle(FFColor.textSecondary)
+            }
+        }
+        .font(font)
+    }
+}
+
+// Position-tinted chip — each position carries its own color (QB red, RB blue,
+// WR green, TE orange, K gray, DEF purple) so positions are scannable at a
+// glance across dense lists. Empty stays neutral.
 struct PositionPill: View {
     let position: String
+
+    private var tint: Color {
+        position.isEmpty ? FFColor.textTertiary : FFColor.positionTint(position)
+    }
 
     var body: some View {
         Text(position.isEmpty ? "—" : position)
             .font(.ffMicro)
             .tracking(0.8)
             .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
             .overlay(
                 RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(FFColor.border, lineWidth: 1)
+                    .strokeBorder(tint.opacity(0.45), lineWidth: 1)
             )
-            .foregroundStyle(FFColor.textSecondary)
+            .foregroundStyle(tint)
     }
 }
 
