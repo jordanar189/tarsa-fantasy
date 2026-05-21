@@ -382,49 +382,144 @@ struct CommissionerBadge: View {
     }
 }
 
-// Title-position dropdown for switching the focused league from "most parts
-// of the app" (NFL tab, League tab, player detail). Switching updates the
-// surrounding league-specific numbers in place; "All leagues" returns to the
-// overview. Renders nothing until leagues exist.
-struct LeagueSwitcher: View {
+// Wide, short "bubble" widget shown at the top of league-aware screens. Tapping
+// it drops down an app-styled selection list (not a native menu) to switch the
+// focused league or return to the overview. Switching updates the surrounding
+// league-specific numbers in place. Renders nothing until leagues exist.
+struct LeagueSwitcherBar: View {
     @Environment(AppState.self) private var app
+    @State private var expanded = false
 
     var body: some View {
-        if app.leagueSummaries.isEmpty {
-            EmptyView()
-        } else {
-            Menu {
-                ForEach(app.leagueSummaries) { lg in
-                    Button {
-                        guard lg.id != app.selectedLeagueID else { return }
-                        Task { await app.selectLeague(lg.id) }
-                    } label: {
-                        if lg.id == app.selectedLeagueID {
-                            Label(lg.name, systemImage: "checkmark")
-                        } else {
-                            Text(lg.name)
-                        }
+        if !app.leagueSummaries.isEmpty {
+            bubble
+                // Float the list over the content below instead of pushing it
+                // down: anchor the dropdown's top to the bubble's bottom.
+                .overlay(alignment: .bottom) {
+                    if expanded {
+                        dropdown
+                            .padding(.top, FFSpace.s)
+                            .alignmentGuide(.bottom) { $0[.top] }
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
-                Divider()
-                Button {
-                    Task { await app.selectLeague(nil) }
-                } label: {
-                    Label("All leagues", systemImage: "square.grid.2x2")
+                .padding(.horizontal, FFSpace.l)
+                .padding(.top, FFSpace.s)
+                .zIndex(1)
+                .animation(.easeInOut(duration: 0.18), value: expanded)
+        }
+    }
+
+    private var bubble: some View {
+        Button {
+            expanded.toggle()
+        } label: {
+            HStack(spacing: FFSpace.s) {
+                Image(systemName: "trophy.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(FFColor.accent)
+                Text(app.selectedLeague?.name ?? "Select league")
+                    .font(.ffHeadline)
+                    .foregroundStyle(FFColor.textPrimary)
+                    .lineLimit(1)
+                Spacer()
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(FFColor.textTertiary)
+                    .rotationEffect(.degrees(expanded ? 180 : 0))
+            }
+            .padding(.horizontal, FFSpace.l)
+            .padding(.vertical, 10)
+            .background(FFColor.surface, in: Capsule())
+            .overlay(Capsule().strokeBorder(FFColor.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var dropdown: some View {
+        VStack(spacing: FFSpace.xs) {
+            // Scroll the league list past a handful of rows so long lists don't
+            // run off the bottom of the (non-scrolling) top content. "All
+            // leagues" stays pinned below the scroll area, always reachable.
+            if app.leagueSummaries.count > 6 {
+                ScrollView {
+                    VStack(spacing: FFSpace.xs) {
+                        ForEach(app.leagueSummaries) { lg in leagueRow(lg) }
+                    }
                 }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(app.selectedLeague?.name ?? "Select league")
-                        .font(.ffHeadline)
+                .frame(maxHeight: 300)
+            } else {
+                ForEach(app.leagueSummaries) { lg in leagueRow(lg) }
+            }
+            Rectangle().fill(FFColor.border).frame(height: 1)
+                .padding(.vertical, 2)
+            allLeaguesRow
+        }
+        .padding(FFSpace.s)
+        .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+        .overlay(
+            RoundedRectangle(cornerRadius: FFRadius.m)
+                .strokeBorder(FFColor.border, lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.22), radius: 12, y: 4)
+    }
+
+    private func leagueRow(_ lg: LeagueSummary) -> some View {
+        let selected = lg.id == app.selectedLeagueID
+        return Button {
+            if !selected { Task { await app.selectLeague(lg.id) } }
+            expanded = false
+        } label: {
+            HStack(spacing: FFSpace.s) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 17))
+                    .foregroundStyle(selected ? FFColor.accent : FFColor.textTertiary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(lg.name)
+                        .font(.ffBody)
                         .foregroundStyle(FFColor.textPrimary)
                         .lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(FFColor.textTertiary)
+                    HStack(spacing: FFSpace.xs) {
+                        if lg.isTest {
+                            FFPill { Text("SIM").foregroundStyle(FFColor.warning) }
+                        }
+                        FFPill { Text(String(lg.season)) }
+                        FFPill { Text(lg.scoring.label.uppercased()) }
+                    }
                 }
-                .frame(maxWidth: 220)
+                Spacer()
             }
+            .padding(.horizontal, FFSpace.m)
+            .padding(.vertical, FFSpace.s)
+            .background(
+                selected ? FFColor.accentSoft : FFColor.surfaceElevated,
+                in: RoundedRectangle(cornerRadius: FFRadius.s)
+            )
         }
+        .buttonStyle(.plain)
+    }
+
+    private var allLeaguesRow: some View {
+        Button {
+            expanded = false
+            Task { await app.selectLeague(nil) }
+        } label: {
+            HStack(spacing: FFSpace.s) {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 15))
+                    .foregroundStyle(FFColor.textSecondary)
+                Text("All leagues")
+                    .font(.ffBody)
+                    .foregroundStyle(FFColor.textSecondary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(FFColor.textTertiary)
+            }
+            .padding(.horizontal, FFSpace.m)
+            .padding(.vertical, FFSpace.s)
+        }
+        .buttonStyle(.plain)
     }
 }
 

@@ -22,6 +22,7 @@ struct NFLHubView: View {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
                 VStack(spacing: 0) {
+                    LeagueSwitcherBar()
                     SegmentedTabPicker(items: SubTab.allCases, selection: $subTab) {
                         Text($0.rawValue)
                     }
@@ -42,7 +43,6 @@ struct NFLHubView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .principal) { LeagueSwitcher() }
                 SeasonPickerToolbar()
             }
             .sheet(item: $selectedPlayerID.asIdentifiable) { id in
