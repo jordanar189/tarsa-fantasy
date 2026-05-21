@@ -26,14 +26,12 @@ struct MatchupTabView: View {
         NavigationStack {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
-                VStack(spacing: 0) {
-                    LeagueSwitcherBar()
-                    content
-                }
+                content
             }
             .navigationTitle("Matchup")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
+            .leagueSwitcher()
         }
         .onAppear { if !didInit { week = defaultWeek; didInit = true } }
         .task(id: contextKey) { await reload() }

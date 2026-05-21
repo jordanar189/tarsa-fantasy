@@ -41,8 +41,6 @@ struct PlayerDetailView: View {
         NavigationStack {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
-                VStack(spacing: 0) {
-                    LeagueSwitcherBar()
                 if let player {
                     ScrollView {
                         VStack(spacing: FFSpace.l) {
@@ -72,10 +70,10 @@ struct PlayerDetailView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                }
             }
             .navigationTitle(player?.name ?? "Player")
             .navigationBarTitleDisplayMode(.inline)
+            .leagueSwitcher()
             .toolbarBackground(FFColor.bg, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

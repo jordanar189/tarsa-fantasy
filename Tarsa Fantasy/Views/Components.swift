@@ -382,65 +382,93 @@ struct CommissionerBadge: View {
     }
 }
 
-// Wide, short "bubble" widget shown at the top of league-aware screens. Tapping
-// it drops down an app-styled selection list (not a native menu) to switch the
-// focused league or return to the overview. Switching updates the surrounding
-// league-specific numbers in place. Renders nothing until leagues exist.
-struct LeagueSwitcherBar: View {
+// Compact league switcher that lives in the navigation bar's top-leading
+// corner (in line with the share/settings buttons) on every league-aware
+// screen. Tapping the chip drops an app-styled selection list *downward* as a
+// screen overlay (so it isn't clipped by the nav bar). Apply with
+// `.leagueSwitcher()` on a view inside a NavigationStack.
+extension View {
+    func leagueSwitcher() -> some View { modifier(LeagueSwitcherModifier()) }
+}
+
+struct LeagueSwitcherModifier: ViewModifier {
     @Environment(AppState.self) private var app
     @State private var expanded = false
 
-    var body: some View {
-        if !app.leagueSummaries.isEmpty {
-            bubble
-                // Float the list over the content below instead of pushing it
-                // down: anchor the dropdown's top to the bubble's bottom.
-                .overlay(alignment: .bottom) {
-                    if expanded {
-                        dropdown
-                            .padding(.top, FFSpace.s)
-                            .alignmentGuide(.bottom) { $0[.top] }
+    func body(content: Content) -> some View {
+        content
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if !app.leagueSummaries.isEmpty {
+                        LeagueSwitcherChip(expanded: $expanded)
+                    }
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if expanded {
+                    ZStack(alignment: .topLeading) {
+                        // Tap-anywhere-to-dismiss scrim (sits below the nav bar
+                        // chrome, so the chip stays tappable to toggle closed).
+                        Color.black.opacity(0.08)
+                            .ignoresSafeArea()
+                            .onTapGesture { close() }
+                        LeagueSwitcherList(onSelect: { close() })
+                            .frame(maxWidth: 300, alignment: .leading)
+                            .padding(.leading, FFSpace.m)
+                            .padding(.top, FFSpace.xs)
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
-                .padding(.horizontal, FFSpace.l)
-                .padding(.top, FFSpace.s)
-                .zIndex(1)
-                .animation(.easeInOut(duration: 0.18), value: expanded)
-        }
+            }
     }
 
-    private var bubble: some View {
+    private func close() {
+        withAnimation(.easeInOut(duration: 0.18)) { expanded = false }
+    }
+}
+
+// The compact chip shown in the nav bar. Keeps the bubble styling but sized to
+// content so it tucks into the corner.
+struct LeagueSwitcherChip: View {
+    @Environment(AppState.self) private var app
+    @Binding var expanded: Bool
+
+    var body: some View {
         Button {
-            expanded.toggle()
+            withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
         } label: {
-            HStack(spacing: FFSpace.s) {
+            HStack(spacing: 5) {
                 Image(systemName: "trophy.fill")
-                    .font(.system(size: 13, weight: .bold))
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(FFColor.accent)
-                Text(app.selectedLeague?.name ?? "Select league")
-                    .font(.ffHeadline)
+                Text(app.selectedLeague?.name ?? "League")
+                    .font(.ffCaption.bold())
                     .foregroundStyle(FFColor.textPrimary)
                     .lineLimit(1)
-                Spacer()
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(FFColor.textTertiary)
                     .rotationEffect(.degrees(expanded ? 180 : 0))
             }
-            .padding(.horizontal, FFSpace.l)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
             .background(FFColor.surface, in: Capsule())
             .overlay(Capsule().strokeBorder(FFColor.border, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
+}
 
-    private var dropdown: some View {
+// The app-styled selection list shown by the switcher dropdown. `onSelect` is
+// invoked after a pick so the host can close the overlay.
+struct LeagueSwitcherList: View {
+    @Environment(AppState.self) private var app
+    var onSelect: () -> Void
+
+    var body: some View {
         VStack(spacing: FFSpace.xs) {
             // Scroll the league list past a handful of rows so long lists don't
-            // run off the bottom of the (non-scrolling) top content. "All
-            // leagues" stays pinned below the scroll area, always reachable.
+            // run off-screen. "All leagues" stays pinned below.
             if app.leagueSummaries.count > 6 {
                 ScrollView {
                     VStack(spacing: FFSpace.xs) {
@@ -461,14 +489,14 @@ struct LeagueSwitcherBar: View {
             RoundedRectangle(cornerRadius: FFRadius.m)
                 .strokeBorder(FFColor.border, lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.22), radius: 12, y: 4)
+        .shadow(color: .black.opacity(0.25), radius: 14, y: 6)
     }
 
     private func leagueRow(_ lg: LeagueSummary) -> some View {
         let selected = lg.id == app.selectedLeagueID
         return Button {
             if !selected { Task { await app.selectLeague(lg.id) } }
-            expanded = false
+            onSelect()
         } label: {
             HStack(spacing: FFSpace.s) {
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
@@ -501,7 +529,7 @@ struct LeagueSwitcherBar: View {
 
     private var allLeaguesRow: some View {
         Button {
-            expanded = false
+            onSelect()
             Task { await app.selectLeague(nil) }
         } label: {
             HStack(spacing: FFSpace.s) {

@@ -39,14 +39,12 @@ struct LineupTabView: View {
         NavigationStack {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
-                VStack(spacing: 0) {
-                    LeagueSwitcherBar()
-                    content
-                }
+                content
             }
             .navigationTitle("Lineup")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
+            .leagueSwitcher()
         }
         .onAppear {
             if !didInit { week = defaultWeek; didInit = true }
