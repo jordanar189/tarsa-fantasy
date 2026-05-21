@@ -2002,35 +2002,55 @@ actor RemoteService {
         )
     }
 
-    // Admin triage list: every feedback row with the author's username
-    // joined in. Non-admins are blocked by RLS and get an empty list.
+    // Admin triage list. The feedback rows and the authors' usernames are
+    // fetched in two plain selects rather than via a PostgREST embed.
+    // The embed (`profiles!user_id(username)`) 400s whenever the
+    // feedback↔profiles relationship isn't in PostgREST's schema cache, and
+    // the `try?` here would swallow that into a permanently empty inbox — so
+    // submitted feedback never showed up. Two simple selects can't hit that
+    // failure mode. Non-admins are blocked by RLS and get an empty list.
     func feedbackInbox(limit: Int = 200) async -> [FeedbackItem] {
         struct Row: Decodable {
             let id: UUID; let userId: UUID; let content: String
             let imageUrls: [String]; let status: String; let createdAt: Date
-            let profiles: ProfileJoin?
             enum CodingKeys: String, CodingKey {
-                case id, content, status, profiles
+                case id, content, status
                 case userId    = "user_id"
-                case imageUrls  = "image_urls"
-                case createdAt  = "created_at"
+                case imageUrls = "image_urls"
+                case createdAt = "created_at"
             }
         }
-        struct ProfileJoin: Decodable { let username: String }
         let rows: [Row] = (try? await client.from("feedback")
-            .select("id, user_id, content, image_urls, status, created_at, profiles!user_id(username)")
+            .select("id, user_id, content, image_urls, status, created_at")
             .order("created_at", ascending: false)
             .limit(limit)
             .execute().value) ?? []
+
+        // Resolve author usernames in one batched lookup. A failure here only
+        // costs the display name, never the feedback rows themselves.
+        let names = await usernames(forIDs: Set(rows.map(\.userId)))
+
         return rows.map { r in
             FeedbackItem(
                 id: r.id.uuidString, userID: r.userId.uuidString,
-                username: r.profiles?.username ?? "Unknown",
+                username: names[r.userId] ?? "Unknown",
                 content: r.content, imageURLs: r.imageUrls,
                 status: FeedbackStatus(rawValue: r.status) ?? .open,
                 createdAt: r.createdAt
             )
         }
+    }
+
+    // Batched username lookup keyed by user id. Profiles have no SELECT RLS
+    // gate (see searchUsers), so any authenticated user can resolve these.
+    private func usernames(forIDs ids: Set<UUID>) async -> [UUID: String] {
+        guard !ids.isEmpty else { return [:] }
+        struct Row: Decodable { let id: UUID; let username: String }
+        let rows: [Row] = (try? await client.from("profiles")
+            .select("id, username")
+            .in("id", values: Array(ids))
+            .execute().value) ?? []
+        return Dictionary(rows.map { ($0.id, $0.username) }, uniquingKeysWith: { first, _ in first })
     }
 
     @discardableResult
