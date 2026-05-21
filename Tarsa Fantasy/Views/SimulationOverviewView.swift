@@ -244,16 +244,21 @@ struct SimulationOverviewView: View {
                                 alignment: HorizontalAlignment, winning: Bool,
                                 played: Bool) -> some View {
         let frameAlign: Alignment = (alignment == .leading) ? .leading : .trailing
-        return VStack(alignment: alignment, spacing: 2) {
+        let label = team?.shortLabel ?? name
+        return VStack(alignment: alignment, spacing: 4) {
             Button {
                 if let team { onTapTeam(team) }
             } label: {
-                Text(name)
-                    .font(.ffBody)
-                    .foregroundStyle(winning ? FFColor.textPrimary : FFColor.textSecondary)
-                    .lineLimit(1)
-                    .multilineTextAlignment(alignment == .leading ? .leading : .trailing)
-                    .frame(maxWidth: .infinity, alignment: frameAlign)
+                HStack(spacing: 6) {
+                    if alignment == .leading, let team { TeamCrestView(team: team, size: 22) }
+                    Text(label)
+                        .font(.ffBody)
+                        .foregroundStyle(winning ? FFColor.textPrimary : FFColor.textSecondary)
+                        .lineLimit(1)
+                        .multilineTextAlignment(alignment == .leading ? .leading : .trailing)
+                    if alignment == .trailing, let team { TeamCrestView(team: team, size: 22) }
+                }
+                .frame(maxWidth: .infinity, alignment: frameAlign)
             }
             .buttonStyle(.plain)
             .disabled(team == nil)
@@ -270,8 +275,9 @@ struct SimulationOverviewView: View {
         return Button {
             if let team { onTapTeam(team) }
         } label: {
-            HStack {
-                Text(bye.name)
+            HStack(spacing: FFSpace.s) {
+                if let team { TeamCrestView(team: team, size: 22) }
+                Text(team?.shortLabel ?? bye.name)
                     .font(.ffBody)
                     .foregroundStyle(FFColor.textSecondary)
                 Spacer()
@@ -346,12 +352,18 @@ struct SimulationOverviewView: View {
                     .font(.ffStatSmall)
                     .foregroundStyle(inPlayoffs ? FFColor.accent : FFColor.textTertiary)
                     .frame(width: 24, alignment: .leading)
+                if let team { TeamCrestView(team: team, size: 26) }
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(row.name)
                             .font(.ffBody)
                             .foregroundStyle(FFColor.textPrimary)
                             .lineLimit(1)
+                        if let abbr = team?.displayAbbreviation {
+                            Text(abbr)
+                                .font(.ffMicro)
+                                .foregroundStyle(FFColor.textTertiary)
+                        }
                         if isMine {
                             Text("YOU").ffEyebrow(color: FFColor.accent)
                         }

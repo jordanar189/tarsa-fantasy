@@ -204,7 +204,8 @@ struct MatchupView: View {
         VStack(spacing: FFSpace.l) {
             scoreHeader(mine: mine, theirs: theirs, played: m.played)
             lineupButton
-            slotByPlot(mine: mine.roster, theirs: theirs.roster)
+            slotByPlot(mine: mine.roster, theirs: theirs.roster,
+                       mineTeamID: mine.teamID, theirsTeamID: theirs.teamID)
         }
     }
 
@@ -260,10 +261,16 @@ struct MatchupView: View {
         .ffCard()
     }
 
+    private func teamByID(_ id: String) -> FantasyTeam? {
+        league.teams.first(where: { $0.id == id })
+    }
+
     private func sideHeader(_ side: LeagueSide, label: String, winning: Bool) -> some View {
-        VStack(spacing: 4) {
+        let team = teamByID(side.teamID)
+        return VStack(spacing: 4) {
             Text(label).ffEyebrow(color: winning ? FFColor.accent : FFColor.textTertiary)
-            Text(side.name)
+            if let team { TeamCrestView(team: team, size: 34) }
+            Text(team?.shortLabel ?? side.name)
                 .font(.ffCaption)
                 .foregroundStyle(winning ? FFColor.textPrimary : FFColor.textSecondary)
                 .lineLimit(1)
@@ -277,7 +284,8 @@ struct MatchupView: View {
     // MARK: - Slot-by-slot plot
 
     @ViewBuilder
-    private func slotByPlot(mine: [LeagueRosterEntry], theirs: [LeagueRosterEntry]) -> some View {
+    private func slotByPlot(mine: [LeagueRosterEntry], theirs: [LeagueRosterEntry],
+                            mineTeamID: String, theirsTeamID: String) -> some View {
         let mineStarters   = mine.filter   { $0.slot.isStarter }
         let theirsStarters = theirs.filter { $0.slot.isStarter }
         // Walk by index so unequal-length rosters still align gracefully
@@ -289,7 +297,8 @@ struct MatchupView: View {
                 slotRow(
                     mine:   i < mineStarters.count   ? mineStarters[i]   : nil,
                     theirs: i < theirsStarters.count ? theirsStarters[i] : nil,
-                    slot:   slotForIndex(i, mine: mineStarters, theirs: theirsStarters)
+                    slot:   slotForIndex(i, mine: mineStarters, theirs: theirsStarters),
+                    mineTeamID: mineTeamID, theirsTeamID: theirsTeamID
                 )
             }
         }
@@ -310,7 +319,8 @@ struct MatchupView: View {
 
     @ViewBuilder
     private func slotRow(
-        mine: LeagueRosterEntry?, theirs: LeagueRosterEntry?, slot: LineupSlot
+        mine: LeagueRosterEntry?, theirs: LeagueRosterEntry?, slot: LineupSlot,
+        mineTeamID: String, theirsTeamID: String
     ) -> some View {
         let myPts    = mine?.points   ?? 0
         let theirPts = theirs?.points ?? 0
@@ -318,9 +328,9 @@ struct MatchupView: View {
         let theirWin = (theirs != nil) && (theirPts > myPts)
 
         HStack(alignment: .center, spacing: FFSpace.s) {
-            playerSide(entry: mine, alignment: .trailing, winning: myWin)
+            playerSide(entry: mine, teamID: mineTeamID, alignment: .trailing, winning: myWin)
             slotBadge(slot)
-            playerSide(entry: theirs, alignment: .leading, winning: theirWin)
+            playerSide(entry: theirs, teamID: theirsTeamID, alignment: .leading, winning: theirWin)
         }
         .padding(.horizontal, FFSpace.m)
         .padding(.vertical, FFSpace.s)
@@ -340,21 +350,23 @@ struct MatchupView: View {
 
     @ViewBuilder
     private func playerSide(
-        entry: LeagueRosterEntry?, alignment: HorizontalAlignment, winning: Bool
+        entry: LeagueRosterEntry?, teamID: String,
+        alignment: HorizontalAlignment, winning: Bool
     ) -> some View {
         let frameAlign: Alignment = (alignment == .leading) ? .leading : .trailing
         VStack(alignment: alignment, spacing: 4) {
             if let e = entry, !e.playerID.isEmpty {
+                let displayName = app.displayName(teamID: teamID, playerID: e.playerID, realName: e.name)
                 HStack(spacing: 4) {
                     if alignment == .leading {
-                        Text(e.name)
+                        Text(displayName)
                             .font(.ffBody)
                             .foregroundStyle(FFColor.textPrimary)
                             .lineLimit(1)
                         statusBadges(for: e)
                     } else {
                         statusBadges(for: e)
-                        Text(e.name)
+                        Text(displayName)
                             .font(.ffBody)
                             .foregroundStyle(FFColor.textPrimary)
                             .lineLimit(1)

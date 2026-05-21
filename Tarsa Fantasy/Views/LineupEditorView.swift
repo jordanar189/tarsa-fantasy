@@ -53,6 +53,11 @@ struct LineupEditorView: View {
         !pid.isEmpty && Fantasy.isPlayerLocked(playerID: pid, week: week, players: players)
     }
 
+    // The team's nickname for a player when set, otherwise the real name.
+    private func displayName(_ pid: String, _ player: Player) -> String {
+        app.nickname(teamID: team.id, playerID: pid) ?? player.name
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -142,7 +147,7 @@ struct LineupEditorView: View {
                 if let player {
                     PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 32)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(player.name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                        Text(displayName(pid, player)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                         HStack(spacing: 6) {
                             PositionPill(position: player.position)
                             Text(player.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
@@ -196,7 +201,7 @@ struct LineupEditorView: View {
             if let player {
                 PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 32)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(player.name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                    Text(displayName(pid, player)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                     HStack(spacing: 6) {
                         PositionPill(position: player.position)
                         Text(player.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
@@ -254,7 +259,7 @@ struct LineupEditorView: View {
             if let player {
                 PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 32)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(player.name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                    Text(displayName(pid, player)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                     HStack(spacing: 6) {
                         PositionPill(position: player.position)
                         Text(player.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
@@ -334,7 +339,7 @@ struct LineupEditorView: View {
             if let player {
                 PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 32)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(player.name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                    Text(displayName(pid, player)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                     HStack(spacing: 6) {
                         PositionPill(position: player.position)
                         Text(player.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)

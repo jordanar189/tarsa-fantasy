@@ -12,6 +12,11 @@ struct PlayoffBracketView: View {
         Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
     }
 
+    private func teamByID(_ id: String?) -> FantasyTeam? {
+        guard let id else { return nil }
+        return league.teams.first(where: { $0.id == id })
+    }
+
     var body: some View {
         let bracket = Fantasy.playoffBracket(league: league, players: players)
         VStack(spacing: FFSpace.l) {
@@ -87,7 +92,8 @@ struct PlayoffBracketView: View {
     }
 
     private func sideRow(_ side: PlayoffSide, isWinner: Bool) -> some View {
-        HStack(spacing: FFSpace.s) {
+        let team = teamByID(side.teamID)
+        return HStack(spacing: FFSpace.s) {
             if let seed = side.seed {
                 Text("\(seed)")
                     .font(.ffMicro.bold())
@@ -96,7 +102,8 @@ struct PlayoffBracketView: View {
             } else {
                 Spacer().frame(width: 18)
             }
-            Text(side.teamName ?? side.placeholder ?? "TBD")
+            if let team { TeamCrestView(team: team, size: 22) }
+            Text(team?.shortLabel ?? side.teamName ?? side.placeholder ?? "TBD")
                 .font(.ffBody)
                 .foregroundStyle(side.teamName == nil ? FFColor.textTertiary
                                  : (isWinner ? FFColor.accent : FFColor.textPrimary))
@@ -129,6 +136,7 @@ struct PlayoffBracketView: View {
                             .font(.ffStatSmall)
                             .foregroundStyle(s.seed == 1 ? FFColor.accent : FFColor.textTertiary)
                             .frame(width: 24, alignment: .leading)
+                        if let team = teamByID(s.teamID) { TeamCrestView(team: team, size: 24) }
                         Text(s.teamName)
                             .font(.ffBody)
                             .foregroundStyle(FFColor.textPrimary)

@@ -32,6 +32,7 @@ struct PlayerDetailView: View {
     @State private var teamTargets: [String: [Int: Double]] = [:]
     @State private var teamTDs: [String: [Int: Double]] = [:]
     @State private var projection: PlayerProjection? = nil
+    @State private var nicknameHistory: [NicknameHistoryEntry] = []
 
     private var player: Player? { app.displaySelectedPlayers()[playerID] }
     private var isProjected: Bool { app.isProjectedSeason(app.selectedSeason) }
@@ -98,6 +99,7 @@ struct PlayerDetailView: View {
                 projection = await app.liveProjection(
                     playerID: playerID, season: app.selectedSeason, scoring: scoring
                 )
+                nicknameHistory = await app.playerNicknameHistory(playerID: playerID)
             }
             .onChange(of: scoring) { _, _ in
                 rankByID = Fantasy.positionRanks(
@@ -423,6 +425,7 @@ struct PlayerDetailView: View {
         VStack(alignment: .leading, spacing: FFSpace.l) {
             totalsCard(for: p)
             if let card = ranksCard(for: p) { card }
+            if !nicknameHistory.isEmpty { nicknameHistoryCard }
             if !p.games.isEmpty {
                 VStack(alignment: .leading, spacing: FFSpace.s) {
                     Text("WEEKLY POINTS").ffEyebrow().padding(.leading, FFSpace.s)
@@ -446,6 +449,50 @@ struct PlayerDetailView: View {
                 }
                 bestWorstCard(for: p)
             }
+        }
+    }
+
+    // Every nickname this player has been given by a fantasy team, active or
+    // archived (dropped). Active ones are tinted; archived show when they were
+    // retired so the history reads as a timeline.
+    private var nicknameHistoryCard: some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            Text("NICKNAMES").ffEyebrow().padding(.leading, FFSpace.s)
+            VStack(spacing: 0) {
+                ForEach(nicknameHistory) { entry in
+                    HStack(spacing: FFSpace.m) {
+                        Image(systemName: entry.isActive ? "quote.bubble.fill" : "quote.bubble")
+                            .font(.system(size: 15))
+                            .foregroundStyle(entry.isActive ? FFColor.accent : FFColor.textTertiary)
+                            .frame(width: 22)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("“\(entry.nickname)”")
+                                .font(.ffBody)
+                                .foregroundStyle(entry.isActive ? FFColor.textPrimary : FFColor.textSecondary)
+                                .lineLimit(1)
+                            Text("\(entry.teamName) · \(entry.leagueName)")
+                                .font(.ffMicro)
+                                .foregroundStyle(FFColor.textTertiary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        if entry.isActive {
+                            Text("ACTIVE").ffEyebrow(color: FFColor.accent)
+                        } else if let cleared = entry.clearedAt {
+                            Text("Dropped \(cleared.formatted(.dateTime.month(.abbreviated).day()))")
+                                .font(.ffMicro)
+                                .foregroundStyle(FFColor.textTertiary)
+                        }
+                    }
+                    .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.m)
+                    .ffHairlineBottom()
+                }
+            }
+            .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+            .overlay(
+                RoundedRectangle(cornerRadius: FFRadius.m)
+                    .strokeBorder(FFColor.border, lineWidth: 1)
+            )
         }
     }
 

@@ -882,13 +882,52 @@ final class AppState {
 
     @discardableResult
     func setTeamCustomization(
-        teamID: String, name: String?, logoURL: String?, colorHex: String?
+        teamID: String, name: String?, logoURL: String?, colorHex: String?,
+        abbreviation: String?
     ) async throws -> League? {
         let updated = try await remote.setTeamCustomization(
-            teamID: teamID, name: name, logoURL: logoURL, colorHex: colorHex
+            teamID: teamID, name: name, logoURL: logoURL, colorHex: colorHex,
+            abbreviation: abbreviation
         )
         await reloadLeagues()
         return updated
+    }
+
+    // MARK: - Player nicknames
+
+    // Active nicknames for the currently-viewed league, keyed teamID →
+    // (playerID → nickname). Populated by loadLeagueNicknames when a league
+    // view opens; views read it synchronously to relabel rostered players.
+    var leagueNicknames: [String: [String: String]] = [:]
+
+    func loadLeagueNicknames(leagueID: String) async {
+        leagueNicknames = await remote.leagueNicknames(leagueID: leagueID)
+    }
+
+    // The nickname a team has given a player on its roster, or nil.
+    func nickname(teamID: String, playerID: String) -> String? {
+        leagueNicknames[teamID]?[playerID]
+    }
+
+    // What to display for a player on a given team: the nickname if set,
+    // otherwise the supplied real name.
+    func displayName(teamID: String, playerID: String, realName: String) -> String {
+        nickname(teamID: teamID, playerID: playerID) ?? realName
+    }
+
+    @discardableResult
+    func setPlayerNickname(
+        leagueID: String, teamID: String, playerID: String, nickname: String
+    ) async throws -> League? {
+        try await remote.setPlayerNickname(
+            teamID: teamID, playerID: playerID, nickname: nickname
+        )
+        await loadLeagueNicknames(leagueID: leagueID)
+        return try await remote.league(id: leagueID)
+    }
+
+    func playerNicknameHistory(playerID: String) async -> [NicknameHistoryEntry] {
+        await remote.playerNicknameHistory(playerID: playerID)
     }
 
     @discardableResult

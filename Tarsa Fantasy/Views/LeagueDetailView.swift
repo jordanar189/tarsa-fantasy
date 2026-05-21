@@ -234,6 +234,7 @@ struct LeagueDetailView: View {
     private func loadLeague() async {
         league = await app.league(leagueID)
         await app.loadSeason(league?.season ?? app.selectedSeason)
+        await app.loadLeagueNicknames(leagueID: leagueID)
         if let plan = league?.schedule.first { week = plan.week }
         draft = await app.draft(leagueID: leagueID)
     }

@@ -1,9 +1,11 @@
 import SwiftUI
 import PhotosUI
 
-// Team branding editor: name, accent color, and logo. Available to the team's
-// owner (and the commissioner). Logo images reuse the league's chat-images
-// storage bucket.
+// Team branding editor: name, abbreviation, accent color, logo, and per-player
+// nicknames. Available to the team's owner (and the commissioner). Logo images
+// reuse the league's chat-images storage bucket. Nicknames apply only to
+// players currently on the roster; they're archived automatically (kept in
+// history) when a player is dropped.
 struct TeamCustomizationSheet: View {
     @Environment(AppState.self) private var app
     @Environment(\.dismiss) private var dismiss
@@ -13,12 +15,19 @@ struct TeamCustomizationSheet: View {
     let onSave: (League) -> Void
 
     @State private var name: String
+    @State private var abbreviation: String
     @State private var colorHex: String?
     @State private var logoURL: String?
     @State private var pickerItem: PhotosPickerItem? = nil
     @State private var uploading = false
     @State private var saving = false
     @State private var error: String? = nil
+
+    // Per-player nickname edits, keyed by player ID. Seeded from the league's
+    // active nicknames on appear; `originalNicknames` lets save() push only
+    // what actually changed.
+    @State private var nicknames: [String: String] = [:]
+    @State private var originalNicknames: [String: String] = [:]
 
     // Curated accent palette (kept readable on the dark surfaces).
     private static let palette: [String] = [
@@ -32,6 +41,7 @@ struct TeamCustomizationSheet: View {
         self.team = team
         self.onSave = onSave
         _name = State(initialValue: team.name)
+        _abbreviation = State(initialValue: team.abbreviation ?? "")
         _colorHex = State(initialValue: team.colorHex)
         _logoURL = State(initialValue: team.logoURL)
     }
@@ -50,7 +60,9 @@ struct TeamCustomizationSheet: View {
                         }
                         logoCard
                         nameCard
+                        abbreviationCard
                         colorCard
+                        nicknamesCard
                     }
                     .padding(.horizontal, FFSpace.l)
                     .padding(.vertical, FFSpace.l)
@@ -72,6 +84,12 @@ struct TeamCustomizationSheet: View {
             .onChange(of: pickerItem) { _, item in
                 Task { await uploadLogo(item) }
             }
+            .task {
+                await app.loadLeagueNicknames(leagueID: league.id)
+                let current = app.leagueNicknames[team.id] ?? [:]
+                nicknames = current
+                originalNicknames = current
+            }
         }
     }
 
@@ -82,8 +100,8 @@ struct TeamCustomizationSheet: View {
     private var logoCard: some View {
         VStack(spacing: FFSpace.m) {
             ZStack {
-                Circle().fill(accent.opacity(0.18))
                 if let logoURL, let url = URL(string: logoURL) {
+                    Circle().fill(accent.opacity(0.18))
                     AsyncImage(url: url) { img in
                         img.resizable().scaledToFill()
                     } placeholder: {
@@ -92,9 +110,9 @@ struct TeamCustomizationSheet: View {
                     .frame(width: 84, height: 84)
                     .clipShape(Circle())
                 } else {
-                    Text(name.initialsFromName)
-                        .font(.system(size: 30, weight: .bold))
-                        .foregroundStyle(accent)
+                    // Show the same designed default the rest of the app uses
+                    // so the owner previews exactly what others will see.
+                    DefaultTeamCrest(accent: accent, size: 84)
                 }
                 if uploading {
                     Circle().fill(FFColor.bg.opacity(0.5))
@@ -127,6 +145,31 @@ struct TeamCustomizationSheet: View {
                 .foregroundStyle(FFColor.textPrimary)
                 .padding(.horizontal, FFSpace.m).padding(.vertical, 12)
                 .background(FFColor.surfaceElevated, in: RoundedRectangle(cornerRadius: FFRadius.s))
+        }
+        .ffCard()
+    }
+
+    private var abbreviationCard: some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            Text("ABBREVIATION").ffEyebrow()
+            TextField("", text: $abbreviation,
+                      prompt: Text("e.g. NYG").foregroundColor(FFColor.textTertiary))
+                .font(.ffStatSmall)
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+                .foregroundStyle(FFColor.textPrimary)
+                .padding(.horizontal, FFSpace.m).padding(.vertical, 12)
+                .background(FFColor.surfaceElevated, in: RoundedRectangle(cornerRadius: FFRadius.s))
+                .onChange(of: abbreviation) { _, new in
+                    // Keep it short and tag-like for the compact contexts it
+                    // appears in (scoreboard, bracket, standings).
+                    let cleaned = new.uppercased()
+                        .filter { !$0.isWhitespace }
+                    abbreviation = String(cleaned.prefix(4))
+                }
+            Text("Shown in standings, scoreboards, and the playoff bracket.")
+                .font(.ffMicro)
+                .foregroundStyle(FFColor.textTertiary)
         }
         .ffCard()
     }
@@ -171,6 +214,70 @@ struct TeamCustomizationSheet: View {
         .buttonStyle(.plain)
     }
 
+    // MARK: - Nicknames
+
+    private var rosterPlayers: [Player] {
+        let snapshot = Fantasy.playersFor(league: league,
+                                          snapshot: app.players(season: league.season))
+        return team.roster.compactMap { snapshot[$0] }
+    }
+
+    @ViewBuilder
+    private var nicknamesCard: some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            Text("PLAYER NICKNAMES").ffEyebrow()
+            if team.roster.isEmpty {
+                Text("Draft or add players to give them nicknames.")
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textTertiary)
+                    .padding(.vertical, FFSpace.s)
+            } else {
+                Text("Nicknames show across the league and reset if you drop the player (their history is kept).")
+                    .font(.ffMicro)
+                    .foregroundStyle(FFColor.textTertiary)
+                VStack(spacing: 0) {
+                    ForEach(rosterPlayers) { p in
+                        nicknameRow(p)
+                    }
+                }
+            }
+        }
+        .ffCard()
+    }
+
+    private func nicknameRow(_ p: Player) -> some View {
+        let binding = Binding<String>(
+            get: { nicknames[p.id] ?? "" },
+            set: { nicknames[p.id] = $0 }
+        )
+        return HStack(spacing: FFSpace.m) {
+            PlayerAvatar(url: p.headshotURL, fallback: p.name.initialsFromName, size: 34)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(p.name).font(.ffCaption).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                TextField("", text: binding,
+                          prompt: Text("Add a nickname").foregroundColor(FFColor.textTertiary))
+                    .font(.ffBody)
+                    .foregroundStyle(FFColor.accent)
+                    .autocorrectionDisabled()
+            }
+            Spacer()
+            if !(nicknames[p.id] ?? "").isEmpty {
+                Button {
+                    nicknames[p.id] = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, FFSpace.s)
+        .ffHairlineBottom()
+    }
+
+    // MARK: - Upload + save
+
     private func uploadLogo(_ item: PhotosPickerItem?) async {
         guard let item else { return }
         uploading = true
@@ -194,8 +301,20 @@ struct TeamCustomizationSheet: View {
     private func save() async {
         saving = true; defer { saving = false }
         do {
+            // Push nickname changes first so the refetched league reflects
+            // them; only send the ones that actually changed.
+            for p in team.roster {
+                let new = (nicknames[p] ?? "").trimmingCharacters(in: .whitespaces)
+                let old = (originalNicknames[p] ?? "").trimmingCharacters(in: .whitespaces)
+                if new != old {
+                    try await app.setPlayerNickname(
+                        leagueID: league.id, teamID: team.id, playerID: p, nickname: new
+                    )
+                }
+            }
             guard let updated = try await app.setTeamCustomization(
-                teamID: team.id, name: name, logoURL: logoURL, colorHex: colorHex
+                teamID: team.id, name: name, logoURL: logoURL, colorHex: colorHex,
+                abbreviation: abbreviation
             ) else { dismiss(); return }
             onSave(updated)
             dismiss()
