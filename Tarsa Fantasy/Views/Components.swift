@@ -438,8 +438,18 @@ struct LeagueSwitcherBar: View {
 
     private var dropdown: some View {
         VStack(spacing: FFSpace.xs) {
-            ForEach(app.leagueSummaries) { lg in
-                leagueRow(lg)
+            // Scroll the league list past a handful of rows so long lists don't
+            // run off the bottom of the (non-scrolling) top content. "All
+            // leagues" stays pinned below the scroll area, always reachable.
+            if app.leagueSummaries.count > 6 {
+                ScrollView {
+                    VStack(spacing: FFSpace.xs) {
+                        ForEach(app.leagueSummaries) { lg in leagueRow(lg) }
+                    }
+                }
+                .frame(maxHeight: 300)
+            } else {
+                ForEach(app.leagueSummaries) { lg in leagueRow(lg) }
             }
             Rectangle().fill(FFColor.border).frame(height: 1)
                 .padding(.vertical, 2)
