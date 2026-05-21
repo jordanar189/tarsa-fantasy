@@ -24,6 +24,16 @@ struct LeagueSettingsView: View {
     // Trades
     @State private var tradeSettings: TradeSettings
     @State private var hasTradeDeadline: Bool
+    // Playoffs
+    @State private var playoffTeams: Int
+    @State private var playoffReseed: Bool
+    // Custom scoring
+    @State private var useCustomScoring: Bool
+    @State private var scoringSettings: ScoringSettings
+    // Divisions
+    @State private var divisionsEnabled: Bool
+    @State private var divisionNames: [String]
+    @State private var teamDivisions: [String: Int]
     // Delete-league flow
     @State private var showingDeletePanel: Bool = false
     @State private var deleteConfirmText: String = ""
@@ -62,6 +72,16 @@ struct LeagueSettingsView: View {
         _priority = State(initialValue: league.waiverPriority + missing)
         _tradeSettings = State(initialValue: league.tradeSettings)
         _hasTradeDeadline = State(initialValue: league.tradeSettings.deadline != nil)
+        _playoffTeams = State(initialValue: league.playoffTeams)
+        _playoffReseed = State(initialValue: league.playoffReseed)
+        _useCustomScoring = State(initialValue: league.scoringSettings != nil)
+        _scoringSettings = State(initialValue: league.effectiveScoringSettings)
+        _divisionsEnabled = State(initialValue: league.hasDivisions)
+        _divisionNames = State(initialValue: league.divisionNames.isEmpty
+                               ? ["East", "West"] : league.divisionNames)
+        var divs: [String: Int] = [:]
+        for t in league.teams { if let d = t.division { divs[t.id] = d } }
+        _teamDivisions = State(initialValue: divs)
     }
 
     var body: some View {
@@ -72,6 +92,9 @@ struct LeagueSettingsView: View {
                     inviteSection
                     generalSection
                     rosterSection
+                    playoffsSection
+                    scoringSection
+                    divisionsSection
                     waiversSection
                     tradesSection
                     membersSection
@@ -205,10 +228,12 @@ struct LeagueSettingsView: View {
             rosterStepper("K",     value: $rosterConfig.k,     range: 0...2)
             rosterStepper("DEF",   value: $rosterConfig.def,   range: 0...2)
             rosterStepper("Bench", value: $rosterConfig.bench, range: 0...12)
+            rosterStepper("IR",    value: $rosterConfig.ir,    range: 0...6)
             HStack {
                 Text("Total").font(.ffBody).foregroundStyle(FFColor.textPrimary)
                 Spacer()
-                Text("\(rosterConfig.starterCount) starters · \(rosterConfig.totalSize) max")
+                Text("\(rosterConfig.starterCount) starters · \(rosterConfig.totalSize) max" +
+                     (rosterConfig.ir > 0 ? " · \(rosterConfig.ir) IR" : ""))
                     .font(.ffStatSmall)
                     .foregroundStyle(FFColor.accent)
             }
@@ -244,6 +269,157 @@ struct LeagueSettingsView: View {
         let over = league.teams.filter { $0.roster.count > newTotal }
         guard !over.isEmpty else { return nil }
         return "\(over.count) team\(over.count == 1 ? "" : "s") currently exceed the new roster size and won't be able to add until they drop."
+    }
+
+    // MARK: - Playoffs
+
+    private var playoffsSection: some View {
+        Section {
+            Stepper(value: $playoffTeams, in: 0...league.teams.count) {
+                HStack {
+                    Text("Playoff teams").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                    Spacer()
+                    Text(playoffTeams == 0 ? "Off" : "\(playoffTeams)")
+                        .font(.ffStatSmall)
+                        .foregroundStyle(FFColor.accent)
+                }
+            }
+            .tint(FFColor.accent)
+            if playoffTeams >= 2 {
+                Toggle("Re-seed each round", isOn: $playoffReseed)
+                    .tint(FFColor.accent)
+                HStack {
+                    Text("Postseason").font(.ffBody).foregroundStyle(FFColor.textSecondary)
+                    Spacer()
+                    Text(playoffSummary)
+                        .font(.ffStatSmall)
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+            }
+        } header: {
+            Text("Playoffs").ffEyebrow()
+        } footer: {
+            Text("Top finishers make a single-elimination bracket after the \(league.regularSeasonWeeks)-week regular season. Higher seeds get first-round byes when the field isn't a power of two.")
+                .foregroundStyle(FFColor.textTertiary)
+        }
+        .listRowBackground(FFColor.surface)
+    }
+
+    private var playoffSummary: String {
+        guard playoffTeams >= 2 else { return "Off" }
+        let rounds = max(1, Int(ceil(log2(Double(playoffTeams)))))
+        let start = league.regularSeasonWeeks + 1
+        let end = league.regularSeasonWeeks + rounds
+        return "Weeks \(start)–\(end)"
+    }
+
+    // MARK: - Scoring (custom per-stat)
+
+    private var scoringSection: some View {
+        Section {
+            Toggle("Custom scoring", isOn: $useCustomScoring)
+                .tint(FFColor.accent)
+            if useCustomScoring {
+                scoringStepper("Pass yds / point", value: $scoringSettings.passingYardsPerPoint, range: 5...50, step: 5)
+                scoringStepper("Pass TD",          value: $scoringSettings.passingTD,            range: 0...10, step: 1)
+                scoringStepper("Interception",     value: $scoringSettings.interception,         range: -5...0, step: 1)
+                scoringStepper("Rush yds / point", value: $scoringSettings.rushingYardsPerPoint, range: 5...20, step: 1)
+                scoringStepper("Rush TD",          value: $scoringSettings.rushingTD,            range: 0...10, step: 1)
+                scoringStepper("Rec yds / point",  value: $scoringSettings.receivingYardsPerPoint, range: 5...20, step: 1)
+                scoringStepper("Rec TD",           value: $scoringSettings.receivingTD,          range: 0...10, step: 1)
+                scoringStepper("Per reception",    value: $scoringSettings.reception,            range: 0...2, step: 0.5)
+                scoringStepper("Fumble lost",      value: $scoringSettings.fumbleLost,           range: -5...0, step: 1)
+            }
+        } header: {
+            Text("Scoring").ffEyebrow()
+        } footer: {
+            Text(useCustomScoring
+                 ? "Custom weights are applied to every game retroactively, computed from raw stat lines."
+                 : "Using the \(scoring.label) preset. Turn on custom scoring to set per-stat values.")
+                .foregroundStyle(FFColor.textTertiary)
+        }
+        .listRowBackground(FFColor.surface)
+    }
+
+    private func scoringStepper(_ label: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double) -> some View {
+        Stepper(value: value, in: range, step: step) {
+            HStack {
+                Text(label).font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                Spacer()
+                Text(value.wrappedValue.statString)
+                    .font(.ffStatSmall)
+                    .foregroundStyle(FFColor.accent)
+            }
+        }
+        .tint(FFColor.accent)
+    }
+
+    // MARK: - Divisions
+
+    private var divisionsSection: some View {
+        Section {
+            Toggle("Divisions", isOn: $divisionsEnabled)
+                .tint(FFColor.accent)
+            if divisionsEnabled {
+                Stepper(value: divisionCountBinding, in: 2...max(2, min(4, league.teams.count))) {
+                    HStack {
+                        Text("Divisions").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                        Spacer()
+                        Text("\(divisionNames.count)")
+                            .font(.ffStatSmall)
+                            .foregroundStyle(FFColor.accent)
+                    }
+                }
+                .tint(FFColor.accent)
+                ForEach(divisionNames.indices, id: \.self) { i in
+                    HStack {
+                        Text("Name \(i + 1)").font(.ffBody).foregroundStyle(FFColor.textSecondary)
+                        Spacer()
+                        TextField("Division \(i + 1)", text: Binding(
+                            get: { divisionNames[i] },
+                            set: { divisionNames[i] = $0 }
+                        ))
+                        .multilineTextAlignment(.trailing)
+                        .foregroundStyle(FFColor.textPrimary)
+                    }
+                }
+                ForEach(league.teams) { team in
+                    Picker(team.name, selection: divisionBinding(for: team.id)) {
+                        ForEach(divisionNames.indices, id: \.self) { i in
+                            Text(divisionNames[i]).tag(i)
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Divisions").ffEyebrow()
+        } footer: {
+            Text("Division winners are seeded ahead of wildcards in the playoff bracket.")
+                .foregroundStyle(FFColor.textTertiary)
+        }
+        .listRowBackground(FFColor.surface)
+    }
+
+    private var divisionCountBinding: Binding<Int> {
+        Binding(
+            get: { divisionNames.count },
+            set: { newCount in
+                if newCount > divisionNames.count {
+                    for i in divisionNames.count..<newCount { divisionNames.append("Division \(i + 1)") }
+                } else if newCount < divisionNames.count {
+                    divisionNames = Array(divisionNames.prefix(newCount))
+                    // Pull any team assigned to a removed division back to 0.
+                    for (tid, d) in teamDivisions where d >= newCount { teamDivisions[tid] = 0 }
+                }
+            }
+        )
+    }
+
+    private func divisionBinding(for teamID: String) -> Binding<Int> {
+        Binding(
+            get: { teamDivisions[teamID] ?? 0 },
+            set: { teamDivisions[teamID] = $0 }
+        )
     }
 
     // MARK: - Waivers
@@ -670,10 +846,25 @@ struct LeagueSettingsView: View {
         do {
             // Apply each settings cluster in turn; each call returns the
             // refreshed league, so we thread the final one out to the caller.
+            let divisions = divisionsEnabled ? divisionNames
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty } : []
             var latest: League? = try await app.updateLeague(
                 leagueID: league.id, name: leagueName,
-                scoring: scoring, rosterConfig: rosterConfig
+                scoring: scoring, rosterConfig: rosterConfig,
+                playoffTeams: playoffTeams, playoffReseed: playoffReseed,
+                scoringSettings: useCustomScoring ? scoringSettings : nil,
+                divisionNames: divisions
             )
+            // Push per-team division assignments when divisions are on.
+            if divisionsEnabled, divisions.count >= 2 {
+                for team in league.teams {
+                    let d = min(teamDivisions[team.id] ?? 0, divisions.count - 1)
+                    if team.division != d {
+                        latest = try await app.setTeamDivision(teamID: team.id, division: d) ?? latest
+                    }
+                }
+            }
             latest = try await app.updateWaiverSettings(
                 leagueID: league.id, settings: waiverSettings, priority: priority
             ) ?? latest

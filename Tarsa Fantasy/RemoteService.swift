@@ -228,7 +228,12 @@ actor RemoteService {
         scoring: Scoring,
         rosterConfig: RosterConfig,
         yourTeamName: String,
-        otherTeamNames: [String]
+        otherTeamNames: [String],
+        regularSeasonWeeks: Int? = nil,
+        playoffTeams: Int = 6,
+        playoffReseed: Bool = true,
+        divisionNames: [String] = [],
+        scoringSettings: ScoringSettings? = nil
     ) async throws -> League {
         guard let creatorUUID = UUID(uuidString: creatorID) else {
             throw RemoteError.invalidUserID
@@ -238,18 +243,29 @@ actor RemoteService {
         let cleanedOthers = otherTeamNames
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        guard 1 + cleanedOthers.count >= 2 else { throw RemoteError.tooFewTeams }
-        guard 1 + cleanedOthers.count <= 16 else { throw RemoteError.tooManyTeams }
+        let teamCount = 1 + cleanedOthers.count
+        guard teamCount >= 2 else { throw RemoteError.tooFewTeams }
+        guard teamCount <= 16 else { throw RemoteError.tooManyTeams }
 
         // Reserve a unique 6-char join code (retry on collision).
         let joinCode = try await reserveJoinCode()
 
         // Build team UUIDs up-front so we can generate the schedule before
         // inserting (schedule references team IDs).
-        let teamIDs: [UUID] = (0..<(1 + cleanedOthers.count)).map { _ in UUID() }
-        let schedulePlans = Fantasy.generateSchedule(teamIDs: teamIDs.map(\.uuidString))
+        let teamIDs: [UUID] = (0..<teamCount).map { _ in UUID() }
+        // Standard leagues request a full-length regular season; sims pass nil
+        // and fall back to a single round-robin.
+        let schedulePlans = Fantasy.generateSchedule(
+            teamIDs: teamIDs.map(\.uuidString), weeks: regularSeasonWeeks
+        )
         let scheduleAny = scheduleAsAnyJSON(schedulePlans)
         let configAny   = rosterConfigAsAnyJSON(rosterConfig)
+        let effectiveSeasonWeeks = schedulePlans.count
+        let cleanedDivisions = divisionNames
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        // Cap the playoff field at the team count.
+        let cappedPlayoffTeams = max(0, min(playoffTeams, teamCount))
 
         struct LeagueInsert: Encodable {
             let id: UUID
@@ -261,6 +277,11 @@ actor RemoteService {
             let join_code: String
             let creator_id: UUID
             let waiver_priority: [String]
+            let regular_season_weeks: Int
+            let playoff_teams: Int
+            let playoff_reseed: Bool
+            let division_names: AnyJSON
+            let scoring_settings: AnyJSON?
         }
         let leagueID = UUID()
         // Initial priority: reverse-order of team creation (last team picks
@@ -276,7 +297,12 @@ actor RemoteService {
             schedule: scheduleAny,
             join_code: joinCode,
             creator_id: creatorUUID,
-            waiver_priority: initialPriority
+            waiver_priority: initialPriority,
+            regular_season_weeks: effectiveSeasonWeeks,
+            playoff_teams: cappedPlayoffTeams,
+            playoff_reseed: playoffReseed,
+            division_names: stringsAsAnyJSON(cleanedDivisions),
+            scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON)
         )
         let insertedLeague: LeagueRow = try await client.from("leagues")
             .insert(leagueInsert)
@@ -291,15 +317,19 @@ actor RemoteService {
             let name: String
             let owner_id: UUID?
             let sort_index: Int
+            let division: Int?
         }
         let allNames = [cleanedYour.isEmpty ? "Your Team" : cleanedYour] + cleanedOthers
+        let divCount = cleanedDivisions.count
         let teamInserts: [TeamInsert] = zip(teamIDs, allNames).enumerated().map { idx, pair in
             TeamInsert(
                 id: pair.0,
                 league_id: insertedLeague.id,
                 name: pair.1,
                 owner_id: idx == 0 ? creatorUUID : nil,
-                sort_index: idx
+                sort_index: idx,
+                // Distribute teams across divisions in creation order.
+                division: divCount >= 2 ? idx % divCount : nil
             )
         }
         let insertedTeams: [TeamRow] = try await client.from("teams")
@@ -373,6 +403,54 @@ actor RemoteService {
         return try await league(id: updated.leagueId.uuidString)
     }
 
+    // Persists a manually-set lineup (start/sit) plus the IR list, without
+    // touching the roster itself. Used by the weekly lineup editor.
+    @discardableResult
+    func setLineup(
+        teamID: String, starters: [String], ir: [String]
+    ) async throws -> League? {
+        guard let teamUUID = UUID(uuidString: teamID) else { return nil }
+        struct LineupUpdate: Encodable {
+            let starters: [String]
+            let ir: [String]
+        }
+        let updated: TeamRow = try await client.from("teams")
+            .update(LineupUpdate(starters: starters, ir: ir))
+            .eq("id", value: teamUUID)
+            .select()
+            .single()
+            .execute()
+            .value
+        return try await league(id: updated.leagueId.uuidString)
+    }
+
+    // Team branding: name, logo URL, accent color. Any nil leaves that field
+    // unchanged (name "" is treated as no-op for name).
+    @discardableResult
+    func setTeamCustomization(
+        teamID: String, name: String?, logoURL: String?, colorHex: String?
+    ) async throws -> League? {
+        guard let teamUUID = UUID(uuidString: teamID) else { return nil }
+        struct BrandUpdate: Encodable {
+            let name: String?
+            let logo_url: String?
+            let color_hex: String?
+        }
+        let cleanedName = name?.trimmingCharacters(in: .whitespaces)
+        let updated: TeamRow = try await client.from("teams")
+            .update(BrandUpdate(
+                name: (cleanedName?.isEmpty == false) ? cleanedName : nil,
+                logo_url: logoURL,
+                color_hex: colorHex
+            ))
+            .eq("id", value: teamUUID)
+            .select()
+            .single()
+            .execute()
+            .value
+        return try await league(id: updated.leagueId.uuidString)
+    }
+
     // MARK: - Row → model assembly
 
     private static func assemble(league row: LeagueRow, teams: [TeamRow]) -> League {
@@ -393,7 +471,11 @@ actor RemoteService {
                     name: t.name,
                     roster: t.roster,
                     starters: t.starters,
-                    ownerID: t.ownerId?.uuidString
+                    ownerID: t.ownerId?.uuidString,
+                    ir: t.ir,
+                    division: t.division,
+                    logoURL: t.logoUrl,
+                    colorHex: t.colorHex
                 )
             },
             schedule: row.schedule,
@@ -417,7 +499,14 @@ actor RemoteService {
             simulatedWeek: row.simulatedWeek,
             parentLeagueID: row.parentLeagueId?.uuidString,
             seasonCompleted: row.seasonCompleted,
-            seasonCompletedAt: row.seasonCompletedAt
+            seasonCompletedAt: row.seasonCompletedAt,
+            regularSeasonWeeks: row.regularSeasonWeeks,
+            playoffTeams: row.playoffTeams,
+            playoffReseed: row.playoffReseed,
+            scoringSettings: row.scoringSettings,
+            divisionNames: row.divisionNames,
+            championTeamID: row.championTeamId?.uuidString,
+            championTeamName: row.championTeamName
         )
     }
 
@@ -433,7 +522,26 @@ actor RemoteService {
             "k":     .integer(c.k),
             "def":   .integer(c.def),
             "bench": .integer(c.bench),
+            "ir":    .integer(c.ir),
         ])
+    }
+
+    private func scoringSettingsAsAnyJSON(_ s: ScoringSettings) -> AnyJSON {
+        .object([
+            "passingYardsPerPoint":   .double(s.passingYardsPerPoint),
+            "passingTD":              .double(s.passingTD),
+            "interception":           .double(s.interception),
+            "rushingYardsPerPoint":   .double(s.rushingYardsPerPoint),
+            "rushingTD":              .double(s.rushingTD),
+            "receivingYardsPerPoint": .double(s.receivingYardsPerPoint),
+            "receivingTD":            .double(s.receivingTD),
+            "reception":              .double(s.reception),
+            "fumbleLost":             .double(s.fumbleLost),
+        ])
+    }
+
+    private func stringsAsAnyJSON(_ items: [String]) -> AnyJSON {
+        .array(items.map { .string($0) })
     }
 
     private func scheduleAsAnyJSON(_ plans: [ScheduleWeek]) -> AnyJSON {
@@ -731,24 +839,56 @@ actor RemoteService {
         leagueID: String,
         name: String,
         scoring: Scoring,
-        rosterConfig: RosterConfig
+        rosterConfig: RosterConfig,
+        playoffTeams: Int,
+        playoffReseed: Bool,
+        scoringSettings: ScoringSettings?,
+        divisionNames: [String]
     ) async throws -> League? {
         guard let uuid = UUID(uuidString: leagueID) else { return nil }
         let cleaned = name.trimmingCharacters(in: .whitespaces)
+        let cleanedDivisions = divisionNames
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
         struct LeagueUpdate: Encodable {
             let name: String
             let scoring: String
             let roster_config: AnyJSON
+            let playoff_teams: Int
+            let playoff_reseed: Bool
+            // .null clears custom scoring back to the named preset.
+            let scoring_settings: AnyJSON
+            let division_names: AnyJSON
         }
         _ = try await client.from("leagues")
             .update(LeagueUpdate(
                 name: cleaned.isEmpty ? "Untitled League" : cleaned,
                 scoring: scoring.rawValue,
-                roster_config: rosterConfigAsAnyJSON(rosterConfig)
+                roster_config: rosterConfigAsAnyJSON(rosterConfig),
+                playoff_teams: max(0, playoffTeams),
+                playoff_reseed: playoffReseed,
+                scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON) ?? .null,
+                division_names: stringsAsAnyJSON(cleanedDivisions)
             ))
             .eq("id", value: uuid)
             .execute()
         return try await self.league(id: leagueID)
+    }
+
+    // Assigns a single team to a division index (nil clears it). Used by the
+    // settings screen when the commish edits divisions after creation.
+    @discardableResult
+    func setTeamDivision(teamID: String, division: Int?) async throws -> League? {
+        guard let uuid = UUID(uuidString: teamID) else { return nil }
+        struct DivUpdate: Encodable { let division: Int? }
+        let updated: TeamRow = try await client.from("teams")
+            .update(DivUpdate(division: division))
+            .eq("id", value: uuid)
+            .select()
+            .single()
+            .execute()
+            .value
+        return try await self.league(id: updated.leagueId.uuidString)
     }
 
     @discardableResult
@@ -1421,7 +1561,9 @@ actor RemoteService {
         standings: [StandingsRow],
         scoringLeaderTeamID: String?,
         scoringLeaderTeamName: String?,
-        matchups: [LeagueMatchupArchive]
+        matchups: [LeagueMatchupArchive],
+        championTeamID: String? = nil,
+        championTeamName: String? = nil
     ) async throws -> League? {
         guard let lid = UUID(uuidString: leagueID) else { return nil }
         guard let league = try await self.league(id: leagueID) else { return nil }
@@ -1446,13 +1588,17 @@ actor RemoteService {
             let p_standings: AnyJSON
             let p_scoring_leader_team_id: UUID?
             let p_scoring_leader_name: String?
+            let p_champion_team_id: UUID?
+            let p_champion_team_name: String?
         }
         _ = try await client.rpc("write_league_season_archive", params: ArchiveArgs(
             p_league_id: lid,
             p_season: league.season,
             p_standings: standingsJSON,
             p_scoring_leader_team_id: scoringLeaderTeamID.flatMap(UUID.init(uuidString:)),
-            p_scoring_leader_name: scoringLeaderTeamName
+            p_scoring_leader_name: scoringLeaderTeamName,
+            p_champion_team_id: championTeamID.flatMap(UUID.init(uuidString:)),
+            p_champion_team_name: championTeamName
         )).execute()
 
         // Write matchup history.
@@ -1474,10 +1620,18 @@ actor RemoteService {
             p_league_id: lid, p_season: league.season, p_matchups: matchupsJSON
         )).execute()
 
-        // Flip the flag.
-        struct CompleteArgs: Encodable { let p_league_id: UUID }
+        // Flip the flag + stamp the champion.
+        struct CompleteArgs: Encodable {
+            let p_league_id: UUID
+            let p_champion_team_id: UUID?
+            let p_champion_team_name: String?
+        }
         let row: LeagueRow = try await client.rpc("complete_league_season",
-            params: CompleteArgs(p_league_id: lid)
+            params: CompleteArgs(
+                p_league_id: lid,
+                p_champion_team_id: championTeamID.flatMap(UUID.init(uuidString:)),
+                p_champion_team_name: championTeamName
+            )
         ).execute().value
         let fresh = try await self.league(id: row.id.uuidString)
         return fresh
@@ -1515,13 +1669,29 @@ actor RemoteService {
             let standings: AnyJSON
             let scoringLeaderTeamId: UUID?
             let scoringLeaderTeamName: String?
+            let championTeamId: UUID?
+            let championTeamName: String?
             let archivedAt: Date
             enum CodingKeys: String, CodingKey {
                 case id, season, standings
                 case leagueId               = "league_id"
                 case scoringLeaderTeamId    = "scoring_leader_team_id"
                 case scoringLeaderTeamName  = "scoring_leader_team_name"
+                case championTeamId         = "champion_team_id"
+                case championTeamName       = "champion_team_name"
                 case archivedAt             = "archived_at"
+            }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                id = try c.decode(UUID.self, forKey: .id)
+                leagueId = try c.decode(UUID.self, forKey: .leagueId)
+                season = try c.decode(Int.self, forKey: .season)
+                standings = try c.decode(AnyJSON.self, forKey: .standings)
+                scoringLeaderTeamId = try c.decodeIfPresent(UUID.self, forKey: .scoringLeaderTeamId)
+                scoringLeaderTeamName = try c.decodeIfPresent(String.self, forKey: .scoringLeaderTeamName)
+                championTeamId = try c.decodeIfPresent(UUID.self, forKey: .championTeamId)
+                championTeamName = try c.decodeIfPresent(String.self, forKey: .championTeamName)
+                archivedAt = try c.decode(Date.self, forKey: .archivedAt)
             }
         }
         let rows: [Row] = (try? await client.from("league_seasons")
@@ -1539,6 +1709,8 @@ actor RemoteService {
                 standings: standings,
                 scoringLeaderTeamID: r.scoringLeaderTeamId?.uuidString,
                 scoringLeaderTeamName: r.scoringLeaderTeamName,
+                championTeamID: r.championTeamId?.uuidString,
+                championTeamName: r.championTeamName,
                 archivedAt: r.archivedAt
             )
         }
@@ -2487,6 +2659,13 @@ struct LeagueRow: Codable, Hashable {
     let parentLeagueId: UUID?
     let seasonCompleted: Bool
     let seasonCompletedAt: Date?
+    let regularSeasonWeeks: Int?
+    let playoffTeams: Int
+    let playoffReseed: Bool
+    let scoringSettings: ScoringSettings?
+    let divisionNames: [String]
+    let championTeamId: UUID?
+    let championTeamName: String?
 
     enum CodingKeys: String, CodingKey {
         case id, name, season, scoring, schedule
@@ -2508,6 +2687,13 @@ struct LeagueRow: Codable, Hashable {
         case parentLeagueId       = "parent_league_id"
         case seasonCompleted      = "season_completed"
         case seasonCompletedAt    = "season_completed_at"
+        case regularSeasonWeeks   = "regular_season_weeks"
+        case playoffTeams         = "playoff_teams"
+        case playoffReseed        = "playoff_reseed"
+        case scoringSettings      = "scoring_settings"
+        case divisionNames        = "division_names"
+        case championTeamId       = "champion_team_id"
+        case championTeamName     = "champion_team_name"
     }
 
     init(from decoder: Decoder) throws {
@@ -2537,6 +2723,13 @@ struct LeagueRow: Codable, Hashable {
         parentLeagueId       = try c.decodeIfPresent(UUID.self,    forKey: .parentLeagueId)
         seasonCompleted      = try c.decodeIfPresent(Bool.self,    forKey: .seasonCompleted)      ?? false
         seasonCompletedAt    = try c.decodeIfPresent(Date.self,    forKey: .seasonCompletedAt)
+        regularSeasonWeeks   = try c.decodeIfPresent(Int.self,     forKey: .regularSeasonWeeks)
+        playoffTeams         = try c.decodeIfPresent(Int.self,     forKey: .playoffTeams)         ?? 6
+        playoffReseed        = try c.decodeIfPresent(Bool.self,    forKey: .playoffReseed)        ?? true
+        scoringSettings      = try c.decodeIfPresent(ScoringSettings.self, forKey: .scoringSettings)
+        divisionNames        = try c.decodeIfPresent([String].self, forKey: .divisionNames)       ?? []
+        championTeamId       = try c.decodeIfPresent(UUID.self,    forKey: .championTeamId)
+        championTeamName     = try c.decodeIfPresent(String.self,  forKey: .championTeamName)
     }
 }
 
@@ -2548,12 +2741,33 @@ struct TeamRow: Codable, Hashable {
     let roster: [String]
     let starters: [String]
     let sortIndex: Int
+    let ir: [String]
+    let division: Int?
+    let logoUrl: String?
+    let colorHex: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters
+        case id, name, roster, starters, ir, division
         case leagueId  = "league_id"
         case ownerId   = "owner_id"
         case sortIndex = "sort_index"
+        case logoUrl   = "logo_url"
+        case colorHex  = "color_hex"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id        = try c.decode(UUID.self, forKey: .id)
+        leagueId  = try c.decode(UUID.self, forKey: .leagueId)
+        name      = try c.decode(String.self, forKey: .name)
+        ownerId   = try c.decodeIfPresent(UUID.self, forKey: .ownerId)
+        roster    = try c.decodeIfPresent([String].self, forKey: .roster)   ?? []
+        starters  = try c.decodeIfPresent([String].self, forKey: .starters) ?? []
+        sortIndex = try c.decodeIfPresent(Int.self, forKey: .sortIndex)     ?? 0
+        ir        = try c.decodeIfPresent([String].self, forKey: .ir)       ?? []
+        division  = try c.decodeIfPresent(Int.self, forKey: .division)
+        logoUrl   = try c.decodeIfPresent(String.self, forKey: .logoUrl)
+        colorHex  = try c.decodeIfPresent(String.self, forKey: .colorHex)
     }
 }
 

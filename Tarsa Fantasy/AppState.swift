@@ -504,14 +504,24 @@ final class AppState {
         scoring: Scoring,
         yourTeamName: String,
         otherTeamNames: [String],
-        rosterConfig: RosterConfig = .default
+        rosterConfig: RosterConfig = .default,
+        regularSeasonWeeks: Int = 14,
+        playoffTeams: Int = 6,
+        playoffReseed: Bool = true,
+        divisionNames: [String] = [],
+        scoringSettings: ScoringSettings? = nil
     ) async throws -> League {
         guard let session else { throw AppError.notSignedIn }
         let league = try await remote.createLeague(
             creatorID: session.userID,
             name: name, season: season, scoring: scoring,
             rosterConfig: rosterConfig,
-            yourTeamName: yourTeamName, otherTeamNames: otherTeamNames
+            yourTeamName: yourTeamName, otherTeamNames: otherTeamNames,
+            regularSeasonWeeks: regularSeasonWeeks,
+            playoffTeams: playoffTeams,
+            playoffReseed: playoffReseed,
+            divisionNames: divisionNames,
+            scoringSettings: scoringSettings
         )
         await reloadLeagues()
         await loadSeason(season)
@@ -523,11 +533,14 @@ final class AppState {
             throw AppError.leagueNotFound
         }
         let seasonPlayers = await loadSeason(league.season) ?? players(season: league.season)
+        let irSet = Set(league.teams.first(where: { $0.id == teamID })?.ir ?? [])
         let lineup = Fantasy.autoFillLineup(
             roster: playerIDs,
             players: seasonPlayers,
             config: league.rosterConfig,
-            scoring: league.scoring
+            scoring: league.scoring,
+            settings: league.scoringSettings,
+            ir: irSet
         )
         guard let updated = try await remote.setRoster(
             teamID: teamID, roster: playerIDs, starters: lineup
@@ -576,12 +589,18 @@ final class AppState {
             }
         }
 
+        // Crown the playoff champion (winner of the final), when the bracket
+        // has resolved. Falls back to nil if the postseason isn't finished.
+        let bracket = Fantasy.playoffBracket(league: league, players: snap)
+
         let updated = try await remote.completeLeagueSeason(
             leagueID: league.id,
             standings: standings,
             scoringLeaderTeamID: leader?.id,
             scoringLeaderTeamName: leader?.name,
-            matchups: archived
+            matchups: archived,
+            championTeamID: bracket.championTeamID,
+            championTeamName: bracket.championTeamName
         )
         await reloadLeagues()
         return updated
@@ -834,13 +853,44 @@ final class AppState {
 
     @discardableResult
     func updateLeague(
-        leagueID: String, name: String, scoring: Scoring, rosterConfig: RosterConfig
+        leagueID: String, name: String, scoring: Scoring, rosterConfig: RosterConfig,
+        playoffTeams: Int, playoffReseed: Bool,
+        scoringSettings: ScoringSettings?, divisionNames: [String]
     ) async throws -> League? {
         let updated = try await remote.updateLeague(
-            leagueID: leagueID, name: name, scoring: scoring, rosterConfig: rosterConfig
+            leagueID: leagueID, name: name, scoring: scoring, rosterConfig: rosterConfig,
+            playoffTeams: playoffTeams, playoffReseed: playoffReseed,
+            scoringSettings: scoringSettings, divisionNames: divisionNames
         )
         await reloadLeagues()
         return updated
+    }
+
+    // Persist a manually-set weekly lineup (start/sit) and IR list.
+    @discardableResult
+    func setLineup(teamID: String, starters: [String], ir: [String]) async throws -> League? {
+        try await remote.setLineup(teamID: teamID, starters: starters, ir: ir)
+    }
+
+    @discardableResult
+    func setTeamCustomization(
+        teamID: String, name: String?, logoURL: String?, colorHex: String?
+    ) async throws -> League? {
+        let updated = try await remote.setTeamCustomization(
+            teamID: teamID, name: name, logoURL: logoURL, colorHex: colorHex
+        )
+        await reloadLeagues()
+        return updated
+    }
+
+    @discardableResult
+    func setTeamDivision(teamID: String, division: Int?) async throws -> League? {
+        try await remote.setTeamDivision(teamID: teamID, division: division)
+    }
+
+    func uploadTeamLogo(leagueID: String, data: Data, contentType: String) async throws -> String {
+        // Reuses the chat-images bucket (same per-league storage RLS).
+        try await remote.uploadChatImage(leagueID: leagueID, data: data, contentType: contentType)
     }
 
     @discardableResult
