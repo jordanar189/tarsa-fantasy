@@ -1118,3 +1118,79 @@ struct StandingsRow: Identifiable, Hashable {
     let games: Int
     let rank: Int
 }
+
+// MARK: - Player projections (baseline model)
+
+// Tunable knobs for the projection model. Each signal can be toggled off so
+// the backtest can measure its individual contribution (ablation). Defaults
+// are a reasonable starting point; the admin backtest screen tunes them.
+struct ProjectionConfig: Hashable {
+    // Exponential weight applied per week of recency: weight = decay^(weeksAgo).
+    // 1.0 = flat season average; lower = lean harder on recent games.
+    var recencyDecay: Double
+    // Pseudo-games of the position mean blended in (Bayesian shrinkage). Higher
+    // = pull thin samples harder toward the positional baseline.
+    var shrinkageGames: Double
+    // Max +/- swing from the opponent defense-vs-position matchup (e.g. 0.15 →
+    // best matchup ×1.15, worst ×0.85).
+    var matchupRange: Double
+    // League-average implied team total used as the game-script pivot.
+    var scriptPivot: Double
+    // Sensitivity of the game-script multiplier to implied-total deviation.
+    var scriptStrength: Double
+    var enableMatchup: Bool
+    var enableScript: Bool
+    var enableAvailability: Bool
+
+    static let `default` = ProjectionConfig(
+        recencyDecay: 0.90,
+        shrinkageGames: 1.0,
+        matchupRange: 0.15,
+        scriptPivot: 22.5,
+        scriptStrength: 0.5,
+        enableMatchup: true,
+        enableScript: true,
+        enableAvailability: true
+    )
+}
+
+// A single projected stat line for one player in one upcoming game. The
+// component multipliers are surfaced so the figure is explainable, not a
+// black box.
+struct PlayerProjection: Identifiable, Hashable {
+    let playerID: String
+    let season: Int
+    let week: Int
+    let opponent: String
+    let isHome: Bool
+    let points: Double         // final projected fantasy points (chosen scoring)
+    let base: Double           // recency-weighted, shrunk points/game
+    let matchupMult: Double
+    let scriptMult: Double
+    let availability: Double   // 1 healthy, 0 out, fractional for Q/D
+    let low: Double            // floor (base − recent stdev)
+    let high: Double           // ceiling (base + recent stdev)
+    var id: String { "\(season)-\(week)-\(playerID)" }
+}
+
+// Accuracy metrics for one position (or "ALL") from a backtest run. naiveMAE
+// is the same metric for a season-average-to-date baseline, so the model only
+// earns trust when mae < naiveMAE.
+struct PositionAccuracy: Identifiable, Hashable {
+    let position: String
+    let n: Int
+    let mae: Double
+    let rmse: Double
+    let bias: Double               // mean(projected − actual); >0 = over-projects
+    let rankCorrelation: Double    // mean within-week Spearman ρ
+    let naiveMAE: Double
+    var id: String { position }
+    // Positive = model beats the naive season-average baseline.
+    var improvement: Double { Fantasy.round2(naiveMAE - mae) }
+}
+
+struct BacktestReport: Hashable {
+    let overall: PositionAccuracy
+    let byPosition: [PositionAccuracy]
+    let weeksTested: [Int]
+}

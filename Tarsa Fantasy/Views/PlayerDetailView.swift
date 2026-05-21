@@ -31,6 +31,7 @@ struct PlayerDetailView: View {
     @State private var dvpByPosition: [String: [String: DvPEntry]] = [:]
     @State private var teamTargets: [String: [Int: Double]] = [:]
     @State private var teamTDs: [String: [Int: Double]] = [:]
+    @State private var projection: PlayerProjection? = nil
 
     private var player: Player? { app.selectedPlayers()[playerID] }
 
@@ -92,11 +93,19 @@ struct PlayerDetailView: View {
                     let table = await app.dvp(season: app.selectedSeason, position: pos)
                     dvpByPosition[pos] = table
                 }
+                projection = await app.liveProjection(
+                    playerID: playerID, season: app.selectedSeason, scoring: scoring
+                )
             }
             .onChange(of: scoring) { _, _ in
                 rankByID = Fantasy.positionRanks(
                     players: app.selectedPlayers(), scoring: scoring
                 )
+                Task {
+                    projection = await app.liveProjection(
+                        playerID: playerID, season: app.selectedSeason, scoring: scoring
+                    )
+                }
             }
         }
     }
@@ -149,6 +158,13 @@ struct PlayerDetailView: View {
 
     private func heroStats(for p: Player) -> some View {
         HStack(spacing: FFSpace.l) {
+            if let projection {
+                heroStat(
+                    label: "PROJ",
+                    value: String(format: "%.1f", projection.points),
+                    color: FFColor.accent
+                )
+            }
             if let rank = rankByID[p.id] {
                 heroStat(label: "RANK", value: rank.label, color: FFColor.accent)
             }

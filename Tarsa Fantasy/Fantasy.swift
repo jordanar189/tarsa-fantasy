@@ -801,4 +801,257 @@ enum Fantasy {
             )
         }
     }
+
+    // MARK: - Player projections (baseline model)
+
+    // Everything project() needs, passed in so the function stays pure and
+    // synchronous. `players` is the history snapshot — its games must already
+    // be restricted to weeks < `week` (use Fantasy.clamped). DvP must likewise
+    // be computed as of week-1 to avoid look-ahead bias in backtests.
+    struct ProjectionContext {
+        let season: Int
+        let week: Int
+        let scoring: Scoring
+        let players: [String: Player]
+        let schedule: [NFLGame]
+        let dvpByPosition: [String: [String: DvPEntry]]
+        let injuries: [String: Injury]
+        let inactives: Set<String>
+        let config: ProjectionConfig
+    }
+
+    // Projects one player for context.week. Returns nil when the player is
+    // unknown, not a fantasy position, or their team has no game that week
+    // (bye / end of season). Pass `positionMeans` to reuse a precomputed table
+    // across many players (projectAll / backtest do this).
+    static func project(
+        playerID: String,
+        context: ProjectionContext,
+        positionMeans means: [String: Double]? = nil
+    ) -> PlayerProjection? {
+        guard let p = context.players[playerID] else { return nil }
+        let pos = p.position.uppercased()
+        guard isFantasyPosition(pos), !p.team.isEmpty else { return nil }
+        guard let game = context.schedule.first(where: {
+            $0.week == context.week && ($0.home == p.team || $0.away == p.team)
+        }), let opp = game.opponent(of: p.team) else { return nil }
+        let isHome = game.isHome(team: p.team)
+
+        let posMean = (means ?? positionMeans(players: context.players, scoring: context.scoring))[pos] ?? 0
+        let history = p.games.filter { $0.week < context.week }
+        let base = recencyWeightedBase(
+            games: history, scoring: context.scoring, posMean: posMean, config: context.config
+        )
+
+        var matchupMult = 1.0
+        if context.config.enableMatchup, let rank = context.dvpByPosition[pos]?[opp]?.rank {
+            matchupMult = matchupMultiplier(rank: rank, range: context.config.matchupRange)
+        }
+
+        var scriptMult = 1.0
+        if context.config.enableScript, let implied = game.impliedTotal(for: p.team) {
+            scriptMult = scriptMultiplier(impliedTotal: implied, config: context.config)
+        }
+
+        var availability = 1.0
+        if context.config.enableAvailability {
+            availability = availabilityFactor(playerID: playerID, context: context)
+        }
+
+        let points = max(0, base * matchupMult * scriptMult * availability)
+        let sd = pointsStdev(games: history, scoring: context.scoring)
+        return PlayerProjection(
+            playerID: playerID, season: context.season, week: context.week,
+            opponent: opp, isHome: isHome,
+            points: round2(points), base: round2(base),
+            matchupMult: round2(matchupMult), scriptMult: round2(scriptMult),
+            availability: round2(availability),
+            low: round2(max(0, points - sd)), high: round2(points + sd)
+        )
+    }
+
+    // Projects every fantasy-position player who has a game in context.week.
+    static func projectAll(context: ProjectionContext) -> [String: PlayerProjection] {
+        let means = positionMeans(players: context.players, scoring: context.scoring)
+        var out: [String: PlayerProjection] = [:]
+        for (id, p) in context.players where isFantasyPosition(p.position) {
+            if let proj = project(playerID: id, context: context, positionMeans: means) {
+                out[id] = proj
+            }
+        }
+        return out
+    }
+
+    // Game-weighted points/game per position across the snapshot — the
+    // shrinkage target for thin samples.
+    static func positionMeans(players: [String: Player], scoring: Scoring) -> [String: Double] {
+        var sum: [String: Double] = [:]
+        var cnt: [String: Double] = [:]
+        for (_, p) in players where isFantasyPosition(p.position) {
+            let pos = p.position.uppercased()
+            for g in p.games {
+                sum[pos, default: 0] += g.points(scoring: scoring)
+                cnt[pos, default: 0] += 1
+            }
+        }
+        var out: [String: Double] = [:]
+        for (pos, c) in cnt where c > 0 { out[pos] = sum[pos]! / c }
+        return out
+    }
+
+    // Exponentially recency-weighted points/game, shrunk toward the position
+    // mean by `shrinkageGames` pseudo-observations. With no history the player
+    // is the position mean.
+    private static func recencyWeightedBase(
+        games: [Game], scoring: Scoring, posMean: Double, config: ProjectionConfig
+    ) -> Double {
+        guard let maxWeek = games.map(\.week).max() else { return posMean }
+        var weightedSum = 0.0
+        var weightTotal = 0.0
+        for g in games {
+            let w = pow(config.recencyDecay, Double(maxWeek - g.week))
+            weightedSum += w * g.points(scoring: scoring)
+            weightTotal += w
+        }
+        let k = max(0, config.shrinkageGames)
+        return (weightedSum + k * posMean) / (weightTotal + k)
+    }
+
+    // rank 1 = worst defense (most points allowed) → boost; 32 = best → suppress.
+    private static func matchupMultiplier(rank: Int, range: Double) -> Double {
+        let r = Double(min(max(rank, 1), 32))
+        let t = (r - 1) / 31                  // 0 at worst D, 1 at best D
+        return 1 + range - 2 * range * t
+    }
+
+    private static func scriptMultiplier(impliedTotal: Double, config: ProjectionConfig) -> Double {
+        guard config.scriptPivot > 0 else { return 1 }
+        let rel = (impliedTotal - config.scriptPivot) / config.scriptPivot
+        return min(max(1 + config.scriptStrength * rel, 0.80), 1.20)
+    }
+
+    private static func availabilityFactor(playerID: String, context: ProjectionContext) -> Double {
+        if context.inactives.contains(playerID) { return 0 }
+        guard let injury = context.injuries[playerID] else { return 1 }
+        switch injury.status.uppercased() {
+        case "OUT", "IR", "INJURED RESERVE", "PUP", "SUSPENDED", "SUS", "NFI", "DNR":
+            return 0
+        case "DOUBTFUL":
+            return 0.25
+        case "QUESTIONABLE":
+            return 0.9
+        default:
+            return 1
+        }
+    }
+
+    private static func pointsStdev(games: [Game], scoring: Scoring) -> Double {
+        guard games.count >= 2 else { return 0 }
+        let pts = games.map { $0.points(scoring: scoring) }
+        let mean = pts.reduce(0, +) / Double(pts.count)
+        let variance = pts.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(pts.count)
+        return variance.squareRoot()
+    }
+
+    // MARK: - Backtesting
+
+    // Replays projections over already-assembled per-week contexts and scores
+    // them against the full-season `actuals` snapshot. Each context must carry
+    // history < its week and as-of-week-1 DvP (the caller in AppState assembles
+    // these so this stays pure). Compares against a naive season-average-to-date
+    // baseline so the model's value is measurable.
+    static func backtest(weeks: [ProjectionContext], actuals: [String: Player]) -> BacktestReport {
+        struct Acc { var n = 0; var absErr = 0.0; var sqErr = 0.0; var bias = 0.0; var naiveAbsErr = 0.0 }
+        var byPos: [String: Acc] = [:]
+        var rhoSum: [String: Double] = [:]
+        var rhoWeight: [String: Double] = [:]
+
+        for ctx in weeks {
+            let means = positionMeans(players: ctx.players, scoring: ctx.scoring)
+            var weekPairs: [String: [(proj: Double, actual: Double)]] = [:]
+            for (id, p) in ctx.players where isFantasyPosition(p.position) {
+                let pos = p.position.uppercased()
+                let history = p.games.filter { $0.week < ctx.week }
+                guard !history.isEmpty else { continue }
+                guard let actualGame = actuals[id]?.games.first(where: { $0.week == ctx.week }) else { continue }
+                guard let proj = project(playerID: id, context: ctx, positionMeans: means) else { continue }
+                let actual = actualGame.points(scoring: ctx.scoring)
+                let naive = history.reduce(0.0) { $0 + $1.points(scoring: ctx.scoring) } / Double(history.count)
+                let err = proj.points - actual
+                var a = byPos[pos] ?? Acc()
+                a.n += 1
+                a.absErr += abs(err)
+                a.sqErr += err * err
+                a.bias += err
+                a.naiveAbsErr += abs(naive - actual)
+                byPos[pos] = a
+                weekPairs[pos, default: []].append((proj.points, actual))
+            }
+            // Within-week, within-position rank correlation.
+            for (pos, pairs) in weekPairs where pairs.count >= 3 {
+                let rho = spearman(pairs.map { $0.proj }, pairs.map { $0.actual })
+                rhoSum[pos, default: 0] += rho * Double(pairs.count)
+                rhoWeight[pos, default: 0] += Double(pairs.count)
+            }
+        }
+
+        func accuracy(_ pos: String, _ acc: Acc) -> PositionAccuracy {
+            let n = Double(max(acc.n, 1))
+            let rho = (rhoWeight[pos] ?? 0) > 0 ? rhoSum[pos]! / rhoWeight[pos]! : 0
+            return PositionAccuracy(
+                position: pos, n: acc.n,
+                mae: round2(acc.absErr / n),
+                rmse: round2((acc.sqErr / n).squareRoot()),
+                bias: round2(acc.bias / n),
+                rankCorrelation: round2(rho),
+                naiveMAE: round2(acc.naiveAbsErr / n)
+            )
+        }
+
+        let order = ["QB", "RB", "WR", "TE", "K"]
+        let byPosition = order.compactMap { pos in byPos[pos].map { accuracy(pos, $0) } }
+
+        var all = Acc()
+        for (_, a) in byPos {
+            all.n += a.n; all.absErr += a.absErr; all.sqErr += a.sqErr
+            all.bias += a.bias; all.naiveAbsErr += a.naiveAbsErr
+        }
+        var rhoNum = 0.0, rhoDen = 0.0
+        for pa in byPosition { rhoNum += pa.rankCorrelation * Double(pa.n); rhoDen += Double(pa.n) }
+        let n = Double(max(all.n, 1))
+        let overall = PositionAccuracy(
+            position: "ALL", n: all.n,
+            mae: round2(all.absErr / n),
+            rmse: round2((all.sqErr / n).squareRoot()),
+            bias: round2(all.bias / n),
+            rankCorrelation: round2(rhoDen > 0 ? rhoNum / rhoDen : 0),
+            naiveMAE: round2(all.naiveAbsErr / n)
+        )
+        return BacktestReport(overall: overall, byPosition: byPosition, weeksTested: weeks.map(\.week).sorted())
+    }
+
+    // Spearman's ρ via the rank-difference formula (tie-tolerant via average
+    // ranks). Adequate for a debug accuracy metric.
+    private static func spearman(_ a: [Double], _ b: [Double]) -> Double {
+        let n = Double(a.count)
+        guard n > 1 else { return 0 }
+        let ra = averageRanks(a), rb = averageRanks(b)
+        var d2 = 0.0
+        for i in a.indices { let d = ra[i] - rb[i]; d2 += d * d }
+        return 1 - (6 * d2) / (n * (n * n - 1))
+    }
+
+    private static func averageRanks(_ xs: [Double]) -> [Double] {
+        let idx = xs.indices.sorted { xs[$0] < xs[$1] }
+        var out = Array(repeating: 0.0, count: xs.count)
+        var i = 0
+        while i < idx.count {
+            var j = i
+            while j + 1 < idx.count && xs[idx[j + 1]] == xs[idx[i]] { j += 1 }
+            let avgRank = Double(i + j) / 2 + 1
+            for k in i...j { out[idx[k]] = avgRank }
+            i = j + 1
+        }
+        return out
+    }
 }
