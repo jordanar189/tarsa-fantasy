@@ -606,6 +606,7 @@ final class AppState {
             throw AppError.leagueNotFound
         }
         await reloadLeagues()
+        await refreshSelectedNicknames()
         return updated
     }
 
@@ -862,14 +863,18 @@ final class AppState {
         league: League, team: FantasyTeam,
         addPlayerID: String, dropPlayerID: String?
     ) async throws -> League? {
-        try await remote.addFreeAgent(
+        let updated = try await remote.addFreeAgent(
             league: league, team: team,
             addPlayerID: addPlayerID, dropPlayerID: dropPlayerID
         )
+        await refreshSelectedNicknames()
+        return updated
     }
 
     func dropPlayer(league: League, team: FantasyTeam, playerID: String) async throws -> League? {
-        try await remote.dropPlayer(league: league, team: team, playerID: playerID)
+        let updated = try await remote.dropPlayer(league: league, team: team, playerID: playerID)
+        await refreshSelectedNicknames()
+        return updated
     }
 
     @discardableResult
@@ -894,7 +899,9 @@ final class AppState {
     @discardableResult
     func approveTransaction(_ txID: String) async throws -> League? {
         guard let session else { throw AppError.notSignedIn }
-        return try await remote.approveTransaction(txID, commissionerID: session.userID)
+        let updated = try await remote.approveTransaction(txID, commissionerID: session.userID)
+        await refreshSelectedNicknames()
+        return updated
     }
 
     func rejectTransaction(_ txID: String, note: String? = nil) async throws {
@@ -962,6 +969,16 @@ final class AppState {
 
     func loadLeagueNicknames(leagueID: String) async {
         leagueNicknames = await remote.leagueNicknames(leagueID: leagueID)
+    }
+
+    // Refresh the nickname cache for the focused league after a roster change.
+    // The DB trigger archives a nickname server-side the moment its player
+    // leaves a roster, so without this the cache would keep serving a stale
+    // nickname for a dropped (and possibly re-added) player until the next
+    // full league load — breaking the "reset on drop" behavior in-session.
+    func refreshSelectedNicknames() async {
+        guard let id = selectedLeagueID else { return }
+        await loadLeagueNicknames(leagueID: id)
     }
 
     // The nickname a team has given a player on its roster, or nil.
@@ -1037,7 +1054,9 @@ final class AppState {
 
     @discardableResult
     func acceptTrade(_ tradeID: String) async throws -> Trade? {
-        try await remote.acceptTrade(tradeID)
+        let trade = try await remote.acceptTrade(tradeID)
+        await refreshSelectedNicknames()
+        return trade
     }
 
     @discardableResult
@@ -1052,12 +1071,16 @@ final class AppState {
 
     @discardableResult
     func commishResolveTrade(_ tradeID: String, approve: Bool, note: String?) async throws -> Trade? {
-        try await remote.commishResolveTrade(tradeID, approve: approve, note: note)
+        let trade = try await remote.commishResolveTrade(tradeID, approve: approve, note: note)
+        await refreshSelectedNicknames()
+        return trade
     }
 
     @discardableResult
     func voteTrade(_ tradeID: String, vote: String) async throws -> Trade? {
-        try await remote.voteTrade(tradeID, vote: vote)
+        let trade = try await remote.voteTrade(tradeID, vote: vote)
+        await refreshSelectedNicknames()
+        return trade
     }
 
     @discardableResult
@@ -1366,17 +1389,22 @@ final class AppState {
             try? await remote.snapshotTeams(leagueID: leagueID, week: next)
             await runAutoProcessing(league: updated)
         }
+        await refreshSelectedNicknames()
         return updated
     }
 
     @discardableResult
     func resetCurrentPeriod(leagueID: String) async -> League? {
-        (try? await remote.resetPeriod(leagueID: leagueID)) ?? nil
+        let updated = (try? await remote.resetPeriod(leagueID: leagueID)) ?? nil
+        await refreshSelectedNicknames()
+        return updated
     }
 
     @discardableResult
     func resetAll(leagueID: String) async -> League? {
-        (try? await remote.resetAll(leagueID: leagueID)) ?? nil
+        let updated = (try? await remote.resetAll(leagueID: leagueID)) ?? nil
+        await refreshSelectedNicknames()
+        return updated
     }
 
     private func runAutoProcessing(league: League) async {
@@ -1434,6 +1462,7 @@ final class AppState {
         for move in moves {
             try? await execute(move: move, in: fresh, session: session)
         }
+        await refreshSelectedNicknames()
     }
 
     private func execute(move: BotMove, in league: League, session: Session) async throws {
