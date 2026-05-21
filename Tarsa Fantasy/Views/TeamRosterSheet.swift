@@ -13,6 +13,7 @@ struct TeamRosterSheet: View {
     let league: League
     let team: FantasyTeam
     let onEdit: () -> Void
+    var onCustomize: (() -> Void)? = nil
 
     var body: some View {
         NavigationStack {
@@ -103,6 +104,28 @@ struct TeamRosterSheet: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.top, FFSpace.s)
+
+                if let onCustomize {
+                    Button {
+                        dismiss()
+                        onCustomize()
+                    } label: {
+                        HStack {
+                            Image(systemName: "paintbrush")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("Customize team")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .font(.ffHeadline)
+                        .foregroundStyle(FFColor.textSecondary)
+                        .padding(.vertical, 12)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: FFRadius.s)
+                                .strokeBorder(FFColor.border, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
         .ffCard()

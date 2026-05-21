@@ -55,6 +55,18 @@ struct LeagueHistoryView: View {
                     }
                 }
             }
+            if let champ = a.championTeamName {
+                HStack(spacing: FFSpace.s) {
+                    Image(systemName: "trophy.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(FFColor.accent)
+                    Text("Champion").font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                    Text(champ).font(.ffHeadline).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                    Spacer()
+                }
+                .padding(.horizontal, FFSpace.m).padding(.vertical, FFSpace.s)
+                .background(FFColor.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: FFRadius.s))
+            }
             VStack(spacing: 0) {
                 ForEach(a.standings) { row in
                     standingsRow(row, leagueChainID: a.leagueID)

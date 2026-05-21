@@ -15,6 +15,7 @@ struct LeagueDetailView: View {
     @State private var showingDraftRoom: Bool = false
     @State private var showingDraftSettings: Bool = false
     @State private var lineupEdit: LineupEditTarget? = nil
+    @State private var customizingTeam: FantasyTeam? = nil
 
     struct LineupEditTarget: Identifiable {
         let team: FantasyTeam
@@ -101,7 +102,7 @@ struct LeagueDetailView: View {
         }
         .sheet(item: $viewingTeam) { team in
             if let league {
-                TeamRosterSheet(league: league, team: team) {
+                TeamRosterSheet(league: league, team: team, onEdit: {
                     // Hop from the read-only roster popup straight into the
                     // editor. The popup dismisses itself before invoking us;
                     // defer the second sheet by a tick so the first one has
@@ -111,6 +112,18 @@ struct LeagueDetailView: View {
                         try? await Task.sleep(nanoseconds: 350_000_000)
                         editingTeam = team
                     }
+                }, onCustomize: {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        customizingTeam = team
+                    }
+                })
+            }
+        }
+        .sheet(item: $customizingTeam) { team in
+            if let league {
+                TeamCustomizationSheet(league: league, team: team) { updated in
+                    self.league = updated
                 }
             }
         }

@@ -438,17 +438,19 @@ actor RemoteService {
         teamID: String, name: String?, logoURL: String?, colorHex: String?
     ) async throws -> League? {
         guard let teamUUID = UUID(uuidString: teamID) else { return nil }
+        // logo_url / color_hex are sent as explicit JSON (null clears them);
+        // name is omitted when blank so it stays unchanged.
         struct BrandUpdate: Encodable {
             let name: String?
-            let logo_url: String?
-            let color_hex: String?
+            let logo_url: AnyJSON
+            let color_hex: AnyJSON
         }
         let cleanedName = name?.trimmingCharacters(in: .whitespaces)
         let updated: TeamRow = try await client.from("teams")
             .update(BrandUpdate(
                 name: (cleanedName?.isEmpty == false) ? cleanedName : nil,
-                logo_url: logoURL,
-                color_hex: colorHex
+                logo_url: logoURL.map { AnyJSON.string($0) } ?? .null,
+                color_hex: colorHex.map { AnyJSON.string($0) } ?? .null
             ))
             .eq("id", value: teamUUID)
             .select()
