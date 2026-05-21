@@ -43,7 +43,8 @@ fi
 
 # Pass the API key to xcodebuild so it can fetch/create provisioning profiles
 # without needing a logged-in Apple ID. Works both locally (.env) and in CI
-# (secrets). The flags are honored by both `archive` and `-exportArchive`.
+# (secrets). Used at the export step, where signing happens; the archive step
+# is built unsigned (see below).
 AUTH_FLAGS=(
   -authenticationKeyID "$ASC_KEY_ID"
   -authenticationKeyIssuerID "$ASC_ISSUER_ID"
@@ -76,6 +77,12 @@ cat > "$EXPORT_OPTIONS" <<PLIST
 </plist>
 PLIST
 
+# Archive WITHOUT code signing. With automatic signing, `xcodebuild archive`
+# signs the archive using an Apple Development identity, so every fresh CI
+# runner would mint a brand-new development certificate via
+# -allowProvisioningUpdates and eventually exhaust Apple's per-account
+# certificate limit ("maximum number of certificates"). Signing is applied
+# (with the distribution cert) at the export step below instead.
 echo "==> Archiving (build $BUILD_NUMBER)"
 xcodebuild \
   -project "$PROJECT" \
@@ -84,8 +91,7 @@ xcodebuild \
   -destination 'generic/platform=iOS' \
   -archivePath "$ARCHIVE_PATH" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-  "${AUTH_FLAGS[@]}" \
-  -allowProvisioningUpdates \
+  CODE_SIGNING_ALLOWED=NO \
   archive
 
 echo "==> Exporting IPA"
