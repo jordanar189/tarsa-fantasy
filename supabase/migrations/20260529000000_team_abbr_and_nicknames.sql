@@ -35,13 +35,14 @@ create index if not exists player_nicknames_player_idx
 create index if not exists player_nicknames_league_idx
     on public.player_nicknames (league_id) where cleared_at is null;
 
--- 3. RLS. Reads are open to authenticated users (consistent with the rest of
--- the app's league data); writes go exclusively through the validated RPC.
+-- 3. RLS. Nicknames are free-text, league-scoped UGC, so reads are limited to
+-- members of the league (mirrors the league-chat model); writes go exclusively
+-- through the validated RPC.
 alter table public.player_nicknames enable row level security;
 
 drop policy if exists "player_nicknames_read" on public.player_nicknames;
 create policy "player_nicknames_read" on public.player_nicknames
-    for select using (auth.role() = 'authenticated');
+    for select using (public.is_league_member(league_id));
 
 -- 4. Archive active nicknames whose player has left the roster. Fires on every
 -- teams.roster change, so it catches drops/trades/waivers/resets uniformly.
@@ -131,8 +132,10 @@ $$;
 
 grant execute on function public.set_player_nickname(uuid, text, text) to authenticated;
 
--- 6. Full nickname history for one player (active + archived), newest first,
--- with the team and league that gave each. Read-side only.
+-- 6. Nickname history for one player (active + archived), newest first, with
+-- the team and league that gave each. Read-side only, and limited to leagues
+-- the caller belongs to (SECURITY DEFINER bypasses RLS, so membership is
+-- enforced explicitly in the WHERE clause).
 create or replace function public.player_nickname_history(p_player_id text)
 returns table (
     nickname    text,
@@ -151,6 +154,9 @@ as $$
       join public.teams   t on t.id = pn.team_id
       join public.leagues l on l.id = pn.league_id
      where pn.player_id = p_player_id
+       -- Scope to the caller's leagues so cross-league nickname/team/league
+       -- text isn't exposed outside league membership.
+       and public.is_league_member(pn.league_id)
      order by pn.created_at desc;
 $$;
 
