@@ -336,6 +336,67 @@ final class AppState {
         return weeks.sorted()
     }
 
+    // MARK: - Projections
+
+    // Projects a single player's next upcoming game using current data
+    // (full history, live injuries, full-season DvP for the player's position).
+    // Returns nil when the player's team has no upcoming scheduled game.
+    func liveProjection(
+        playerID: String, season: Int, scoring: Scoring,
+        config: ProjectionConfig = .default
+    ) async -> PlayerProjection? {
+        let snapshot = players(season: season)
+        guard let p = snapshot[playerID], !p.team.isEmpty else { return nil }
+        let schedule = await schedules(season: season)
+        let now = Date()
+        guard let nextGame = schedule
+            .filter({ $0.kickoff.map { $0 > now } ?? false })
+            .filter({ $0.home == p.team || $0.away == p.team })
+            .min(by: { ($0.kickoff ?? .distantFuture) < ($1.kickoff ?? .distantFuture) })
+        else { return nil }
+        let pos = p.position.uppercased()
+        let table = await dvp(season: season, position: pos)
+        let ctx = Fantasy.ProjectionContext(
+            season: season, week: nextGame.week, scoring: scoring,
+            players: snapshot, schedule: schedule,
+            dvpByPosition: [pos: table], injuries: injuries,
+            inactives: [], config: config
+        )
+        return Fantasy.project(playerID: playerID, context: ctx)
+    }
+
+    // Replays projections across a completed season and scores them against
+    // actuals. Assembles each week's context with history < week and DvP /
+    // injuries / inactives as of that week (no look-ahead), then runs the pure
+    // Fantasy.backtest. `startWeek` skips the thin early weeks where there's
+    // little history to project from.
+    func runBacktest(
+        season: Int, scoring: Scoring,
+        config: ProjectionConfig = .default, startWeek: Int = 4
+    ) async -> BacktestReport {
+        let full = await loadSeason(season) ?? players(season: season)
+        let schedule = await schedules(season: season)
+        let weeks = availableWeeks(season: season).filter { $0 >= startWeek }
+        let positions = ["QB", "RB", "WR", "TE"]
+        var contexts: [Fantasy.ProjectionContext] = []
+        for w in weeks {
+            let history = Fantasy.clamped(full, upTo: w - 1)
+            var dvpByPos: [String: [String: DvPEntry]] = [:]
+            for pos in positions {
+                dvpByPos[pos] = (try? await data.dvp(season: season, position: pos, upToWeek: w - 1)) ?? [:]
+            }
+            let inj = await remote.injuries(season: season, week: w)
+            let inactive = await inactives(season: season, week: w)
+            contexts.append(Fantasy.ProjectionContext(
+                season: season, week: w, scoring: scoring,
+                players: history, schedule: schedule,
+                dvpByPosition: dvpByPos, injuries: inj,
+                inactives: inactive, config: config
+            ))
+        }
+        return Fantasy.backtest(weeks: contexts, actuals: full)
+    }
+
     // MARK: - Leagues
 
     func reloadLeagues() async {

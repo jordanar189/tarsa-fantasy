@@ -127,8 +127,38 @@ struct ProfileView: View {
 
     @ViewBuilder
     private var myProfileSections: some View {
+        if app.isAdmin { adminToolsSection }
         pendingRequestsSection
         friendsSection
+    }
+
+    @ViewBuilder
+    private var adminToolsSection: some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            HStack { Text("Admin").ffEyebrow(); Spacer() }
+            NavigationLink {
+                ProjectionBacktestView()
+            } label: {
+                HStack(spacing: FFSpace.m) {
+                    Image(systemName: "chart.xyaxis.line")
+                        .foregroundStyle(FFColor.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Projection backtest")
+                            .font(.ffHeadline)
+                            .foregroundStyle(FFColor.textPrimary)
+                        Text("Tune & measure the player projection model.")
+                            .font(.ffCaption)
+                            .foregroundStyle(FFColor.textSecondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                .ffCard()
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     @ViewBuilder
