@@ -197,7 +197,7 @@ final class AppState {
         // Disk cache hit → show stale data instantly, refresh in background.
         // Cold launch and season-switch become a non-event for the user.
         if let cached = PlayerCacheStore.shared.loadSync(season: season) {
-            playersBySeason[season] = cached
+            setPlayers(cached, season: season)
             await data.seed(season: season, players: cached)
             Task { await LiveScoresListener.shared.start(season: season) }
             Task { await self.refreshSeasonInBackground(season) }
@@ -209,7 +209,7 @@ final class AppState {
         defer { isLoadingSeason = false }
         do {
             let players = try await data.players(season: season)
-            playersBySeason[season] = players
+            setPlayers(players, season: season)
             PlayerCacheStore.shared.save(season: season, players: players)
             Task { await LiveScoresListener.shared.start(season: season) }
             return players
@@ -226,7 +226,7 @@ final class AppState {
         defer { isRefreshingSeason = false }
         do {
             let fresh = try await data.players(season: season, forceRefresh: true)
-            playersBySeason[season] = fresh
+            setPlayers(fresh, season: season)
             PlayerCacheStore.shared.save(season: season, players: fresh)
         } catch {
             #if DEBUG
@@ -239,12 +239,26 @@ final class AppState {
         playersBySeason[season] ?? [:]
     }
 
+    // Single funnel for publishing a season's real player snapshot. A preseason
+    // projection is display-only and valid *only* until real games arrive — so
+    // the moment any game shows up (network load, background refresh, or live
+    // snapshot update) we drop the cached projection. Without this, displayPlayers
+    // / isProjectedSeason would keep serving synthetic preseason points after
+    // Week 1 data starts flowing.
+    private func setPlayers(_ players: [String: Player], season: Int) {
+        playersBySeason[season] = players
+        if projectedBySeason[season] != nil,
+           players.values.contains(where: { !$0.games.isEmpty }) {
+            projectedBySeason[season] = nil
+        }
+    }
+
     // Pulls the latest snapshot (including any live overrides) from the data
     // actor and republishes it. Views call this after they get a Realtime
     // signal so SwiftUI re-renders with fresh fantasy point totals.
     func refreshLiveSnapshot(season: Int) async {
         if let snap = await data.currentSnapshot(season: season) {
-            playersBySeason[season] = snap
+            setPlayers(snap, season: season)
         }
     }
 
@@ -311,8 +325,9 @@ final class AppState {
             dvpByPos[pos] = await dvp(season: priorSeason, position: pos)
         }
 
-        // Guard against the snapshot having been built while we awaited.
-        if projectedBySeason[season] != nil { return }
+        // Guard against the snapshot having been built — or real games having
+        // arrived — while we awaited network data.
+        guard projectedBySeason[season] == nil, isPreseason(season: season) else { return }
         projectedBySeason[season] = Fantasy.preseasonProjectedSnapshot(
             season: season, players: current, priorPlayers: priorPlayers,
             schedule: schedule, dvpByPosition: dvpByPos, injuries: injuries
