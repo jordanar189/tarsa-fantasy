@@ -866,10 +866,18 @@ final class AppState {
         return updated
     }
 
-    // Persist a manually-set weekly lineup (start/sit) and IR list.
+    // Persist a manually-set lineup (start/sit) and IR list for a specific
+    // week. Freezes that week's lineup so future edits don't rewrite it, and
+    // updates the live default lineup to match the latest edit.
     @discardableResult
-    func setLineup(teamID: String, starters: [String], ir: [String]) async throws -> League? {
-        try await remote.setLineup(teamID: teamID, starters: starters, ir: ir)
+    func setLineup(
+        team: FantasyTeam, week: Int, starters: [String], ir: [String]
+    ) async throws -> League? {
+        var weekly = team.weeklyLineups
+        weekly[week] = starters
+        return try await remote.setLineup(
+            teamID: team.id, starters: starters, ir: ir, weeklyLineups: weekly
+        )
     }
 
     @discardableResult

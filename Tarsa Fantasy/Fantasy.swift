@@ -435,11 +435,25 @@ enum Fantasy {
         players: [String: Player],
         config: RosterConfig,
         scoring: Scoring,
-        settings: ScoringSettings? = nil
+        settings: ScoringSettings? = nil,
+        week: Int? = nil
     ) -> (starters: [String], bench: [String]) {
         let irSet = Set(team.ir)
+        // Prefer the frozen lineup for the requested week, then the live
+        // lineup, then an auto-fill.
+        let chosen: [String]? = {
+            if let week, let frozen = team.weeklyLineups[week],
+               frozen.count == config.starterCount,
+               frozen.contains(where: { !$0.isEmpty }) {
+                return frozen
+            }
+            return nil
+        }()
         let starters: [String]
-        if team.starters.count == config.starterCount
+        if let chosen {
+            let onRoster = Set(team.roster)
+            starters = chosen.map { onRoster.contains($0) ? $0 : "" }
+        } else if team.starters.count == config.starterCount
             && team.starters.contains(where: { !$0.isEmpty }) {
             // Drop starter IDs no longer on the roster (or moved to IR).
             let onRoster = Set(team.roster)
@@ -467,7 +481,7 @@ enum Fantasy {
         settings: ScoringSettings? = nil
     ) -> TeamWeekScore {
         let (starters, bench) = resolveLineup(
-            team: team, players: players, config: config, scoring: scoring, settings: settings
+            team: team, players: players, config: config, scoring: scoring, settings: settings, week: week
         )
         var total: Double = 0
         var rows: [LeagueRosterEntry] = []

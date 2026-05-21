@@ -14,18 +14,26 @@ struct LeagueDetailView: View {
     @State private var showingSettings: Bool = false
     @State private var showingDraftRoom: Bool = false
     @State private var showingDraftSettings: Bool = false
+    @State private var lineupEdit: LineupEditTarget? = nil
+
+    struct LineupEditTarget: Identifiable {
+        let team: FantasyTeam
+        let week: Int
+        var id: String { "\(team.id)-\(week)" }
+    }
 
     // Unified section set used for both simulation and standard leagues.
     // Standard leagues additionally surface History (when available);
     // sims keep the original four-tab strategy-testing layout. Chat
     // lives at the top-level Chat tab, not in here.
     enum SimSection: String, CaseIterable, Identifiable {
-        case overview, week, draft, manage, history
+        case overview, week, playoffs, draft, manage, history
         var id: String { rawValue }
         var label: String {
             switch self {
             case .overview: return "Overview"
             case .week:     return "Matchup"
+            case .playoffs: return "Playoffs"
             case .draft:    return "Draft"
             case .manage:   return "Manage"
             case .history:  return "History"
@@ -130,6 +138,13 @@ struct LeagueDetailView: View {
                 }
             }
         }
+        .sheet(item: $lineupEdit) { target in
+            if let league {
+                LineupEditorView(league: league, team: target.team, week: target.week) { updated in
+                    self.league = updated
+                }
+            }
+        }
     }
 
     // Unified page composition. Strategy-testing layout for both sim and
@@ -156,6 +171,8 @@ struct LeagueDetailView: View {
             )
         case .week:
             simulationWeekTab(lg)
+        case .playoffs:
+            PlayoffBracketView(league: lg)
         case .draft:
             SimulationDraftReviewView(league: lg)
         case .manage:
@@ -166,7 +183,9 @@ struct LeagueDetailView: View {
     }
 
     private func visibleSections(for lg: League) -> [SimSection] {
-        var sections: [SimSection] = [.overview, .week, .draft, .manage]
+        var sections: [SimSection] = [.overview, .week]
+        if lg.playoffTeams >= 2 { sections.append(.playoffs) }
+        sections.append(contentsOf: [.draft, .manage])
         if !lg.isTest, lg.seasonCompleted || lg.parentLeagueID != nil {
             sections.append(.history)
         }
@@ -189,7 +208,9 @@ struct LeagueDetailView: View {
     private func simulationWeekTab(_ lg: League) -> some View {
         let weeks = lg.schedule.map(\.week)
         let simWeek = max(1, min(lg.schedule.count, lg.simulatedWeek ?? 1))
-        return MatchupView(league: lg, week: $week)
+        return MatchupView(league: lg, week: $week, onEditLineup: { team, w in
+            lineupEdit = LineupEditTarget(team: team, week: w)
+        })
             .onAppear {
                 // Snap to the simulated week the first time the tab opens
                 // so the user lands on the "live" matchup.

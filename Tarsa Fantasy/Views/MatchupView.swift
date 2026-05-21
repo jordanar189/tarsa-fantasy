@@ -12,6 +12,9 @@ struct MatchupView: View {
     @Environment(AppState.self) private var app
     let league: League
     @Binding var week: Int
+    // Invoked when the viewer taps "Set lineup" — the parent owns league state
+    // and presents the editor so it can refresh on save.
+    var onEditLineup: ((FantasyTeam, Int) -> Void)? = nil
 
     @State private var dvpByPosition: [String: [String: DvPEntry]] = [:]
     @State private var schedule: [NFLGame] = []
@@ -130,8 +133,38 @@ struct MatchupView: View {
 
         VStack(spacing: FFSpace.l) {
             scoreHeader(mine: mine, theirs: theirs, played: m.played)
+            lineupButton
             slotByPlot(mine: mine.roster, theirs: theirs.roster)
         }
+    }
+
+    // "Set lineup" — only the team's owner (or sim controller) can edit, and
+    // only when there's an edit handler wired up.
+    @ViewBuilder
+    private var lineupButton: some View {
+        if let onEditLineup, let team = myTeam, canEditLineup {
+            Button {
+                onEditLineup(team, week)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "slider.horizontal.3")
+                    Text("Set Week \(week) lineup")
+                }
+                .font(.ffHeadline)
+                .foregroundStyle(FFColor.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .overlay(RoundedRectangle(cornerRadius: FFRadius.s).strokeBorder(FFColor.border, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    // Owner of the team, or the sim's controller (every team is creator-owned).
+    private var canEditLineup: Bool {
+        guard let team = myTeam else { return false }
+        if league.isTest { return true }
+        return team.ownerID == app.session?.userID || league.creatorID == app.session?.userID
     }
 
     // MARK: - Score header

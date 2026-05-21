@@ -459,6 +459,11 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
     // Player IDs parked on injured reserve. A subset of `roster`; these never
     // score and don't count against the active roster size.
     var ir: [String]
+    // Per-week frozen lineups, keyed by fantasy week. When a week has an entry,
+    // that week is scored from it (the lineup the manager locked in for that
+    // week); weeks without an entry fall back to the live `starters`. This is
+    // what keeps editing next week's lineup from rewriting past results.
+    var weeklyLineups: [Int: [String]]
     // Division index into League.divisionNames, or nil when the league has no
     // divisions configured.
     var division: Int?
@@ -469,16 +474,17 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
 
     init(id: String, name: String, roster: [String] = [],
          starters: [String] = [], ownerID: String? = nil,
-         ir: [String] = [], division: Int? = nil,
+         ir: [String] = [], weeklyLineups: [Int: [String]] = [:],
+         division: Int? = nil,
          logoURL: String? = nil, colorHex: String? = nil) {
         self.id = id; self.name = name; self.roster = roster
         self.starters = starters; self.ownerID = ownerID
-        self.ir = ir; self.division = division
+        self.ir = ir; self.weeklyLineups = weeklyLineups; self.division = division
         self.logoURL = logoURL; self.colorHex = colorHex
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ownerID, ir, division, logoURL, colorHex
+        case id, name, roster, starters, ownerID, ir, weeklyLineups, division, logoURL, colorHex
     }
 
     init(from decoder: Decoder) throws {
@@ -489,6 +495,7 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
         starters = try c.decodeIfPresent([String].self, forKey: .starters) ?? []
         ownerID  = try c.decodeIfPresent(String.self, forKey: .ownerID)
         ir       = try c.decodeIfPresent([String].self, forKey: .ir)       ?? []
+        weeklyLineups = try c.decodeIfPresent([Int: [String]].self, forKey: .weeklyLineups) ?? [:]
         division = try c.decodeIfPresent(Int.self, forKey: .division)
         logoURL  = try c.decodeIfPresent(String.self, forKey: .logoURL)
         colorHex = try c.decodeIfPresent(String.self, forKey: .colorHex)

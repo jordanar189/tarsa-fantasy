@@ -404,18 +404,25 @@ actor RemoteService {
     }
 
     // Persists a manually-set lineup (start/sit) plus the IR list, without
-    // touching the roster itself. Used by the weekly lineup editor.
+    // touching the roster itself. `weeklyLineups` is the full per-week frozen
+    // map (caller does the read-modify-write so this stays a plain update).
+    // Used by the weekly lineup editor.
     @discardableResult
     func setLineup(
-        teamID: String, starters: [String], ir: [String]
+        teamID: String, starters: [String], ir: [String],
+        weeklyLineups: [Int: [String]]
     ) async throws -> League? {
         guard let teamUUID = UUID(uuidString: teamID) else { return nil }
         struct LineupUpdate: Encodable {
             let starters: [String]
             let ir: [String]
+            let weekly_lineups: AnyJSON
         }
+        let weeklyJSON: AnyJSON = .object(Dictionary(uniqueKeysWithValues:
+            weeklyLineups.map { (String($0.key), AnyJSON.array($0.value.map { .string($0) })) }
+        ))
         let updated: TeamRow = try await client.from("teams")
-            .update(LineupUpdate(starters: starters, ir: ir))
+            .update(LineupUpdate(starters: starters, ir: ir, weekly_lineups: weeklyJSON))
             .eq("id", value: teamUUID)
             .select()
             .single()
@@ -473,6 +480,10 @@ actor RemoteService {
                     starters: t.starters,
                     ownerID: t.ownerId?.uuidString,
                     ir: t.ir,
+                    weeklyLineups: Dictionary(uniqueKeysWithValues:
+                        t.weeklyLineups.compactMap { key, value in
+                            Int(key).map { ($0, value) }
+                        }),
                     division: t.division,
                     logoURL: t.logoUrl,
                     colorHex: t.colorHex
@@ -2742,17 +2753,19 @@ struct TeamRow: Codable, Hashable {
     let starters: [String]
     let sortIndex: Int
     let ir: [String]
+    let weeklyLineups: [String: [String]]
     let division: Int?
     let logoUrl: String?
     let colorHex: String?
 
     enum CodingKeys: String, CodingKey {
         case id, name, roster, starters, ir, division
-        case leagueId  = "league_id"
-        case ownerId   = "owner_id"
-        case sortIndex = "sort_index"
-        case logoUrl   = "logo_url"
-        case colorHex  = "color_hex"
+        case leagueId      = "league_id"
+        case ownerId       = "owner_id"
+        case sortIndex     = "sort_index"
+        case weeklyLineups = "weekly_lineups"
+        case logoUrl       = "logo_url"
+        case colorHex      = "color_hex"
     }
 
     init(from decoder: Decoder) throws {
@@ -2765,6 +2778,7 @@ struct TeamRow: Codable, Hashable {
         starters  = try c.decodeIfPresent([String].self, forKey: .starters) ?? []
         sortIndex = try c.decodeIfPresent(Int.self, forKey: .sortIndex)     ?? 0
         ir        = try c.decodeIfPresent([String].self, forKey: .ir)       ?? []
+        weeklyLineups = try c.decodeIfPresent([String: [String]].self, forKey: .weeklyLineups) ?? [:]
         division  = try c.decodeIfPresent(Int.self, forKey: .division)
         logoUrl   = try c.decodeIfPresent(String.self, forKey: .logoUrl)
         colorHex  = try c.decodeIfPresent(String.self, forKey: .colorHex)

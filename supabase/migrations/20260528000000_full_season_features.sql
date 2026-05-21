@@ -17,12 +17,14 @@ alter table public.leagues
     add column if not exists champion_team_id      uuid,
     add column if not exists champion_team_name    text;
 
--- Teams: IR stash + division membership + branding.
+-- Teams: IR stash + per-week frozen lineups + division membership + branding.
+-- weekly_lineups is a jsonb object keyed by fantasy week ("3": ["pid", ...]).
 alter table public.teams
-    add column if not exists ir        text[] not null default '{}',
-    add column if not exists division  int,
-    add column if not exists logo_url  text,
-    add column if not exists color_hex text;
+    add column if not exists ir             text[] not null default '{}',
+    add column if not exists weekly_lineups jsonb  not null default '{}'::jsonb,
+    add column if not exists division       int,
+    add column if not exists logo_url       text,
+    add column if not exists color_hex      text;
 
 -- League season archive: record the playoff champion alongside the standings.
 alter table public.league_seasons
