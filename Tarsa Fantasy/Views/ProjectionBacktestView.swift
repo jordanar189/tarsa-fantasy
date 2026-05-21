@@ -21,7 +21,11 @@ struct ProjectionBacktestView: View {
                 signalsCard
                 runButton
                 if let report {
-                    resultsCard(report)
+                    if report.overall.n == 0 {
+                        emptyResults
+                    } else {
+                        resultsCard(report)
+                    }
                 } else if !isRunning {
                     Text("Run a backtest to measure projection accuracy.")
                         .font(.ffCaption)
@@ -38,15 +42,33 @@ struct ProjectionBacktestView: View {
         .navigationTitle("Projection backtest")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(FFColor.bg, for: .navigationBar)
-        .onAppear {
-            // Picker selection must match an existing tag, so clamp to a season
-            // that's actually in the list.
-            if !app.seasons.contains(season) {
-                season = app.seasons.contains(app.selectedSeason)
-                    ? app.selectedSeason
-                    : (app.seasons.first ?? 0)
+        .task {
+            // Default to the most recent season that actually has completed
+            // games. The current calendar year is usually preseason (no games
+            // yet), and backtesting it produces an empty, config-invariant
+            // report — which looks like "tuning does nothing".
+            guard season == 0 || app.availableWeeks(season: season).isEmpty else { return }
+            for s in app.seasons {                       // most-recent first
+                _ = await app.loadSeason(s)
+                if !app.availableWeeks(season: s).isEmpty { season = s; return }
             }
+            if !app.seasons.contains(season) { season = app.seasons.first ?? 0 }
         }
+    }
+
+    private var emptyResults: some View {
+        VStack(spacing: FFSpace.s) {
+            Image(systemName: "calendar.badge.exclamationmark")
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(FFColor.textTertiary)
+            Text("No completed games in \(String(season)) to backtest.")
+                .font(.ffBody).foregroundStyle(FFColor.textPrimary)
+            Text("Pick a season that has already been played. The current season hasn't kicked off yet, so there are no actuals to measure projections against — every config produces the same empty result.")
+                .font(.ffCaption).foregroundStyle(FFColor.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, FFSpace.xl)
     }
 
     // MARK: - Settings
