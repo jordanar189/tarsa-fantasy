@@ -20,7 +20,7 @@ struct TeamProfileView: View {
     @State private var schedules: [NFLGame] = []
 
     private var roster: [Player] {
-        app.selectedPlayers().values
+        app.displaySelectedPlayers().values
             .filter { $0.team == team.abbr }
             .sorted { positionWeight($0.position) < positionWeight($1.position) }
     }
@@ -68,6 +68,7 @@ struct TeamProfileView: View {
                 }
             }
             .task {
+                await app.ensureProjectedSnapshot(season: app.selectedSeason)
                 let all = await app.schedules(season: app.selectedSeason)
                 schedules = all.filter { $0.home == team.abbr || $0.away == team.abbr }
             }
