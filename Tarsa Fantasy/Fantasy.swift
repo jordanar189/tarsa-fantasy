@@ -1033,7 +1033,7 @@ enum Fantasy {
                                             placeholder: "TBD", points: nil, won: false),
                                 false, 0, false)
                     }
-                    let s = weekReached ? score(tid, week: week) : (pts: 0, played: false)
+                    let s = weekReached ? score(tid, week: week) : (pts: 0.0, played: false)
                     return (PlayoffSide(teamID: tid, teamName: nameByID[tid], seed: e.seed,
                                         placeholder: nil,
                                         points: s.played ? round2(s.pts) : nil, won: false),

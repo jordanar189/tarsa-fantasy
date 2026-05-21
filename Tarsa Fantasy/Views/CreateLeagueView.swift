@@ -118,7 +118,7 @@ struct CreateLeagueView: View {
                         if leagueType == .standard {
                             section("Season format",
                                     footer: playoffSummaryFooter) {
-                                stepperRow("Regular season", value: $regularSeasonWeeks, range: 4...17) {
+                                stepperRow("Regular season", value: $regularSeasonWeeks, range: 6...15) {
                                     "\($0) weeks"
                                 }
                                 stepperRow("Playoff teams", value: $playoffTeams, range: 0...teamCount) {

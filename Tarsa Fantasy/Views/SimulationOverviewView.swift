@@ -60,6 +60,8 @@ struct SimulationOverviewView: View {
         if let name = league.championTeamName { return name }
         guard league.playoffTeams >= 2 else { return nil }
         let players = Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
+        // Only crunch the bracket once the postseason has actually begun.
+        guard Fantasy.currentWeek(players: players) >= league.playoffStartWeek else { return nil }
         return Fantasy.playoffBracket(league: league, players: players).championTeamName
     }
 
