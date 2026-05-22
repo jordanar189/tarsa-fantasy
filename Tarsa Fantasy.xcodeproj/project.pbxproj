@@ -14,6 +14,7 @@
 
 /* Begin PBXFileReference section */
 		179D0A7C2FB7E88B00771606 /* Tarsa Fantasy.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Tarsa Fantasy.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		C04F16C0000000000000A001 /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Config/App.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -41,6 +42,7 @@
 		179D0A732FB7E88B00771606 = {
 			isa = PBXGroup;
 			children = (
+				C04F16C0000000000000A001 /* App.xcconfig */,
 				179D0A7E2FB7E88B00771606 /* Tarsa Fantasy */,
 				179D0A7D2FB7E88B00771606 /* Products */,
 			);
@@ -262,6 +264,7 @@
 		};
 		179D0A8A2FB7E89000771606 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C04F16C0000000000000A001 /* App.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -300,6 +303,7 @@
 		};
 		179D0A8B2FB7E89000771606 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C04F16C0000000000000A001 /* App.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;

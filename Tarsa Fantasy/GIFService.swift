@@ -7,13 +7,17 @@ import Foundation
 // Migrated off Tenor, which Google is shutting down (new sign-ups ended
 // Jan 2026, full shutdown June 30 2026).
 //
-// Requires a GIPHY API key. Get one (free) at https://developers.giphy.com —
-// create an app and use its API key below. The default beta key is heavily
-// rate-limited; request a production key before shipping. When the key is
-// empty the picker shows a friendly "unavailable" state and search returns no
-// results, so the rest of the app is unaffected.
+// Requires a GIPHY API key. Get one (free) at https://developers.giphy.com
+// (create an "API" app). The key is injected at build time from
+// Config/Secrets.xcconfig (gitignored) via the GIPHY_API_KEY build setting and
+// the GIPHYAPIKey Info.plist entry — see Config/Secrets.example.xcconfig. When
+// it's absent the picker shows a friendly "unavailable" state and search
+// returns no results, so the rest of the app is unaffected.
 enum GiphyConfig {
-    static let apiKey = ""
+    static let apiKey: String = {
+        let raw = Bundle.main.object(forInfoDictionaryKey: "GIPHYAPIKey") as? String ?? ""
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }()
     static var isConfigured: Bool { !apiKey.isEmpty }
 }
 
