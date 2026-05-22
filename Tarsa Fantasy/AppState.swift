@@ -757,6 +757,23 @@ final class AppState {
         )
     }
 
+    @discardableResult
+    func sendStructuredMessage(
+        leagueID: String, kind: MessageKind, payload: ChatPayload
+    ) async throws -> LeagueMessage {
+        guard let session else { throw AppError.notSignedIn }
+        return try await remote.sendStructuredMessage(
+            leagueID: leagueID, userID: session.userID, kind: kind, payload: payload
+        )
+    }
+
+    func respondToMessage(messageID: String, choice: Int) async throws {
+        guard let session else { throw AppError.notSignedIn }
+        try await remote.respond(
+            messageID: messageID, userID: session.userID, choice: choice
+        )
+    }
+
     // MARK: - Friends + DMs
 
     func profile(userID: String) async -> Profile? {

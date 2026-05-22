@@ -35,6 +35,13 @@ actor LeagueChatListener {
             schema: "public",
             table: "league_message_reactions"
         )
+        // Structured-message responses (poll/trivia votes). Like reactions,
+        // these don't carry league_id; the view filters by loaded messages.
+        let responseChanges = ch.postgresChange(
+            AnyAction.self,
+            schema: "public",
+            table: "message_responses"
+        )
 
         do {
             try await ch.subscribeWithError()
@@ -52,6 +59,11 @@ actor LeagueChatListener {
         Task.detached {
             for await change in reactionChanges {
                 await Self.routeReaction(change, leagueID: leagueID)
+            }
+        }
+        Task.detached {
+            for await change in responseChanges {
+                await Self.routeResponse(change, leagueID: leagueID)
             }
         }
     }
@@ -86,6 +98,36 @@ actor LeagueChatListener {
         case .update:
             // Edits aren't a feature today; nothing to broadcast.
             break
+        }
+    }
+
+    // Upserts arrive as INSERT or UPDATE; both map to "this user's vote is now
+    // X". DELETE removes the vote.
+    private static func routeResponse(_ change: AnyAction, leagueID: String) async {
+        switch change {
+        case .insert(let action):
+            guard let response = decodeResponse(action.record) else { return }
+            await postResponseChanged(response, leagueID: leagueID)
+        case .update(let action):
+            guard let response = decodeResponse(action.record) else { return }
+            await postResponseChanged(response, leagueID: leagueID)
+        case .delete(let action):
+            guard let response = decodeResponse(action.oldRecord) else { return }
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: .leagueChatResponseDeleted, object: nil,
+                    userInfo: ["leagueID": leagueID, "response": response]
+                )
+            }
+        }
+    }
+
+    private static func postResponseChanged(_ response: MessageResponse, leagueID: String) async {
+        await MainActor.run {
+            NotificationCenter.default.post(
+                name: .leagueChatResponseChanged, object: nil,
+                userInfo: ["leagueID": leagueID, "response": response]
+            )
         }
     }
 
@@ -134,11 +176,31 @@ actor LeagueChatListener {
             ?? Self.isoFractional.date(from: createdAt)
             ?? Date()
         let imageURL = record["image_url"]?.stringValue
+        let kind = MessageKind(rawValue: record["message_type"]?.stringValue ?? "text") ?? .text
+        let payload = decodePayload(record["payload"])
         return LeagueMessage(
             id: id, leagueID: leagueID, userID: userID,
             username: nil, content: content,
-            imageURL: imageURL, createdAt: date
+            imageURL: imageURL, createdAt: date,
+            kind: kind, payload: payload
         )
+    }
+
+    // Decodes the realtime jsonb payload into a strongly-typed ChatPayload.
+    // Realtime usually delivers jsonb as a nested object, but some setups send
+    // it as a JSON string — handle both.
+    private static func decodePayload(_ json: AnyJSON?) -> ChatPayload? {
+        guard let json else { return nil }
+        switch json {
+        case .null:
+            return nil
+        case .string(let s):
+            guard let data = s.data(using: .utf8) else { return nil }
+            return try? JSONDecoder().decode(ChatPayload.self, from: data)
+        default:
+            guard let data = try? JSONEncoder().encode(json) else { return nil }
+            return try? JSONDecoder().decode(ChatPayload.self, from: data)
+        }
     }
 
     private static func decodeReaction(_ record: [String: AnyJSON]) -> LeagueMessageReaction? {
@@ -150,6 +212,19 @@ actor LeagueChatListener {
             let userID  = normalizedUUID(userRaw)
         else { return nil }
         return LeagueMessageReaction(messageID: msgID, userID: userID, emoji: emoji)
+    }
+
+    private static func decodeResponse(_ record: [String: AnyJSON]) -> MessageResponse? {
+        guard
+            let msgRaw  = record["message_id"]?.stringValue,
+            let userRaw = record["user_id"]?.stringValue,
+            let msgID   = normalizedUUID(msgRaw),
+            let userID  = normalizedUUID(userRaw)
+        else { return nil }
+        // `choice` is absent on DELETE events (the old record only carries the
+        // primary key); the delete handler ignores it, so default to 0.
+        let choice = record["choice"]?.intValue ?? 0
+        return MessageResponse(messageID: msgID, userID: userID, choice: choice)
     }
 
     // Canonicalizes a UUID string to Swift's uppercase form. Returns nil
@@ -175,11 +250,22 @@ extension Notification.Name {
     static let leagueChatMessageDeleted   = Notification.Name("leagueChatMessageDeleted")
     static let leagueChatReactionInserted = Notification.Name("leagueChatReactionInserted")
     static let leagueChatReactionDeleted  = Notification.Name("leagueChatReactionDeleted")
+    static let leagueChatResponseChanged  = Notification.Name("leagueChatResponseChanged")
+    static let leagueChatResponseDeleted  = Notification.Name("leagueChatResponseDeleted")
 }
 
 private extension AnyJSON {
     var stringValue: String? {
         if case .string(let s) = self { return s }
         return nil
+    }
+
+    var intValue: Int? {
+        switch self {
+        case .integer(let i): return i
+        case .double(let d):  return Int(d)
+        case .string(let s):  return Int(s)
+        default:              return nil
+        }
     }
 }
