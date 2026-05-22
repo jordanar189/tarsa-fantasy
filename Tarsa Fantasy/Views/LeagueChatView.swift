@@ -13,6 +13,7 @@ struct LeagueChatView: View {
 
     @State private var messages: [LeagueMessage] = []
     @State private var reactions: [String: [LeagueMessageReaction]] = [:]
+    @State private var responses: [String: [MessageResponse]] = [:]
     @State private var draft: String = ""
     @State private var sending: Bool = false
     @State private var loaded: Bool = false
@@ -21,6 +22,7 @@ struct LeagueChatView: View {
     @State private var pickerItem: PhotosPickerItem? = nil
     @State private var pendingImage: PendingImage? = nil
     @State private var showingGIFPicker = false
+    @State private var composeSheet: ComposeSheet? = nil
     @FocusState private var composerFocused: Bool
 
     private var myUserID: String? { app.session?.userID }
@@ -54,6 +56,12 @@ struct LeagueChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: .leagueChatReactionDeleted)) { note in
             handleReactionDeleted(note)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .leagueChatResponseChanged)) { note in
+            handleResponseChanged(note)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .leagueChatResponseDeleted)) { note in
+            handleResponseDeleted(note)
+        }
         .onChange(of: pickerItem) { _, item in
             Task { await loadPickedImage(item) }
         }
@@ -61,6 +69,30 @@ struct LeagueChatView: View {
             GIFPickerSheet { url in
                 showingGIFPicker = false
                 Task { await sendGIF(url) }
+            }
+        }
+        .sheet(item: $composeSheet) { sheet in
+            switch sheet {
+            case .poll:
+                PollBuilderSheet(kind: .poll) { payload in
+                    composeSheet = nil
+                    Task { await sendStructured(kind: .poll, payload: payload) }
+                }
+            case .pickem:
+                PollBuilderSheet(kind: .pickem) { payload in
+                    composeSheet = nil
+                    Task { await sendStructured(kind: .pickem, payload: payload) }
+                }
+            case .trivia:
+                TriviaBuilderSheet { payload in
+                    composeSheet = nil
+                    Task { await sendStructured(kind: .trivia, payload: payload) }
+                }
+            case .tradeblock:
+                TradeBlockBuilderSheet(league: league) { payload in
+                    composeSheet = nil
+                    Task { await sendStructured(kind: .tradeblock, payload: payload) }
+                }
             }
         }
         .alert("Couldn't send", isPresented: Binding(
@@ -205,6 +237,21 @@ struct LeagueChatView: View {
 
     @ViewBuilder
     private func messageBubble(_ m: LeagueMessage, isMine: Bool) -> some View {
+        if m.kind == .text {
+            textBubble(m, isMine: isMine)
+                .contextMenu { messageMenu(for: m) }
+        } else {
+            StructuredMessageCard(
+                message: m,
+                responses: responses[m.id] ?? [],
+                myUserID: myUserID,
+                onRespond: { choice in Task { await respond(choice, on: m) } }
+            )
+            .contextMenu { messageMenu(for: m) }
+        }
+    }
+
+    private func textBubble(_ m: LeagueMessage, isMine: Bool) -> some View {
         VStack(alignment: isMine ? .trailing : .leading, spacing: FFSpace.s) {
             if let imageURL = m.imageURL, let url = URL(string: imageURL) {
                 chatImage(url: url)
@@ -233,7 +280,6 @@ struct LeagueChatView: View {
                     lineWidth: 1
                 )
         )
-        .contextMenu { messageMenu(for: m) }
     }
 
     @ViewBuilder
@@ -404,6 +450,27 @@ struct LeagueChatView: View {
                 pendingImagePreview(pending)
             }
             HStack(alignment: .bottom, spacing: FFSpace.s) {
+                Menu {
+                    Button { composerFocused = false; composeSheet = .poll } label: {
+                        Label("Poll", systemImage: "chart.bar")
+                    }
+                    Button { composerFocused = false; composeSheet = .pickem } label: {
+                        Label("Pick 'em", systemImage: "football")
+                    }
+                    Button { composerFocused = false; composeSheet = .trivia } label: {
+                        Label("Trivia", systemImage: "questionmark.circle")
+                    }
+                    Button { composerFocused = false; composeSheet = .tradeblock } label: {
+                        Label("Trade block", systemImage: "arrow.left.arrow.right")
+                    }
+                } label: {
+                    Image(systemName: "plus.circle")
+                        .font(.system(size: 22))
+                        .foregroundStyle(FFColor.accent)
+                        .padding(.bottom, 6)
+                }
+                .disabled(sending)
+
                 PhotosPicker(selection: $pickerItem, matching: .images, photoLibrary: .shared()) {
                     Image(systemName: "photo.on.rectangle")
                         .font(.system(size: 22))
@@ -503,6 +570,7 @@ struct LeagueChatView: View {
         let load = await app.leagueChat(leagueID: league.id)
         messages = load.messages
         reactions = load.reactions
+        responses = load.responses
         cacheUsernames(from: messages)
         loaded = true
         await LeagueChatListener.shared.start(leagueID: league.id)
@@ -572,6 +640,39 @@ struct LeagueChatView: View {
         }
     }
 
+    private func sendStructured(kind: MessageKind, payload: ChatPayload) async {
+        guard !sending else { return }
+        sending = true
+        defer { sending = false }
+        do {
+            let posted = try await app.sendStructuredMessage(
+                leagueID: league.id, kind: kind, payload: payload
+            )
+            if !messages.contains(where: { $0.id == posted.id }) {
+                messages.append(posted)
+            }
+            if let name = posted.username { usernamesByID[posted.userID] = name }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    // Optimistically records my vote, then persists it. Realtime echoes the
+    // change for everyone else (and reconciles mine).
+    private func respond(_ choice: Int, on m: LeagueMessage) async {
+        guard let uid = myUserID else { return }
+        let previous = responses[m.id] ?? []
+        var updated = previous.filter { $0.userID != uid }
+        updated.append(MessageResponse(messageID: m.id, userID: uid, choice: choice))
+        responses[m.id] = updated
+        do {
+            try await app.respondToMessage(messageID: m.id, choice: choice)
+        } catch {
+            responses[m.id] = previous
+            self.error = error.localizedDescription
+        }
+    }
+
     // GIFs are hosted by Tenor, so unlike photos there's nothing to upload —
     // the URL goes straight into an image-only message.
     private func sendGIF(_ urlString: String) async {
@@ -597,6 +698,7 @@ struct LeagueChatView: View {
         // UI snappy in case the network lags.
         messages.removeAll { $0.id == m.id }
         reactions[m.id] = nil
+        responses[m.id] = nil
     }
 
     private func toggleReaction(_ emoji: String, on m: LeagueMessage) async {
@@ -629,7 +731,8 @@ struct LeagueChatView: View {
             hydrated = LeagueMessage(
                 id: msg.id, leagueID: msg.leagueID, userID: msg.userID,
                 username: name, content: msg.content,
-                imageURL: msg.imageURL, createdAt: msg.createdAt
+                imageURL: msg.imageURL, createdAt: msg.createdAt,
+                kind: msg.kind, payload: msg.payload
             )
         }
         messages.append(hydrated)
@@ -640,6 +743,7 @@ struct LeagueChatView: View {
               let id = note.userInfo?["id"] as? String else { return }
         messages.removeAll { $0.id == id }
         reactions[id] = nil
+        responses[id] = nil
     }
 
     private func handleReactionInserted(_ note: Notification) {
@@ -662,6 +766,24 @@ struct LeagueChatView: View {
         reactions[reaction.messageID] = list.isEmpty ? nil : list
     }
 
+    private func handleResponseChanged(_ note: Notification) {
+        guard let lid = note.userInfo?["leagueID"] as? String, lid == league.id,
+              let response = note.userInfo?["response"] as? MessageResponse else { return }
+        guard messages.contains(where: { $0.id == response.messageID }) else { return }
+        var list = responses[response.messageID] ?? []
+        list.removeAll { $0.userID == response.userID }
+        list.append(response)
+        responses[response.messageID] = list
+    }
+
+    private func handleResponseDeleted(_ note: Notification) {
+        guard let lid = note.userInfo?["leagueID"] as? String, lid == league.id,
+              let response = note.userInfo?["response"] as? MessageResponse else { return }
+        guard var list = responses[response.messageID] else { return }
+        list.removeAll { $0.userID == response.userID }
+        responses[response.messageID] = list.isEmpty ? nil : list
+    }
+
     private func cacheUsernames(from list: [LeagueMessage]) {
         for m in list {
             if let name = m.username { usernamesByID[m.userID] = name }
@@ -671,5 +793,18 @@ struct LeagueChatView: View {
     private struct PendingImage: Equatable {
         let data: Data
         let contentType: String
+    }
+}
+
+// Which structured-card builder sheet the composer's "+" menu is presenting.
+enum ComposeSheet: Identifiable {
+    case poll, pickem, trivia, tradeblock
+    var id: Int {
+        switch self {
+        case .poll:       return 0
+        case .pickem:     return 1
+        case .trivia:     return 2
+        case .tradeblock: return 3
+        }
     }
 }

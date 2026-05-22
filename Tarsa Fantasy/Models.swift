@@ -760,10 +760,41 @@ struct Play: Identifiable, Hashable {
     var id: String { "\(gameID)-\(playID)" }
 }
 
+// The kind of a chat message. `text` is a normal text/image post; the rest
+// are structured cards whose data lives in `LeagueMessage.payload`.
+enum MessageKind: String, Codable, Hashable, Sendable {
+    case text, poll, pickem, trivia, tradeblock
+}
+
+// Type-specific data for a structured chat message, stored as jsonb. All
+// fields are optional — which ones are populated depends on MessageKind:
+//   poll / pickem : question + options
+//   trivia        : question + options + correct (index of the right answer)
+//   tradeblock    : players (display names) + note + teamName
+struct ChatPayload: Codable, Hashable, Sendable {
+    var question: String?
+    var options: [String]?
+    var correct: Int?
+    var players: [String]?
+    var note: String?
+    var teamName: String?
+
+    init(question: String? = nil, options: [String]? = nil, correct: Int? = nil,
+         players: [String]? = nil, note: String? = nil, teamName: String? = nil) {
+        self.question = question
+        self.options = options
+        self.correct = correct
+        self.players = players
+        self.note = note
+        self.teamName = teamName
+    }
+}
+
 // One posted message in a league's chat. Username is joined in at fetch
 // time; nil for messages whose author's profile has been deleted.
 // imageURL is set when the user attached a photo; content may be empty in
-// that case (image-only post).
+// that case (image-only post). `kind`/`payload` describe structured cards
+// (polls, trivia, trade blocks); for plain messages kind is .text.
 struct LeagueMessage: Identifiable, Hashable, Sendable {
     let id: String
     let leagueID: String
@@ -772,6 +803,32 @@ struct LeagueMessage: Identifiable, Hashable, Sendable {
     let content: String
     let imageURL: String?
     let createdAt: Date
+    let kind: MessageKind
+    let payload: ChatPayload?
+
+    init(id: String, leagueID: String, userID: String, username: String?,
+         content: String, imageURL: String?, createdAt: Date,
+         kind: MessageKind = .text, payload: ChatPayload? = nil) {
+        self.id = id
+        self.leagueID = leagueID
+        self.userID = userID
+        self.username = username
+        self.content = content
+        self.imageURL = imageURL
+        self.createdAt = createdAt
+        self.kind = kind
+        self.payload = payload
+    }
+}
+
+// One user's response to a structured message: their chosen option index on a
+// poll/pick'em/trivia. Composite identity (message, user) — at most one
+// response per user per message; re-voting updates `choice`.
+struct MessageResponse: Identifiable, Hashable, Sendable {
+    let messageID: String
+    let userID: String
+    let choice: Int
+    var id: String { "\(messageID)|\(userID)" }
 }
 
 // One emoji reaction on a chat message. Composite identity (message, user,
@@ -784,11 +841,21 @@ struct LeagueMessageReaction: Identifiable, Hashable, Sendable {
     var id: String { "\(messageID)|\(userID)|\(emoji)" }
 }
 
-// Combined chat transcript: messages plus all their reactions, fetched in
-// a single round-trip so the chat opens with full state.
+// Combined chat transcript: messages plus all their reactions and structured
+// responses (poll/trivia votes), fetched in a single round-trip so the chat
+// opens with full state.
 struct LeagueChatLoad: Sendable {
     let messages: [LeagueMessage]
     let reactions: [String: [LeagueMessageReaction]]
+    let responses: [String: [MessageResponse]]
+
+    init(messages: [LeagueMessage],
+         reactions: [String: [LeagueMessageReaction]],
+         responses: [String: [MessageResponse]] = [:]) {
+        self.messages = messages
+        self.reactions = reactions
+        self.responses = responses
+    }
 }
 
 // One historical matchup between two users (head-to-head view).
