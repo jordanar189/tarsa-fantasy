@@ -422,7 +422,7 @@ struct DMChatView: View {
         }
     }
 
-    // GIFs are Tenor-hosted, so there's nothing to upload — the URL goes
+    // GIFs are GIPHY-hosted, so there's nothing to upload — the URL goes
     // straight into an image-only DM.
     private func sendGIF(_ urlString: String) async {
         guard !sending else { return }
