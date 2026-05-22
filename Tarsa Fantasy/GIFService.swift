@@ -63,12 +63,22 @@ actor GIFService {
         guard let url = components.url else { return [] }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            guard let http = response as? HTTPURLResponse else { return [] }
+            guard (200..<300).contains(http.statusCode) else {
+                // A bad key (401/403) or rate limit (429) returns [] just like
+                // an empty result; log it in debug so misconfiguration is
+                // obvious while wiring up the key.
+                #if DEBUG
+                print("GIFService: GIPHY \(path) returned HTTP \(http.statusCode)")
+                #endif
                 return []
             }
             let decoded = try JSONDecoder().decode(GiphyResponse.self, from: data)
             return decoded.data.compactMap(\.gifResult)
         } catch {
+            #if DEBUG
+            print("GIFService: GIPHY \(path) request failed — \(error)")
+            #endif
             return []
         }
     }
