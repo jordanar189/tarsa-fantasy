@@ -17,6 +17,7 @@ struct DMChatView: View {
     @State private var error: String? = nil
     @State private var pickerItem: PhotosPickerItem? = nil
     @State private var pendingImage: PendingImage? = nil
+    @State private var showingGIFPicker = false
     @FocusState private var composerFocused: Bool
 
     private var myUserID: String? { app.session?.userID }
@@ -52,6 +53,12 @@ struct DMChatView: View {
         }
         .onChange(of: pickerItem) { _, item in
             Task { await loadPickedImage(item) }
+        }
+        .sheet(isPresented: $showingGIFPicker) {
+            GIFPickerSheet { url in
+                showingGIFPicker = false
+                Task { await sendGIF(url) }
+            }
         }
         .alert("Couldn't send", isPresented: Binding(
             get: { error != nil },
@@ -214,31 +221,38 @@ struct DMChatView: View {
         }
     }
 
+    @ViewBuilder
     private func chatImage(url: URL) -> some View {
-        AsyncImage(url: url) { phase in
-            switch phase {
-            case .empty:
-                ZStack {
-                    FFColor.surfaceElevated
-                    ProgressView().tint(FFColor.textTertiary)
-                }
+        if url.pathExtension.lowercased() == "gif" {
+            AnimatedImageView(url: url)
                 .frame(width: 220, height: 220)
-            case .success(let image):
-                image.resizable().scaledToFill()
+                .clipShape(RoundedRectangle(cornerRadius: FFRadius.m))
+        } else {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .empty:
+                    ZStack {
+                        FFColor.surfaceElevated
+                        ProgressView().tint(FFColor.textTertiary)
+                    }
                     .frame(width: 220, height: 220)
-                    .clipped()
-            case .failure:
-                ZStack {
-                    FFColor.surfaceElevated
-                    Image(systemName: "photo.badge.exclamationmark")
-                        .foregroundStyle(FFColor.textTertiary)
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                        .frame(width: 220, height: 220)
+                        .clipped()
+                case .failure:
+                    ZStack {
+                        FFColor.surfaceElevated
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .foregroundStyle(FFColor.textTertiary)
+                    }
+                    .frame(width: 220, height: 220)
+                @unknown default:
+                    Color.clear.frame(width: 220, height: 220)
                 }
-                .frame(width: 220, height: 220)
-            @unknown default:
-                Color.clear.frame(width: 220, height: 220)
             }
+            .clipShape(RoundedRectangle(cornerRadius: FFRadius.m))
         }
-        .clipShape(RoundedRectangle(cornerRadius: FFRadius.m))
     }
 
     // MARK: - Composer
@@ -255,6 +269,24 @@ struct DMChatView: View {
                         .foregroundStyle(FFColor.accent)
                         .padding(.bottom, 6)
                 }
+                .disabled(sending)
+
+                Button {
+                    composerFocused = false
+                    showingGIFPicker = true
+                } label: {
+                    Text("GIF")
+                        .font(.ffMicro.bold())
+                        .foregroundStyle(FFColor.accent)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: FFRadius.s)
+                                .strokeBorder(FFColor.accent, lineWidth: 1.5)
+                        )
+                        .padding(.bottom, 6)
+                }
+                .buttonStyle(.plain)
                 .disabled(sending)
 
                 TextField("Message", text: $draft, axis: .vertical)
@@ -386,6 +418,24 @@ struct DMChatView: View {
         } catch {
             draft = text
             pendingImage = pending
+            self.error = error.localizedDescription
+        }
+    }
+
+    // GIFs are Tenor-hosted, so there's nothing to upload — the URL goes
+    // straight into an image-only DM.
+    private func sendGIF(_ urlString: String) async {
+        guard !sending else { return }
+        sending = true
+        defer { sending = false }
+        do {
+            let posted = try await app.sendDMMessage(
+                threadID: thread.id, content: "", imageURL: urlString
+            )
+            if !messages.contains(where: { $0.id == posted.id }) {
+                messages.append(posted)
+            }
+        } catch {
             self.error = error.localizedDescription
         }
     }
