@@ -229,9 +229,21 @@ private struct FlowLayout: Layout {
             x += size.width + spacing
         }
         let totalHeight = rowHeights.reduce(0, +) + spacing * CGFloat(max(0, rows.count - 1))
-        let width = proposal.width ?? rows.map { row in
-            row.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(0, row.count - 1))
-        }.max() ?? 0
+        let width: CGFloat
+        if let proposedWidth = proposal.width {
+            width = proposedWidth
+        } else {
+            var widest: CGFloat = 0
+            for row in rows {
+                var rowWidth: CGFloat = 0
+                for size in row {
+                    rowWidth += size.width
+                }
+                rowWidth += spacing * CGFloat(max(0, row.count - 1))
+                widest = max(widest, rowWidth)
+            }
+            width = widest
+        }
         return CGSize(width: width, height: totalHeight)
     }
 
