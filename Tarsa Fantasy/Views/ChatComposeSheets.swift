@@ -13,17 +13,21 @@ struct PollBuilderSheet: View {
     let onCreate: (ChatPayload) -> Void
 
     @State private var question = ""
-    @State private var options: [String] = ["", ""]
+    @State private var options: [OptionField] = [OptionField(), OptionField()]
 
     private var cleanedOptions: [String] {
         options
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
     }
 
     private var canPost: Bool {
         !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && cleanedOptions.count >= 2
+    }
+
+    private func number(of option: OptionField) -> Int {
+        (options.firstIndex(where: { $0.id == option.id }) ?? 0) + 1
     }
 
     var body: some View {
@@ -41,12 +45,12 @@ struct PollBuilderSheet: View {
                         }
                         VStack(alignment: .leading, spacing: FFSpace.s) {
                             Text("Options").ffEyebrow()
-                            ForEach(options.indices, id: \.self) { i in
+                            ForEach($options) { $option in
                                 HStack(spacing: FFSpace.s) {
-                                    ComposeField(text: $options[i], prompt: "Option \(i + 1)")
+                                    ComposeField(text: $option.text, prompt: "Option \(number(of: option))")
                                     if options.count > 2 {
                                         Button {
-                                            options.remove(at: i)
+                                            options.removeAll { $0.id == option.id }
                                         } label: {
                                             Image(systemName: "minus.circle.fill")
                                                 .foregroundStyle(FFColor.textTertiary)
@@ -57,7 +61,7 @@ struct PollBuilderSheet: View {
                             }
                             if options.count < 6 {
                                 Button {
-                                    options.append("")
+                                    options.append(OptionField())
                                 } label: {
                                     Label("Add option", systemImage: "plus.circle")
                                         .font(.ffCaption)
@@ -99,23 +103,28 @@ struct TriviaBuilderSheet: View {
     let onCreate: (ChatPayload) -> Void
 
     @State private var question = ""
-    @State private var options: [String] = ["", ""]
-    @State private var correctIndex: Int? = nil
+    @State private var options: [OptionField] = [OptionField(), OptionField()]
+    @State private var correctID: UUID? = nil
 
     // Trims options, drops empties, and remaps the correct answer to its
     // position in the cleaned list. Nil when the inputs aren't postable yet.
     private var result: (options: [String], correct: Int)? {
-        let trimmed = options.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        let cleaned = trimmed.enumerated().filter { !$0.element.isEmpty }
+        let cleaned = options
+            .map { (id: $0.id, text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .filter { !$0.text.isEmpty }
         guard cleaned.count >= 2,
-              let ci = correctIndex,
-              let pos = cleaned.firstIndex(where: { $0.offset == ci })
+              let cid = correctID,
+              let pos = cleaned.firstIndex(where: { $0.id == cid })
         else { return nil }
-        return (cleaned.map { $0.element }, pos)
+        return (cleaned.map { $0.text }, pos)
     }
 
     private var canPost: Bool {
         !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && result != nil
+    }
+
+    private func number(of option: OptionField) -> Int {
+        (options.firstIndex(where: { $0.id == option.id }) ?? 0) + 1
     }
 
     var body: some View {
@@ -130,20 +139,20 @@ struct TriviaBuilderSheet: View {
                         }
                         VStack(alignment: .leading, spacing: FFSpace.s) {
                             Text("Answers · tap the circle to mark correct").ffEyebrow()
-                            ForEach(options.indices, id: \.self) { i in
+                            ForEach($options) { $option in
                                 HStack(spacing: FFSpace.s) {
                                     Button {
-                                        correctIndex = i
+                                        correctID = option.id
                                     } label: {
-                                        Image(systemName: correctIndex == i ? "checkmark.circle.fill" : "circle")
-                                            .foregroundStyle(correctIndex == i ? FFColor.positive : FFColor.textTertiary)
+                                        Image(systemName: correctID == option.id ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(correctID == option.id ? FFColor.positive : FFColor.textTertiary)
                                     }
                                     .buttonStyle(.plain)
-                                    ComposeField(text: $options[i], prompt: "Answer \(i + 1)")
+                                    ComposeField(text: $option.text, prompt: "Answer \(number(of: option))")
                                     if options.count > 2 {
                                         Button {
-                                            if correctIndex == i { correctIndex = nil }
-                                            options.remove(at: i)
+                                            if correctID == option.id { correctID = nil }
+                                            options.removeAll { $0.id == option.id }
                                         } label: {
                                             Image(systemName: "minus.circle.fill")
                                                 .foregroundStyle(FFColor.textTertiary)
@@ -154,7 +163,7 @@ struct TriviaBuilderSheet: View {
                             }
                             if options.count < 6 {
                                 Button {
-                                    options.append("")
+                                    options.append(OptionField())
                                 } label: {
                                     Label("Add answer", systemImage: "plus.circle")
                                         .font(.ffCaption)
@@ -316,6 +325,14 @@ struct TradeBlockBuilderSheet: View {
 }
 
 // MARK: - Shared field
+
+// An editable option/answer row backed by a stable identity, so SwiftUI
+// bindings survive deletions of non-terminal rows (index-based bindings can
+// crash with "Index out of range" mid-diff when a row is removed).
+private struct OptionField: Identifiable, Hashable {
+    let id = UUID()
+    var text: String = ""
+}
 
 // A styled single-line text field matching the chat composer's look.
 private struct ComposeField: View {
