@@ -763,30 +763,64 @@ struct Play: Identifiable, Hashable {
 // The kind of a chat message. `text` is a normal text/image post; the rest
 // are structured cards whose data lives in `LeagueMessage.payload`.
 enum MessageKind: String, Codable, Hashable, Sendable {
-    case text, poll, pickem, trivia, tradeblock
+    case text, poll, pickem, tradeblock
+}
+
+// One NFL game offered in a pick'em card, captured from the real schedule at
+// creation time so the card renders without re-fetching. The two pickable
+// outcomes are the away team (option 0) and the home team (option 1). Kickoff
+// is epoch seconds so it round-trips through every JSON decoder without
+// depending on a date-decoding strategy.
+struct PickGame: Codable, Hashable, Sendable, Identifiable {
+    var id: String          // NFL game id
+    var week: Int
+    var away: String        // away team abbreviation
+    var home: String        // home team abbreviation
+    var awayName: String?   // full team name for display (falls back to abbr)
+    var homeName: String?
+    var kickoff: Double?    // epoch seconds; nil if unscheduled
+
+    init(id: String, week: Int, away: String, home: String,
+         awayName: String? = nil, homeName: String? = nil, kickoff: Double? = nil) {
+        self.id = id; self.week = week
+        self.away = away; self.home = home
+        self.awayName = awayName; self.homeName = homeName
+        self.kickoff = kickoff
+    }
 }
 
 // Type-specific data for a structured chat message, stored as jsonb. All
 // fields are optional — which ones are populated depends on MessageKind:
-//   poll / pickem : question + options
-//   trivia        : question + options + correct (index of the right answer)
-//   tradeblock    : players (display names) + note + teamName
+//   poll       : question + options (+ allowMultiple / allowAddOptions / closesAt)
+//   pickem     : question (title) + games (+ closesAt)
+//   tradeblock : players (offering, display names) + seeking + note + teamName
 struct ChatPayload: Codable, Hashable, Sendable {
     var question: String?
     var options: [String]?
-    var correct: Int?
     var players: [String]?
+    var seeking: [String]?
     var note: String?
     var teamName: String?
+    var games: [PickGame]?
+    var allowMultiple: Bool?     // poll: voters may pick more than one option
+    var allowAddOptions: Bool?   // poll: any member may append an option
+    var closesAt: Double?        // epoch seconds; voting locks after — nil = open
 
-    init(question: String? = nil, options: [String]? = nil, correct: Int? = nil,
-         players: [String]? = nil, note: String? = nil, teamName: String? = nil) {
+    init(question: String? = nil, options: [String]? = nil,
+         players: [String]? = nil, seeking: [String]? = nil,
+         note: String? = nil, teamName: String? = nil,
+         games: [PickGame]? = nil, allowMultiple: Bool? = nil,
+         allowAddOptions: Bool? = nil, closesAt: Double? = nil) {
         self.question = question
         self.options = options
-        self.correct = correct
         self.players = players
+        self.seeking = seeking
         self.note = note
         self.teamName = teamName
+        self.games = games
+        self.allowMultiple = allowMultiple
+        self.allowAddOptions = allowAddOptions
+        self.closesAt = closesAt
     }
 }
 
@@ -794,7 +828,7 @@ struct ChatPayload: Codable, Hashable, Sendable {
 // time; nil for messages whose author's profile has been deleted.
 // imageURL is set when the user attached a photo; content may be empty in
 // that case (image-only post). `kind`/`payload` describe structured cards
-// (polls, trivia, trade blocks); for plain messages kind is .text.
+// (polls, pick'ems, trade blocks); for plain messages kind is .text.
 struct LeagueMessage: Identifiable, Hashable, Sendable {
     let id: String
     let leagueID: String
@@ -821,14 +855,25 @@ struct LeagueMessage: Identifiable, Hashable, Sendable {
     }
 }
 
-// One user's response to a structured message: their chosen option index on a
-// poll/pick'em/trivia. Composite identity (message, user) — at most one
-// response per user per message; re-voting updates `choice`.
+// One user's selection inside a structured message. `slot` distinguishes
+// sub-questions within a single card so one user can hold several responses:
+//   poll (single)  : slot 0,            choice = chosen option index
+//   poll (multi)   : slot = option idx, choice = chosen option index
+//   pickem         : slot = game index, choice = winner (0 away / 1 home)
+// Composite identity (message, user, slot); re-voting a slot updates `choice`.
 struct MessageResponse: Identifiable, Hashable, Sendable {
     let messageID: String
     let userID: String
+    let slot: Int
     let choice: Int
-    var id: String { "\(messageID)|\(userID)" }
+    var id: String { "\(messageID)|\(userID)|\(slot)" }
+
+    init(messageID: String, userID: String, slot: Int = 0, choice: Int) {
+        self.messageID = messageID
+        self.userID = userID
+        self.slot = slot
+        self.choice = choice
+    }
 }
 
 // One emoji reaction on a chat message. Composite identity (message, user,
@@ -842,7 +887,7 @@ struct LeagueMessageReaction: Identifiable, Hashable, Sendable {
 }
 
 // Combined chat transcript: messages plus all their reactions and structured
-// responses (poll/trivia votes), fetched in a single round-trip so the chat
+// responses (poll/pick'em votes), fetched in a single round-trip so the chat
 // opens with full state.
 struct LeagueChatLoad: Sendable {
     let messages: [LeagueMessage]

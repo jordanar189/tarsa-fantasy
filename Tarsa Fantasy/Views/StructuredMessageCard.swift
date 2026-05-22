@@ -1,36 +1,37 @@
 import SwiftUI
 
-// Renders a structured chat card — poll, pick'em, trivia, or trade block —
-// inside the league chat transcript. Vote tallies come from `responses`
-// (one row per user); tapping an option calls `onRespond` with its index.
+// Renders a structured chat card — poll, pick'em, or trade block — inside the
+// league chat transcript. Each kind has a distinct layout:
+//   poll       : tap options (single or multi-select), live tallies, optional
+//                deadline, optional member-added options, tap "Who voted" to
+//                reveal names.
+//   pickem     : one row per real NFL game; tap a team to call the winner.
+//   tradeblock : the poster's players on offer plus the players they're after.
+// Selections are stored in `responses` (one row per user per slot); tapping
+// calls `onRespond(slot, choice)` — a nil choice clears that slot.
 struct StructuredMessageCard: View {
     let message: LeagueMessage
     let responses: [MessageResponse]
     let myUserID: String?
-    let onRespond: (Int) -> Void
+    let nameFor: (String) -> String
+    let onRespond: (_ slot: Int, _ choice: Int?) -> Void
+    let onAddOption: () -> Void
+
+    @State private var showVoters = false
 
     private var payload: ChatPayload { message.payload ?? ChatPayload() }
-    private var options: [String] { payload.options ?? [] }
-    private var total: Int { responses.count }
-    private var myChoice: Int? {
-        guard let me = myUserID else { return nil }
-        return responses.first(where: { $0.userID == me })?.choice
-    }
 
-    private func count(for index: Int) -> Int {
-        responses.reduce(0) { $0 + ($1.choice == index ? 1 : 0) }
-    }
+    private var closesAt: Date? { payload.closesAt.map { Date(timeIntervalSince1970: $0) } }
+    private var isClosed: Bool { closesAt.map { $0 <= Date() } ?? false }
 
     var body: some View {
         VStack(alignment: .leading, spacing: FFSpace.s) {
             header
             switch message.kind {
-            case .poll, .pickem, .trivia:
-                votingCard
-            case .tradeblock:
-                tradeBlockCard
-            case .text:
-                EmptyView()
+            case .poll:       pollCard
+            case .pickem:     pickemCard
+            case .tradeblock: tradeBlockCard
+            case .text:       EmptyView()
             }
         }
         .padding(FFSpace.m)
@@ -51,6 +52,8 @@ struct StructuredMessageCard: View {
             Text(eyebrow)
                 .font(.ffMicro)
                 .tracking(0.8)
+            Spacer(minLength: FFSpace.s)
+            deadlineBadge
         }
         .foregroundStyle(FFColor.accent)
     }
@@ -59,7 +62,6 @@ struct StructuredMessageCard: View {
         switch message.kind {
         case .poll:       return "chart.bar.fill"
         case .pickem:     return "football.fill"
-        case .trivia:     return "questionmark.circle.fill"
         case .tradeblock: return "arrow.left.arrow.right"
         case .text:       return "bubble.left"
         }
@@ -69,15 +71,48 @@ struct StructuredMessageCard: View {
         switch message.kind {
         case .poll:       return "POLL"
         case .pickem:     return "PICK 'EM"
-        case .trivia:     return "TRIVIA"
         case .tradeblock: return "ON THE BLOCK"
         case .text:       return ""
         }
     }
 
-    // MARK: - Poll / pick'em / trivia
+    @ViewBuilder
+    private var deadlineBadge: some View {
+        if message.kind == .poll || message.kind == .pickem {
+            if isClosed {
+                Text("CLOSED")
+                    .font(.ffMicro)
+                    .tracking(0.8)
+                    .foregroundStyle(FFColor.textTertiary)
+            } else if let closesAt {
+                HStack(spacing: 3) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 9, weight: .bold))
+                    Text(closesAt, style: .relative)
+                        .font(.ffMicro)
+                }
+                .foregroundStyle(FFColor.textTertiary)
+            }
+        }
+    }
 
-    private var votingCard: some View {
+    // MARK: - Poll
+
+    private var options: [String] { payload.options ?? [] }
+    private var isMulti: Bool { payload.allowMultiple == true }
+
+    private var mySelections: Set<Int> {
+        guard let me = myUserID else { return [] }
+        return Set(responses.filter { $0.userID == me }.map(\.choice))
+    }
+
+    private var voterCount: Int { Set(responses.map(\.userID)).count }
+
+    private func pollCount(_ i: Int) -> Int {
+        responses.reduce(0) { $0 + ($1.choice == i ? 1 : 0) }
+    }
+
+    private var pollCard: some View {
         VStack(alignment: .leading, spacing: FFSpace.s) {
             if let question = payload.question, !question.isEmpty {
                 Text(question)
@@ -87,80 +122,213 @@ struct StructuredMessageCard: View {
             }
             VStack(spacing: 6) {
                 ForEach(Array(options.enumerated()), id: \.offset) { index, option in
-                    optionRow(index: index, label: option)
+                    pollRow(index: index, label: option)
                 }
             }
-            footerLine
+            if payload.allowAddOptions == true && !isClosed {
+                Button(action: onAddOption) {
+                    Label("Add option", systemImage: "plus.circle")
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.accent)
+                }
+                .buttonStyle(.plain)
+            }
+            pollFooter
         }
     }
 
-    // Trivia hides tallies until the viewer has answered, so it stays a
-    // guessing game; polls and pick'em always show results.
-    private var resultsVisible: Bool {
-        message.kind == .trivia ? (myChoice != nil) : true
-    }
-
     @ViewBuilder
-    private func optionRow(index: Int, label: String) -> some View {
-        let c = count(for: index)
-        let fraction = total > 0 ? Double(c) / Double(total) : 0
-        let isMine = myChoice == index
-        let isCorrect = message.kind == .trivia && payload.correct == index
-        let revealCorrect = message.kind == .trivia && myChoice != nil && isCorrect
-        let revealWrongPick = message.kind == .trivia && isMine && payload.correct != index
+    private func pollRow(index: Int, label: String) -> some View {
+        let c = pollCount(index)
+        let fraction = voterCount > 0 ? Double(c) / Double(voterCount) : 0
+        let isMine = mySelections.contains(index)
 
-        Button {
-            onRespond(index)
-        } label: {
-            ZStack(alignment: .leading) {
-                // Tally bar.
-                GeometryReader { geo in
-                    RoundedRectangle(cornerRadius: FFRadius.s)
-                        .fill(barColor(isMine: isMine, revealCorrect: revealCorrect, revealWrong: revealWrongPick))
-                        .frame(width: resultsVisible ? max(0, geo.size.width * fraction) : 0)
-                }
-                HStack(spacing: FFSpace.s) {
-                    Text(label)
-                        .font(.ffBody)
-                        .foregroundStyle(FFColor.textPrimary)
-                        .multilineTextAlignment(.leading)
-                    Spacer(minLength: FFSpace.s)
-                    if revealCorrect {
-                        Image(systemName: "checkmark.seal.fill").foregroundStyle(FFColor.positive)
-                    } else if revealWrongPick {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(FFColor.negative)
-                    } else if isMine {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(FFColor.accent)
+        VStack(alignment: .leading, spacing: 4) {
+            Button { togglePoll(index) } label: {
+                ZStack(alignment: .leading) {
+                    GeometryReader { geo in
+                        RoundedRectangle(cornerRadius: FFRadius.s)
+                            .fill(isMine ? FFColor.accentSoft : FFColor.accent.opacity(0.10))
+                            .frame(width: max(0, geo.size.width * fraction))
                     }
-                    if resultsVisible {
+                    HStack(spacing: FFSpace.s) {
+                        if isMulti {
+                            Image(systemName: isMine ? "checkmark.square.fill" : "square")
+                                .foregroundStyle(isMine ? FFColor.accent : FFColor.textTertiary)
+                        }
+                        Text(label)
+                            .font(.ffBody)
+                            .foregroundStyle(FFColor.textPrimary)
+                            .multilineTextAlignment(.leading)
+                        Spacer(minLength: FFSpace.s)
+                        if !isMulti && isMine {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(FFColor.accent)
+                        }
                         Text("\(c)")
                             .font(.ffCaption.bold())
                             .foregroundStyle(FFColor.textSecondary)
                             .frame(minWidth: 16, alignment: .trailing)
                     }
+                    .padding(.horizontal, FFSpace.s)
+                    .padding(.vertical, FFSpace.s)
                 }
-                .padding(.horizontal, FFSpace.s)
-                .padding(.vertical, FFSpace.s)
+                .background(FFColor.surfaceElevated, in: RoundedRectangle(cornerRadius: FFRadius.s))
+                .overlay(
+                    RoundedRectangle(cornerRadius: FFRadius.s)
+                        .strokeBorder(isMine ? FFColor.accent.opacity(0.6) : FFColor.border, lineWidth: 1)
+                )
             }
-            .background(FFColor.surfaceElevated, in: RoundedRectangle(cornerRadius: FFRadius.s))
+            .buttonStyle(.plain)
+            .disabled(isClosed)
+
+            if showVoters {
+                voterList(for: responses.filter { $0.choice == index })
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func voterList(for rows: [MessageResponse]) -> some View {
+        if rows.isEmpty {
+            Text("No votes yet")
+                .font(.ffMicro)
+                .foregroundStyle(FFColor.textTertiary)
+                .padding(.leading, FFSpace.s)
+        } else {
+            Text(rows.map { nameFor($0.userID) }.joined(separator: ", "))
+                .font(.ffMicro)
+                .foregroundStyle(FFColor.textSecondary)
+                .padding(.leading, FFSpace.s)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var pollFooter: some View {
+        HStack(spacing: FFSpace.s) {
+            Text(voterCount == 1 ? "1 voted" : "\(voterCount) voted")
+                .font(.ffMicro)
+                .foregroundStyle(FFColor.textTertiary)
+            Text(isMulti ? "· Pick any" : "· Pick one")
+                .font(.ffMicro)
+                .foregroundStyle(FFColor.textTertiary)
+            Spacer(minLength: FFSpace.s)
+            Button { showVoters.toggle() } label: {
+                Text(showVoters ? "Hide voters" : "Who voted")
+                    .font(.ffMicro)
+                    .foregroundStyle(FFColor.accent)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func togglePoll(_ i: Int) {
+        if isMulti {
+            onRespond(i, mySelections.contains(i) ? nil : i)
+        } else {
+            onRespond(0, mySelections.contains(i) ? nil : i)
+        }
+    }
+
+    // MARK: - Pick'em
+
+    private var games: [PickGame] { payload.games ?? [] }
+
+    private func myPick(_ slot: Int) -> Int? {
+        guard let me = myUserID else { return nil }
+        return responses.first { $0.userID == me && $0.slot == slot }?.choice
+    }
+
+    private func pickCount(slot: Int, side: Int) -> Int {
+        responses.reduce(0) { $0 + (($1.slot == slot && $1.choice == side) ? 1 : 0) }
+    }
+
+    private func kickoffPassed(_ g: PickGame) -> Bool {
+        g.kickoff.map { Date(timeIntervalSince1970: $0) <= Date() } ?? false
+    }
+
+    private var pickemCard: some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            let title = payload.question?.isEmpty == false
+                ? payload.question!
+                : (games.first.map { "Week \($0.week) picks" } ?? "Pick 'em")
+            Text(title)
+                .font(.ffHeadline)
+                .foregroundStyle(FFColor.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 6) {
+                ForEach(Array(games.enumerated()), id: \.element.id) { index, game in
+                    gameRow(slot: index, game: game)
+                }
+            }
+            pickemFooter
+        }
+    }
+
+    private func gameRow(slot: Int, game: PickGame) -> some View {
+        let locked = isClosed || kickoffPassed(game)
+        let reveal = myPick(slot) != nil || locked
+        return VStack(alignment: .leading, spacing: 4) {
+            if let kickoff = game.kickoff {
+                Text(Date(timeIntervalSince1970: kickoff).formatted(.dateTime.weekday().month().day().hour().minute()))
+                    .font(.ffMicro)
+                    .foregroundStyle(FFColor.textTertiary)
+            }
+            HStack(spacing: 6) {
+                teamButton(slot: slot, side: 0, abbr: game.away, name: game.awayName,
+                           count: pickCount(slot: slot, side: 0), reveal: reveal, locked: locked)
+                Text("@")
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textTertiary)
+                teamButton(slot: slot, side: 1, abbr: game.home, name: game.homeName,
+                           count: pickCount(slot: slot, side: 1), reveal: reveal, locked: locked)
+            }
+        }
+        .padding(FFSpace.s)
+        .background(FFColor.surfaceElevated, in: RoundedRectangle(cornerRadius: FFRadius.s))
+        .overlay(
+            RoundedRectangle(cornerRadius: FFRadius.s)
+                .strokeBorder(FFColor.border, lineWidth: 1)
+        )
+    }
+
+    private func teamButton(slot: Int, side: Int, abbr: String, name: String?,
+                            count: Int, reveal: Bool, locked: Bool) -> some View {
+        let isMine = myPick(slot) == side
+        return Button {
+            onRespond(slot, isMine ? nil : side)
+        } label: {
+            VStack(spacing: 2) {
+                Text(abbr)
+                    .font(.ffHeadline)
+                    .foregroundStyle(FFColor.textPrimary)
+                if let name, !name.isEmpty {
+                    Text(name)
+                        .font(.system(size: 10))
+                        .foregroundStyle(FFColor.textTertiary)
+                        .lineLimit(1)
+                }
+                if reveal {
+                    Text("\(count)")
+                        .font(.ffCaption.bold())
+                        .foregroundStyle(isMine ? FFColor.accent : FFColor.textSecondary)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, FFSpace.s)
+            .background(isMine ? FFColor.accentSoft : Color.clear,
+                        in: RoundedRectangle(cornerRadius: FFRadius.s))
             .overlay(
                 RoundedRectangle(cornerRadius: FFRadius.s)
                     .strokeBorder(isMine ? FFColor.accent.opacity(0.6) : FFColor.border, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
+        .disabled(locked)
     }
 
-    private func barColor(isMine: Bool, revealCorrect: Bool, revealWrong: Bool) -> Color {
-        if revealCorrect { return FFColor.positive.opacity(0.22) }
-        if revealWrong   { return FFColor.negative.opacity(0.18) }
-        if isMine        { return FFColor.accentSoft }
-        return FFColor.accent.opacity(0.10)
-    }
-
-    private var footerLine: some View {
-        let votersLabel = total == 1 ? "1 vote" : "\(total) votes"
-        return Text(message.kind == .trivia && myChoice == nil ? "Tap to answer" : votersLabel)
+    private var pickemFooter: some View {
+        let answered = Set(responses.filter { $0.userID == myUserID }.map(\.slot)).count
+        return Text("\(answered)/\(games.count) picked")
             .font(.ffMicro)
             .foregroundStyle(FFColor.textTertiary)
     }
@@ -175,7 +343,16 @@ struct StructuredMessageCard: View {
                     .foregroundStyle(FFColor.textPrimary)
             }
             if let players = payload.players, !players.isEmpty {
-                FlowChips(items: players)
+                VStack(alignment: .leading, spacing: FFSpace.xs) {
+                    Text("Offering").ffEyebrow()
+                    FlowChips(items: players, tint: FFColor.accent)
+                }
+            }
+            if let seeking = payload.seeking, !seeking.isEmpty {
+                VStack(alignment: .leading, spacing: FFSpace.xs) {
+                    Text("Looking for").ffEyebrow()
+                    FlowChips(items: seeking, tint: FFColor.positive)
+                }
             }
             if let note = payload.note, !note.isEmpty {
                 Text(note)
@@ -191,6 +368,7 @@ struct StructuredMessageCard: View {
 // native Layout so chips flow onto multiple lines within the bubble width.
 private struct FlowChips: View {
     let items: [String]
+    var tint: Color = FFColor.textPrimary
 
     var body: some View {
         FlowLayout(spacing: FFSpace.xs) {
@@ -200,8 +378,8 @@ private struct FlowChips: View {
                     .foregroundStyle(FFColor.textPrimary)
                     .padding(.horizontal, FFSpace.s)
                     .padding(.vertical, 4)
-                    .background(FFColor.surfaceElevated, in: Capsule())
-                    .overlay(Capsule().strokeBorder(FFColor.border, lineWidth: 1))
+                    .background(tint.opacity(0.12), in: Capsule())
+                    .overlay(Capsule().strokeBorder(tint.opacity(0.5), lineWidth: 1))
             }
         }
     }

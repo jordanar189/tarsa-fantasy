@@ -767,11 +767,23 @@ final class AppState {
         )
     }
 
-    func respondToMessage(messageID: String, choice: Int) async throws {
+    func respondToMessage(messageID: String, slot: Int, choice: Int) async throws {
         guard let session else { throw AppError.notSignedIn }
         try await remote.respond(
-            messageID: messageID, userID: session.userID, choice: choice
+            messageID: messageID, userID: session.userID, slot: slot, choice: choice
         )
+    }
+
+    func clearResponse(messageID: String, slot: Int) async throws {
+        guard let session else { throw AppError.notSignedIn }
+        try await remote.clearResponse(
+            messageID: messageID, userID: session.userID, slot: slot
+        )
+    }
+
+    func addPollOption(messageID: String, option: String) async throws {
+        guard session != nil else { throw AppError.notSignedIn }
+        try await remote.appendPollOption(messageID: messageID, option: option)
     }
 
     // MARK: - Friends + DMs
