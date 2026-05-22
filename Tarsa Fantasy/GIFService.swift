@@ -1,23 +1,24 @@
 import Foundation
 
-// GIF search via Tenor (Google). A sent GIF is just a normal chat message
-// whose image_url points at Tenor's hosted .gif — no schema change, it flows
+// GIF search via GIPHY. A sent GIF is just a normal chat message whose
+// image_url points at GIPHY's hosted .gif — no schema change, it flows
 // through the existing image bubble (rendered animated by AnimatedImageView).
 //
-// Requires a Tenor v2 API key. Get one (free) at
-// https://developers.google.com/tenor/guides/quickstart and paste it below.
-// When the key is empty the picker shows a friendly "unavailable" state and
-// search returns no results, so the rest of the app is unaffected.
-enum TenorConfig {
+// Migrated off Tenor, which Google is shutting down (new sign-ups ended
+// Jan 2026, full shutdown June 30 2026).
+//
+// Requires a GIPHY API key. Get one (free) at https://developers.giphy.com —
+// create an app and use its API key below. The default beta key is heavily
+// rate-limited; request a production key before shipping. When the key is
+// empty the picker shows a friendly "unavailable" state and search returns no
+// results, so the rest of the app is unaffected.
+enum GiphyConfig {
     static let apiKey = ""
-    // Free-form client attribution; lets Tenor return more consistent
-    // ranking across calls from this app.
-    static let clientKey = "tarsa_fantasy"
     static var isConfigured: Bool { !apiKey.isEmpty }
 }
 
-// One GIF result. `previewURL` is the small (tinygif) version for the picker
-// grid; `fullURL` is the standard gif embedded in the message.
+// One GIF result. `previewURL` is the small version for the picker grid;
+// `fullURL` is the size-capped gif embedded in the message.
 struct GIFResult: Identifiable, Hashable, Sendable {
     let id: String
     let previewURL: String
@@ -27,11 +28,11 @@ struct GIFResult: Identifiable, Hashable, Sendable {
 actor GIFService {
     static let shared = GIFService()
 
-    private let host = "https://tenor.googleapis.com/v2"
+    private let host = "https://api.giphy.com/v1/gifs"
 
     // Trending GIFs for the picker's empty/landing state.
     func featured(limit: Int = 24) async -> [GIFResult] {
-        await fetch(path: "featured", queryItems: baseItems(limit: limit))
+        await fetch(path: "trending", queryItems: baseItems(limit: limit))
     }
 
     func search(query: String, limit: Int = 24) async -> [GIFResult] {
@@ -39,6 +40,7 @@ actor GIFService {
         guard !trimmed.isEmpty else { return await featured(limit: limit) }
         var items = baseItems(limit: limit)
         items.append(URLQueryItem(name: "q", value: trimmed))
+        items.append(URLQueryItem(name: "lang", value: "en"))
         return await fetch(path: "search", queryItems: items)
     }
 
@@ -46,18 +48,16 @@ actor GIFService {
 
     private func baseItems(limit: Int) -> [URLQueryItem] {
         [
-            URLQueryItem(name: "key", value: TenorConfig.apiKey),
-            URLQueryItem(name: "client_key", value: TenorConfig.clientKey),
+            URLQueryItem(name: "api_key", value: GiphyConfig.apiKey),
             URLQueryItem(name: "limit", value: String(limit)),
-            // Only fetch the two formats we render; keeps payloads small.
-            URLQueryItem(name: "media_filter", value: "gif,tinygif"),
-            // Keep results family-friendly.
-            URLQueryItem(name: "contentfilter", value: "high"),
+            // Filter out explicit content; pg-13 is the common default for a
+            // chat GIF picker (g is too sparse for reaction GIFs).
+            URLQueryItem(name: "rating", value: "pg-13"),
         ]
     }
 
     private func fetch(path: String, queryItems: [URLQueryItem]) async -> [GIFResult] {
-        guard TenorConfig.isConfigured else { return [] }
+        guard GiphyConfig.isConfigured else { return [] }
         guard var components = URLComponents(string: "\(host)/\(path)") else { return [] }
         components.queryItems = queryItems
         guard let url = components.url else { return [] }
@@ -66,35 +66,34 @@ actor GIFService {
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 return []
             }
-            let decoded = try JSONDecoder().decode(TenorResponse.self, from: data)
-            return decoded.results.compactMap(\.gifResult)
+            let decoded = try JSONDecoder().decode(GiphyResponse.self, from: data)
+            return decoded.data.compactMap(\.gifResult)
         } catch {
             return []
         }
     }
 
-    private struct TenorResponse: Decodable {
-        let results: [TenorResult]
+    private struct GiphyResponse: Decodable {
+        let data: [GiphyGif]
     }
 
-    private struct TenorResult: Decodable {
+    private struct GiphyGif: Decodable {
         let id: String
-        let mediaFormats: [String: TenorMedia]
-
-        enum CodingKeys: String, CodingKey {
-            case id
-            case mediaFormats = "media_formats"
-        }
+        let images: [String: GiphyImage]
 
         var gifResult: GIFResult? {
-            let full = mediaFormats["gif"]?.url ?? mediaFormats["tinygif"]?.url
-            let preview = mediaFormats["tinygif"]?.url ?? full
+            let full = images["downsized"]?.url ?? images["original"]?.url
+            let preview = images["fixed_width"]?.url
+                ?? images["fixed_width_downsampled"]?.url
+                ?? full
             guard let full, let preview else { return nil }
             return GIFResult(id: id, previewURL: preview, fullURL: full)
         }
     }
 
-    private struct TenorMedia: Decodable {
-        let url: String
+    // GIPHY's rendition dictionary mixes still/animated entries; only some
+    // carry a "url", so it's optional.
+    private struct GiphyImage: Decodable {
+        let url: String?
     }
 }
