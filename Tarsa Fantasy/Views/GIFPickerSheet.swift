@@ -22,7 +22,7 @@ struct GIFPickerSheet: View {
         NavigationStack {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
-                if TenorConfig.isConfigured {
+                if GiphyConfig.isConfigured {
                     VStack(spacing: FFSpace.m) {
                         searchField
                         content
@@ -42,7 +42,7 @@ struct GIFPickerSheet: View {
                 }
             }
             .task {
-                guard !didInitialLoad, TenorConfig.isConfigured else { return }
+                guard !didInitialLoad, GiphyConfig.isConfigured else { return }
                 didInitialLoad = true
                 isLoading = true
                 results = await GIFService.shared.featured()
@@ -57,7 +57,7 @@ struct GIFPickerSheet: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(FFColor.textTertiary)
             TextField("", text: $query, prompt:
-                Text("Search Tenor").foregroundColor(FFColor.textTertiary)
+                Text("Search GIPHY").foregroundColor(FFColor.textTertiary)
             )
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
@@ -126,7 +126,7 @@ struct GIFPickerSheet: View {
     }
 
     private var attribution: some View {
-        Text("Powered by Tenor")
+        Text("Powered by GIPHY")
             .font(.ffMicro)
             .foregroundStyle(FFColor.textTertiary)
             .padding(.bottom, FFSpace.xs)
@@ -153,7 +153,7 @@ struct GIFPickerSheet: View {
             Text("GIF search isn't set up yet")
                 .font(.ffHeadline)
                 .foregroundStyle(FFColor.textPrimary)
-            Text("Add a Tenor API key in GIFService.swift to enable GIF search.")
+            Text("Add a GIPHY API key in GIFService.swift to enable GIF search.")
                 .font(.ffCaption)
                 .foregroundStyle(FFColor.textSecondary)
                 .multilineTextAlignment(.center)

@@ -673,7 +673,7 @@ struct LeagueChatView: View {
         }
     }
 
-    // GIFs are hosted by Tenor, so unlike photos there's nothing to upload —
+    // GIFs are hosted by GIPHY, so unlike photos there's nothing to upload —
     // the URL goes straight into an image-only message.
     private func sendGIF(_ urlString: String) async {
         guard !sending else { return }
