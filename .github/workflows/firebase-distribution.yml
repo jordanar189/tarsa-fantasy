@@ -28,6 +28,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Write GIPHY API key
+        env:
+          GIPHY_API_KEY: ${{ secrets.GIPHY_API_KEY }}
+        run: printf 'GIPHY_API_KEY = %s\n' "$GIPHY_API_KEY" > "Config/Secrets.xcconfig"
+
       - name: Select latest Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:

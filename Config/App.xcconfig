@@ -1,0 +1,11 @@
+// Base build configuration for the app target.
+//
+// Real secrets are NOT committed. Put your GIPHY API key in
+// Config/Secrets.xcconfig (gitignored) — copy Config/Secrets.example.xcconfig
+// to get started. This file provides a safe empty default and pulls in the
+// secrets file when it exists, so the project still builds without it (GIF
+// search just shows its "not set up" state).
+
+GIPHY_API_KEY =
+
+#include? "Secrets.xcconfig"
