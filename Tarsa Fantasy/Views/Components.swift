@@ -671,6 +671,7 @@ private struct ZoomableImage: View {
     @State private var lastScale: CGFloat = 1
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
+    @State private var containerSize: CGSize = .zero
 
     private let maxScale: CGFloat = 5
 
@@ -694,7 +695,21 @@ private struct ZoomableImage: View {
             .gesture(magnify)
             .simultaneousGesture(pan)
             .onTapGesture(count: 2) { toggleZoom() }
+            .onAppear { containerSize = geo.size }
+            .onChange(of: geo.size) { _, newValue in containerSize = newValue }
         }
+    }
+
+    // Keep the zoomed image within the viewport: the most it can travel from
+    // center is half the overflow (scaledSize - viewSize) on each axis.
+    private func clampOffset(_ proposed: CGSize) -> CGSize {
+        guard scale > 1, containerSize != .zero else { return .zero }
+        let maxX = containerSize.width  * (scale - 1) / 2
+        let maxY = containerSize.height * (scale - 1) / 2
+        return CGSize(
+            width:  min(max(proposed.width,  -maxX), maxX),
+            height: min(max(proposed.height, -maxY), maxY)
+        )
     }
 
     private var magnify: some Gesture {
@@ -704,11 +719,10 @@ private struct ZoomableImage: View {
             }
             .onEnded { _ in
                 lastScale = scale
-                if scale <= 1 {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                        offset = .zero; lastOffset = .zero
-                    }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                    offset = clampOffset(offset)
                 }
+                lastOffset = offset
             }
     }
 
@@ -716,10 +730,10 @@ private struct ZoomableImage: View {
         DragGesture()
             .onChanged { value in
                 guard scale > 1 else { return }
-                offset = CGSize(
+                offset = clampOffset(CGSize(
                     width: lastOffset.width + value.translation.width,
                     height: lastOffset.height + value.translation.height
-                )
+                ))
             }
             .onEnded { _ in lastOffset = offset }
     }
