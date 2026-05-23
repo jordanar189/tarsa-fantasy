@@ -1,0 +1,52 @@
+name: Claude PR fix on mention
+
+# On-demand fixes. Reply to a PR comment (or an inline review comment) with
+# "@claude ..." and Claude makes the change and commits it to the PR branch.
+# Companion to claude-review.yml, which only reviews and never edits code.
+#
+# Reuses the same CLAUDE_CODE_OAUTH_TOKEN repo secret as the review workflow
+# (generate locally with `claude setup-token`; Settings → Secrets and variables
+# → Actions). Swap to `anthropic_api_key` to authenticate with a metered key.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+# One fix at a time per PR; don't cancel an in-flight fix when a new comment
+# lands — let it finish committing.
+concurrency:
+  group: claude-fix-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    # Run only when the comment mentions @claude, the author can already write
+    # to the repo (this also filters out bot comments, so the review bot can't
+    # trigger a fix loop), and the comment is on a pull request rather than a
+    # plain issue.
+    if: >-
+      contains(github.event.comment.body, '@claude') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      (github.event_name == 'pull_request_review_comment' || github.event.issue.pull_request != null)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # No prompt: in mention ("tag") mode the action reads the @claude comment
+      # for the request, checks out the PR's head branch, makes the change, and
+      # commits/pushes it back. Repo conventions come from CLAUDE.md, which the
+      # agent reads automatically. Note: commits pushed with the default
+      # GITHUB_TOKEN do not re-trigger claude-review.yml, so fixes won't loop.
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
