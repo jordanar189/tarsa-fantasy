@@ -22,14 +22,18 @@ concurrency:
 
 jobs:
   fix:
-    # Run only when the comment mentions @claude, the author can already write
-    # to the repo (this also filters out bot comments, so the review bot can't
-    # trigger a fix loop), and the comment is on a pull request rather than a
-    # plain issue.
+    # Gate: comment mentions @claude, author can already write to the repo (also
+    # drops bot comments, so the reviewer can't trigger a fix loop), and it's a
+    # PR. Inline review comments carry head-repo info, so skip fork PRs there too
+    # — this token can't push to a fork's branch. issue_comment payloads lack
+    # that field, but the author guard already blocks external forks.
     if: >-
       contains(github.event.comment.body, '@claude') &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
-      (github.event_name == 'pull_request_review_comment' || github.event.issue.pull_request != null)
+      (
+        (github.event_name == 'pull_request_review_comment' && github.event.pull_request.head.repo.fork == false) ||
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -48,3 +52,7 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Tools are intentionally unrestricted: fix mode needs broad access
+          # (file edits, git) to apply changes. The OWNER/MEMBER/COLLABORATOR
+          # guard above is the trust boundary — only people who can already push
+          # to the repo can invoke this.
