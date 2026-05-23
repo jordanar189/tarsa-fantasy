@@ -31,6 +31,9 @@ struct PlayerDetailView: View {
     @State private var scoringSettings: ScoringSettings? = nil
     @State private var section: Section = .overview
     @State private var schedules: [NFLGame] = []
+    // Latest regular-season week with league-wide stats, cached so the game-log
+    // back-fill doesn't rescan every player on each render. Refreshed in `.task`.
+    @State private var maxRegWeek: Int = 0
     @State private var snapCounts: [String: [Int: SnapCount]] = [:]
     @State private var rankByID: [String: PositionRank] = [:]
     @State private var dvpByPosition: [String: [String: DvPEntry]] = [:]
@@ -93,7 +96,10 @@ struct PlayerDetailView: View {
                         .foregroundStyle(FFColor.accent)
                 }
             }
-            .task(id: playerID) {
+            // Keyed on season too: switching leagues changes app.selectedSeason
+            // while this view stays mounted, and every load below is season-
+            // scoped — re-run so schedules/snaps/ranks don't go stale.
+            .task(id: "\(playerID)#\(app.selectedSeason)") {
                 // Stats inherit the selected league's scoring (preset + any
                 // custom per-stat weights).
                 scoring = app.activeScoring
@@ -102,6 +108,7 @@ struct PlayerDetailView: View {
                 careerLoadedPlayerID = nil
                 await app.ensureProjectedSnapshot(season: app.selectedSeason)
                 schedules = await app.schedules(season: app.selectedSeason)
+                maxRegWeek = app.availableWeeks(season: app.selectedSeason).max() ?? 0
                 snapCounts = await app.snapCounts(season: app.selectedSeason)
                 rankByID = Fantasy.positionRanks(
                     players: app.displaySelectedPlayers(), scoring: scoring, settings: scoringSettings
@@ -699,12 +706,15 @@ struct PlayerDetailView: View {
             byWeek[g.week] = g
         }
         // player_games is regular-season only, so the latest week with any
-        // stats across the league marks the REG boundary. Capping fills there
-        // keeps postseason schedule rows (weeks 19+) out of the log and avoids
-        // inventing zeros for weeks that haven't been played yet.
-        let maxRegWeek = app.availableWeeks(season: app.selectedSeason).max() ?? 0
+        // stats across the league marks the REG boundary (cached in maxRegWeek).
+        // Capping fills there keeps postseason schedule rows (weeks 19+) out of
+        // the log and avoids inventing zeros for weeks that haven't been played.
         if !p.team.isEmpty && maxRegWeek > 0 {
             for sched in schedules {
+                // `schedules` can briefly lag a season switch (it reloads in
+                // .task); skip rows from any other season so we never synthesize
+                // weeks/opponents from the previously selected season.
+                guard sched.season == app.selectedSeason else { continue }
                 guard sched.status == .final || sched.status == .inProgress else { continue }
                 guard sched.week <= maxRegWeek else { continue }
                 guard sched.home == p.team || sched.away == p.team, byWeek[sched.week] == nil else { continue }
