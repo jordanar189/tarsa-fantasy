@@ -379,7 +379,7 @@ final class AppState {
         var lines: [Fantasy.CareerSeasonLine] = []
         for season in seasons {
             let inMemory = playersBySeason[season]
-            let line = await Task.detached(priority: .userInitiated) { [data] in
+            let line = await Task.detached(priority: .userInitiated) { [data] () -> Fantasy.CareerSeasonLine? in
                 let snapshot: [String: Player]
                 if let inMemory {
                     snapshot = inMemory
