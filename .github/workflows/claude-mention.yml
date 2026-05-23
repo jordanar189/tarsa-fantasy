@@ -42,11 +42,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      # No prompt: in mention ("tag") mode the action reads the @claude comment
-      # for the request, checks out the PR's head branch, makes the change, and
-      # commits/pushes it back. Repo conventions come from CLAUDE.md, which the
-      # agent reads automatically. Note: commits pushed with the default
-      # GITHUB_TOKEN do not re-trigger claude-review.yml, so fixes won't loop.
+      # No prompt: tag mode uses the @claude comment as the request. Commits use
+      # the default GITHUB_TOKEN, which doesn't re-trigger claude-review.yml, so
+      # fixes won't loop.
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
