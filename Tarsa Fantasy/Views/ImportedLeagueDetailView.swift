@@ -283,6 +283,7 @@ struct ImportedRostersSection: View {
     }
 
     private func rosterCard(_ team: ImportedTeam) -> some View {
+        let lookup = season.playerLookup   // built once per render, not per row
         let slots = season.starterSlotLabels
         let starters = team.starters
         let benchIDs = team.players.filter { !starters.contains($0) && !team.reserve.contains($0) && !team.taxi.contains($0) }
@@ -298,7 +299,7 @@ struct ImportedRostersSection: View {
             Text("Starters").ffEyebrow().padding(.top, FFSpace.xs)
             ForEach(Array(starters.enumerated()), id: \.offset) { idx, pid in
                 ImportedPlayerRow(
-                    player: resolvedPlayer(pid),
+                    player: resolvedPlayer(pid, lookup),
                     slot: idx < slots.count ? slotLabel(slots[idx]) : nil
                 )
                 .ffHairlineBottom()
@@ -307,14 +308,14 @@ struct ImportedRostersSection: View {
             if !benchIDs.isEmpty {
                 Text("Bench").ffEyebrow().padding(.top, FFSpace.s)
                 ForEach(benchIDs, id: \.self) { pid in
-                    ImportedPlayerRow(player: resolvedPlayer(pid), slot: "BN").ffHairlineBottom()
+                    ImportedPlayerRow(player: resolvedPlayer(pid, lookup), slot: "BN").ffHairlineBottom()
                 }
             }
 
             if !reserveIDs.isEmpty {
                 Text("IR / Taxi").ffEyebrow().padding(.top, FFSpace.s)
                 ForEach(reserveIDs, id: \.self) { pid in
-                    ImportedPlayerRow(player: resolvedPlayer(pid), slot: "IR").ffHairlineBottom()
+                    ImportedPlayerRow(player: resolvedPlayer(pid, lookup), slot: "IR").ffHairlineBottom()
                 }
             }
         }
@@ -322,12 +323,13 @@ struct ImportedRostersSection: View {
     }
 
     // Rosters store raw Sleeper ids; bios were resolved at import time into
-    // season.players. "0" is Sleeper's empty-slot placeholder.
-    private func resolvedPlayer(_ sleeperID: String) -> ImportedPlayer {
+    // season.players. "0" is Sleeper's empty-slot placeholder. The caller passes
+    // the lookup so it's built once per render, not per row.
+    private func resolvedPlayer(_ sleeperID: String, _ lookup: [String: ImportedPlayer]) -> ImportedPlayer {
         if sleeperID == "0" {
             return ImportedPlayer(sleeperID: "0", appID: nil, name: "Empty", position: "", team: "")
         }
-        return season.playerLookup[sleeperID]
+        return lookup[sleeperID]
             ?? ImportedPlayer(sleeperID: sleeperID, appID: nil, name: sleeperID, position: "", team: "")
     }
 

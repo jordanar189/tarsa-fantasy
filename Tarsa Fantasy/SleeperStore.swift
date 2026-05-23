@@ -33,19 +33,26 @@ struct SleeperStore {
         }
     }
 
+    // Fire-and-forget. Called from the @MainActor AppState; the encode + write
+    // can be a few MB for a large multi-season import, so run it off the main
+    // thread. Writes are atomic, so overlapping saves can't corrupt the file.
     func saveAll(_ leagues: [ImportedLeague]) {
         guard let url = fileURL else { return }
         let env = Envelope(version: Self.version, leagues: leagues)
-        do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            let data = try JSONEncoder.sleeperStore.encode(env)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            #if DEBUG
-            print("SleeperStore.saveAll failed: \(error)")
-            #endif
+        Task.detached(priority: .utility) {
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+                )
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                let data = try encoder.encode(env)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                #if DEBUG
+                print("SleeperStore.saveAll failed: \(error)")
+                #endif
+            }
         }
     }
 }
@@ -55,13 +62,5 @@ private extension JSONDecoder {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
         return d
-    }()
-}
-
-private extension JSONEncoder {
-    static let sleeperStore: JSONEncoder = {
-        let e = JSONEncoder()
-        e.dateEncodingStrategy = .iso8601
-        return e
     }()
 }

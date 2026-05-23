@@ -171,9 +171,15 @@ actor SleeperService {
             ? 18
             : min(max(currentState?.week ?? 18, 1), 18)
 
-        let matchups = await fetchMatchups(leagueID: id, maxWeek: maxWeek)
-        let transactions = await fetchTransactions(leagueID: id, maxWeek: maxWeek, index: index)
-        let draftPicks = await fetchDraftPicks(drafts: drafts, index: index)
+        // Run the three per-week fan-outs concurrently. Each is nonisolated and
+        // only touches its parameters + static network helpers, so they overlap
+        // instead of running back-to-back on the actor.
+        async let matchupsTask     = fetchMatchups(leagueID: id, maxWeek: maxWeek)
+        async let transactionsTask = fetchTransactions(leagueID: id, maxWeek: maxWeek, index: index)
+        async let draftPicksTask   = fetchDraftPicks(drafts: drafts, index: index)
+        let matchups = await matchupsTask
+        let transactions = await transactionsTask
+        let draftPicks = await draftPicksTask
 
         // Resolve a bio for every player id any roster references, so the roster
         // tab can render names (rosters carry only raw Sleeper ids).
@@ -204,7 +210,7 @@ actor SleeperService {
         )
     }
 
-    private func fetchMatchups(leagueID: String, maxWeek: Int) async -> [ImportedMatchup] {
+    nonisolated private func fetchMatchups(leagueID: String, maxWeek: Int) async -> [ImportedMatchup] {
         guard maxWeek >= 1 else { return [] }
         var out: [ImportedMatchup] = []
         await withTaskGroup(of: (Int, [SLMatchup]).self) { group in
@@ -223,7 +229,7 @@ actor SleeperService {
         return out.sorted { $0.week != $1.week ? $0.week < $1.week : $0.rosterID < $1.rosterID }
     }
 
-    private func fetchTransactions(
+    nonisolated private func fetchTransactions(
         leagueID: String, maxWeek: Int, index: [String: ResolvedPlayer]
     ) async -> [ImportedTransaction] {
         guard maxWeek >= 1 else { return [] }
@@ -275,9 +281,12 @@ actor SleeperService {
         }
     }
 
-    private func fetchDraftPicks(
+    nonisolated private func fetchDraftPicks(
         drafts: [SLDraft], index: [String: ResolvedPlayer]
     ) async -> [ImportedDraftPick] {
+        // Sleeper exposes one draft per league-season for redraft/keeper/dynasty
+        // (rookie) drafts, so the first entry is this season's draft. A season
+        // with multiple drafts (rare) would only surface the first.
         guard let draftID = drafts.first?.draftId else { return [] }
         let picks: [SLDraftPick] = await Self.optArray("/draft/\(draftID)/picks")
         return picks.compactMap { p in
@@ -295,7 +304,7 @@ actor SleeperService {
 
     // MARK: - Player resolution
 
-    private func resolve(_ sleeperID: String, _ index: [String: ResolvedPlayer]) -> ImportedPlayer {
+    nonisolated private func resolve(_ sleeperID: String, _ index: [String: ResolvedPlayer]) -> ImportedPlayer {
         if let r = index[sleeperID] {
             return ImportedPlayer(sleeperID: sleeperID, appID: r.appID, name: r.name, position: r.position, team: r.team)
         }
@@ -343,7 +352,10 @@ actor SleeperService {
             )
         }
         playerIndex = index
-        Self.saveIndexToDisk(index)
+        // The disk write is only for the next launch (in-memory cache is already
+        // set), so do it off the actor to not delay the first buildSeason.
+        let toSave = index
+        Task.detached(priority: .background) { Self.saveIndexToDisk(toSave) }
         return index
     }
 
@@ -406,7 +418,7 @@ actor SleeperService {
     // the league champion. Only meaningful once the season has completed.
     private static func champion(from bracket: [SLBracketMatch], leagueComplete: Bool) -> Int? {
         guard leagueComplete, !bracket.isEmpty else { return nil }
-        if let final = bracket.first(where: { $0.p == 1 }), let w = final.w { return w }
+        if let championship = bracket.first(where: { $0.p == 1 }), let w = championship.w { return w }
         let maxRound = bracket.compactMap(\.r).max()
         if let maxRound, let m = bracket.first(where: { $0.r == maxRound && $0.w != nil }) { return m.w }
         return nil
