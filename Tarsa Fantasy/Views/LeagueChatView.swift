@@ -23,6 +23,8 @@ struct LeagueChatView: View {
     @State private var pendingImage: PendingImage? = nil
     @State private var showingGIFPicker = false
     @State private var composeSheet: ComposeSheet? = nil
+    @State private var addOptionTarget: LeagueMessage? = nil
+    @State private var newOption: String = ""
     @FocusState private var composerFocused: Bool
 
     private var myUserID: String? { app.session?.userID }
@@ -46,6 +48,9 @@ struct LeagueChatView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .leagueChatMessageInserted)) { note in
             handleMessageInserted(note)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .leagueChatMessageUpdated)) { note in
+            handleMessageUpdated(note)
         }
         .onReceive(NotificationCenter.default.publisher(for: .leagueChatMessageDeleted)) { note in
             handleMessageDeleted(note)
@@ -74,19 +79,14 @@ struct LeagueChatView: View {
         .sheet(item: $composeSheet) { sheet in
             switch sheet {
             case .poll:
-                PollBuilderSheet(kind: .poll) { payload in
+                PollBuilderSheet { payload in
                     composeSheet = nil
                     Task { await sendStructured(kind: .poll, payload: payload) }
                 }
             case .pickem:
-                PollBuilderSheet(kind: .pickem) { payload in
+                PickemBuilderSheet(league: league) { payload in
                     composeSheet = nil
                     Task { await sendStructured(kind: .pickem, payload: payload) }
-                }
-            case .trivia:
-                TriviaBuilderSheet { payload in
-                    composeSheet = nil
-                    Task { await sendStructured(kind: .trivia, payload: payload) }
                 }
             case .tradeblock:
                 TradeBlockBuilderSheet(league: league) { payload in
@@ -94,6 +94,22 @@ struct LeagueChatView: View {
                     Task { await sendStructured(kind: .tradeblock, payload: payload) }
                 }
             }
+        }
+        .alert("Add option", isPresented: Binding(
+            get: { addOptionTarget != nil },
+            set: { if !$0 { addOptionTarget = nil; newOption = "" } }
+        )) {
+            TextField("Option", text: $newOption)
+            Button("Cancel", role: .cancel) { addOptionTarget = nil; newOption = "" }
+            Button("Add") {
+                let text = newOption
+                let target = addOptionTarget
+                addOptionTarget = nil
+                newOption = ""
+                if let target { Task { await addOption(to: target, text: text) } }
+            }
+        } message: {
+            Text("Add a new option to this poll.")
         }
         .alert("Couldn't send", isPresented: Binding(
             get: { error != nil },
@@ -245,7 +261,9 @@ struct LeagueChatView: View {
                 message: m,
                 responses: responses[m.id] ?? [],
                 myUserID: myUserID,
-                onRespond: { choice in Task { await respond(choice, on: m) } }
+                nameFor: { uid in resolveName(uid) },
+                onRespond: { slot, choice in Task { await respond(slot, choice, on: m) } },
+                onAddOption: { addOptionTarget = m }
             )
             .contextMenu { messageMenu(for: m) }
         }
@@ -457,9 +475,6 @@ struct LeagueChatView: View {
                     Button { composerFocused = false; composeSheet = .pickem } label: {
                         Label("Pick 'em", systemImage: "football")
                     }
-                    Button { composerFocused = false; composeSheet = .trivia } label: {
-                        Label("Trivia", systemImage: "questionmark.circle")
-                    }
                     Button { composerFocused = false; composeSheet = .tradeblock } label: {
                         Label("Trade block", systemImage: "arrow.left.arrow.right")
                     }
@@ -657,20 +672,64 @@ struct LeagueChatView: View {
         }
     }
 
-    // Optimistically records my vote, then persists it. Realtime echoes the
-    // change for everyone else (and reconciles mine).
-    private func respond(_ choice: Int, on m: LeagueMessage) async {
+    // Optimistically records my selection for one slot, then persists it. A nil
+    // choice clears the slot (un-voting). Realtime echoes the change for
+    // everyone else (and reconciles mine).
+    private func respond(_ slot: Int, _ choice: Int?, on m: LeagueMessage) async {
         guard let uid = myUserID else { return }
         let previous = responses[m.id] ?? []
-        var updated = previous.filter { $0.userID != uid }
-        updated.append(MessageResponse(messageID: m.id, userID: uid, choice: choice))
+        var updated = previous.filter { !($0.userID == uid && $0.slot == slot) }
+        if let choice {
+            updated.append(MessageResponse(messageID: m.id, userID: uid, slot: slot, choice: choice))
+        }
         responses[m.id] = updated
         do {
-            try await app.respondToMessage(messageID: m.id, choice: choice)
+            if let choice {
+                try await app.respondToMessage(messageID: m.id, slot: slot, choice: choice)
+            } else {
+                try await app.clearResponse(messageID: m.id, slot: slot)
+            }
         } catch {
             responses[m.id] = previous
             self.error = error.localizedDescription
         }
+    }
+
+    // Appends an option to a poll that allows it. Optimistically patches the
+    // local payload; the realtime UPDATE reconciles for everyone (incl. us).
+    private func addOption(to m: LeagueMessage, text: String) async {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        do {
+            try await app.addPollOption(messageID: m.id, option: clean)
+            guard let idx = messages.firstIndex(where: { $0.id == m.id }) else { return }
+            var p = messages[idx].payload ?? ChatPayload()
+            var opts = p.options ?? []
+            if !opts.contains(where: { $0.lowercased() == clean.lowercased() }) {
+                opts.append(clean)
+                p.options = opts
+                messages[idx] = replacingPayload(messages[idx], with: p)
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func replacingPayload(_ m: LeagueMessage, with payload: ChatPayload) -> LeagueMessage {
+        LeagueMessage(
+            id: m.id, leagueID: m.leagueID, userID: m.userID,
+            username: m.username, content: m.content, imageURL: m.imageURL,
+            createdAt: m.createdAt, kind: m.kind, payload: payload
+        )
+    }
+
+    // Resolves a user ID to a display name for voter lists, reusing the chat's
+    // username cache and falling back to a team owner's name in this league.
+    private func resolveName(_ uid: String) -> String {
+        if uid == myUserID { return "You" }
+        if let cached = usernamesByID[uid] { return cached }
+        if let team = league.teams.first(where: { $0.ownerID == uid }) { return team.name }
+        return "Member"
     }
 
     // GIFs are hosted by GIPHY, so unlike photos there's nothing to upload —
@@ -738,6 +797,22 @@ struct LeagueChatView: View {
         messages.append(hydrated)
     }
 
+    // A message's payload changed (e.g. a member added a poll option). Replace
+    // it in place, keeping the locally-known username and original timestamp
+    // (realtime payloads don't carry the joined profile).
+    private func handleMessageUpdated(_ note: Notification) {
+        guard let lid = note.userInfo?["leagueID"] as? String, lid == league.id,
+              let msg = note.userInfo?["message"] as? LeagueMessage,
+              let idx = messages.firstIndex(where: { $0.id == msg.id }) else { return }
+        let existing = messages[idx]
+        messages[idx] = LeagueMessage(
+            id: msg.id, leagueID: msg.leagueID, userID: msg.userID,
+            username: existing.username ?? msg.username,
+            content: msg.content, imageURL: msg.imageURL,
+            createdAt: existing.createdAt, kind: msg.kind, payload: msg.payload
+        )
+    }
+
     private func handleMessageDeleted(_ note: Notification) {
         guard let lid = note.userInfo?["leagueID"] as? String, lid == league.id,
               let id = note.userInfo?["id"] as? String else { return }
@@ -771,7 +846,7 @@ struct LeagueChatView: View {
               let response = note.userInfo?["response"] as? MessageResponse else { return }
         guard messages.contains(where: { $0.id == response.messageID }) else { return }
         var list = responses[response.messageID] ?? []
-        list.removeAll { $0.userID == response.userID }
+        list.removeAll { $0.userID == response.userID && $0.slot == response.slot }
         list.append(response)
         responses[response.messageID] = list
     }
@@ -780,7 +855,7 @@ struct LeagueChatView: View {
         guard let lid = note.userInfo?["leagueID"] as? String, lid == league.id,
               let response = note.userInfo?["response"] as? MessageResponse else { return }
         guard var list = responses[response.messageID] else { return }
-        list.removeAll { $0.userID == response.userID }
+        list.removeAll { $0.userID == response.userID && $0.slot == response.slot }
         responses[response.messageID] = list.isEmpty ? nil : list
     }
 
@@ -798,13 +873,12 @@ struct LeagueChatView: View {
 
 // Which structured-card builder sheet the composer's "+" menu is presenting.
 enum ComposeSheet: Identifiable {
-    case poll, pickem, trivia, tradeblock
+    case poll, pickem, tradeblock
     var id: Int {
         switch self {
         case .poll:       return 0
         case .pickem:     return 1
-        case .trivia:     return 2
-        case .tradeblock: return 3
+        case .tradeblock: return 2
         }
     }
 }

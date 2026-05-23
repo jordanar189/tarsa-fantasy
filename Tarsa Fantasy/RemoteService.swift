@@ -642,10 +642,27 @@ actor RemoteService {
         var obj: [String: AnyJSON] = [:]
         if let question = p.question { obj["question"] = .string(question) }
         if let options = p.options   { obj["options"] = .array(options.map { .string($0) }) }
-        if let correct = p.correct   { obj["correct"] = .integer(correct) }
         if let players = p.players   { obj["players"] = .array(players.map { .string($0) }) }
+        if let seeking = p.seeking   { obj["seeking"] = .array(seeking.map { .string($0) }) }
         if let note = p.note         { obj["note"] = .string(note) }
         if let teamName = p.teamName { obj["teamName"] = .string(teamName) }
+        if let allow = p.allowMultiple   { obj["allowMultiple"] = .bool(allow) }
+        if let allow = p.allowAddOptions { obj["allowAddOptions"] = .bool(allow) }
+        if let closesAt = p.closesAt { obj["closesAt"] = .double(closesAt) }
+        if let games = p.games {
+            obj["games"] = .array(games.map { g in
+                var go: [String: AnyJSON] = [
+                    "id":   .string(g.id),
+                    "week": .integer(g.week),
+                    "away": .string(g.away),
+                    "home": .string(g.home)
+                ]
+                if let an = g.awayName { go["awayName"] = .string(an) }
+                if let hn = g.homeName { go["homeName"] = .string(hn) }
+                if let k  = g.kickoff  { go["kickoff"]  = .double(k) }
+                return .object(go)
+            })
+        }
         return .object(obj)
     }
 
@@ -2027,13 +2044,14 @@ actor RemoteService {
         struct ResponseJoin: Decodable {
             let userId: UUID
             let choice: Int
+            let slot: Int?
             enum CodingKeys: String, CodingKey {
-                case choice
+                case choice, slot
                 case userId = "user_id"
             }
         }
         let rows: [Row] = (try? await client.from("league_messages")
-            .select("id, league_id, user_id, content, image_url, created_at, message_type, payload, profiles!user_id(username), league_message_reactions(user_id, emoji), message_responses(user_id, choice)")
+            .select("id, league_id, user_id, content, image_url, created_at, message_type, payload, profiles!user_id(username), league_message_reactions(user_id, emoji), message_responses(user_id, choice, slot)")
             .eq("league_id", value: lid)
             .order("created_at", ascending: false)
             .limit(limit)
@@ -2069,6 +2087,7 @@ actor RemoteService {
                     MessageResponse(
                         messageID: mid,
                         userID: $0.userId.uuidString,
+                        slot: $0.slot ?? 0,
                         choice: $0.choice
                     )
                 }
@@ -2132,7 +2151,7 @@ actor RemoteService {
             .execute()
     }
 
-    // Posts a structured card (poll / pick'em / trivia / trade block). Content
+    // Posts a structured card (poll / pick'em / trade block). Content
     // is empty — the card's data lives in the jsonb payload.
     @discardableResult
     func sendStructuredMessage(
@@ -2178,10 +2197,10 @@ actor RemoteService {
         )
     }
 
-    // Records (or changes) the caller's response to a structured message.
-    // Upserts on the (message_id, user_id) primary key so re-voting replaces
-    // the previous choice.
-    func respond(messageID: String, userID: String, choice: Int) async throws {
+    // Records (or changes) the caller's response to one slot of a structured
+    // message. Upserts on the (message_id, user_id, slot) primary key so
+    // re-voting a slot replaces the previous choice.
+    func respond(messageID: String, userID: String, slot: Int, choice: Int) async throws {
         guard let mid = UUID(uuidString: messageID),
               let uid = UUID(uuidString: userID) else {
             throw RemoteError.invalidUserID
@@ -2189,14 +2208,43 @@ actor RemoteService {
         struct Upsert: Encodable {
             let message_id: UUID
             let user_id: UUID
+            let slot: Int
             let choice: Int
         }
         _ = try await client.from("message_responses")
             .upsert(
-                Upsert(message_id: mid, user_id: uid, choice: choice),
-                onConflict: "message_id,user_id"
+                Upsert(message_id: mid, user_id: uid, slot: slot, choice: choice),
+                onConflict: "message_id,user_id,slot"
             )
             .execute()
+    }
+
+    // Clears the caller's response for one slot (un-voting / deselecting).
+    func clearResponse(messageID: String, userID: String, slot: Int) async throws {
+        guard let mid = UUID(uuidString: messageID),
+              let uid = UUID(uuidString: userID) else {
+            throw RemoteError.invalidUserID
+        }
+        _ = try await client.from("message_responses")
+            .delete()
+            .eq("message_id", value: mid)
+            .eq("user_id", value: uid)
+            .eq("slot", value: slot)
+            .execute()
+    }
+
+    // Appends an option to a poll that opted into member-added options. The
+    // RPC validates membership / poll state server-side and the resulting
+    // league_messages UPDATE fans out over realtime.
+    func appendPollOption(messageID: String, option: String) async throws {
+        guard let mid = UUID(uuidString: messageID) else { throw RemoteError.invalidUserID }
+        struct Args: Encodable {
+            let p_message_id: UUID
+            let p_option: String
+        }
+        _ = try await client.rpc("append_poll_option", params: Args(
+            p_message_id: mid, p_option: option
+        )).execute()
     }
 
     // Uploads image data to the chat-images bucket under the league's

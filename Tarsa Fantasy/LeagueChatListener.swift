@@ -35,7 +35,7 @@ actor LeagueChatListener {
             schema: "public",
             table: "league_message_reactions"
         )
-        // Structured-message responses (poll/trivia votes). Like reactions,
+        // Structured-message responses (poll/pick'em votes). Like reactions,
         // these don't carry league_id; the view filters by loaded messages.
         let responseChanges = ch.postgresChange(
             AnyAction.self,
@@ -95,9 +95,16 @@ actor LeagueChatListener {
                     userInfo: ["leagueID": leagueID, "id": id]
                 )
             }
-        case .update:
-            // Edits aren't a feature today; nothing to broadcast.
-            break
+        case .update(let action):
+            // Payload edits (e.g. a member adding a poll option) arrive as
+            // UPDATEs — rebroadcast so every client refreshes the card.
+            guard let msg = decodeMessage(action.record) else { return }
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: .leagueChatMessageUpdated, object: nil,
+                    userInfo: ["leagueID": leagueID, "message": msg]
+                )
+            }
         }
     }
 
@@ -221,10 +228,12 @@ actor LeagueChatListener {
             let msgID   = normalizedUUID(msgRaw),
             let userID  = normalizedUUID(userRaw)
         else { return nil }
-        // `choice` is absent on DELETE events (the old record only carries the
-        // primary key); the delete handler ignores it, so default to 0.
+        // `slot` is part of the primary key, so it's present on every event
+        // (including DELETE old records). `choice` is absent on DELETE; the
+        // delete handler ignores it, so default to 0.
+        let slot   = record["slot"]?.intValue ?? 0
         let choice = record["choice"]?.intValue ?? 0
-        return MessageResponse(messageID: msgID, userID: userID, choice: choice)
+        return MessageResponse(messageID: msgID, userID: userID, slot: slot, choice: choice)
     }
 
     // Canonicalizes a UUID string to Swift's uppercase form. Returns nil
@@ -247,6 +256,7 @@ actor LeagueChatListener {
 
 extension Notification.Name {
     static let leagueChatMessageInserted  = Notification.Name("leagueChatMessageInserted")
+    static let leagueChatMessageUpdated   = Notification.Name("leagueChatMessageUpdated")
     static let leagueChatMessageDeleted   = Notification.Name("leagueChatMessageDeleted")
     static let leagueChatReactionInserted = Notification.Name("leagueChatReactionInserted")
     static let leagueChatReactionDeleted  = Notification.Name("leagueChatReactionDeleted")
