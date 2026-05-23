@@ -706,12 +706,80 @@ enum Fantasy {
         }
     }
 
+    // MARK: - Score breakdown (game-log detail)
+
+    // One line in a single game's fantasy-score breakdown: a stat category,
+    // a short description of the rate that scored it, and the points it
+    // contributed under the chosen scoring.
+    struct ScoreComponent: Identifiable, Hashable {
+        let label: String
+        let detail: String
+        let points: Double
+        var id: String { label }
+    }
+
+    // Breaks a single game's fantasy points into per-stat contributions. Uses
+    // the league's custom per-stat weights when given, otherwise the named
+    // preset. Components are built from the raw box-score line; any gap between
+    // their sum and the displayed score (2-pt conversions, return TDs, etc. the
+    // line doesn't carry — only relevant for preset scoring, which reads
+    // nflverse's precomputed field) is folded into a trailing "Other" row so
+    // the parts always reconcile to the total shown in the game log.
+    static func scoreBreakdown(game g: Game, scoring: Scoring, settings: ScoringSettings? = nil) -> (components: [ScoreComponent], total: Double) {
+        let s = settings ?? ScoringSettings.preset(scoring)
+        var components: [ScoreComponent] = []
+
+        func yardLine(_ label: String, yards: Double, divisor: Double) {
+            guard yards != 0, divisor > 0 else { return }
+            components.append(ScoreComponent(
+                label: label,
+                detail: "\(yards.statString) yds · 1 pt/\(divisor.statString)",
+                points: round2(yards / divisor)
+            ))
+        }
+        func eventLine(_ label: String, count: Double, weight: Double) {
+            guard count != 0, weight != 0 else { return }
+            components.append(ScoreComponent(
+                label: label,
+                detail: "\(count.statString) × \(weight.statString) pts",
+                points: round2(count * weight)
+            ))
+        }
+
+        yardLine("Passing Yards", yards: g.passingYards, divisor: s.passingYardsPerPoint)
+        eventLine("Passing TDs", count: g.passingTDs, weight: s.passingTD)
+        eventLine("Interceptions", count: g.passingInterceptions, weight: s.interception)
+        yardLine("Rushing Yards", yards: g.rushingYards, divisor: s.rushingYardsPerPoint)
+        eventLine("Rushing TDs", count: g.rushingTDs, weight: s.rushingTD)
+        eventLine("Receptions", count: g.receptions, weight: s.reception)
+        yardLine("Receiving Yards", yards: g.receivingYards, divisor: s.receivingYardsPerPoint)
+        eventLine("Receiving TDs", count: g.receivingTDs, weight: s.receivingTD)
+        eventLine("Fumbles Lost", count: g.fumblesLost, weight: s.fumbleLost)
+
+        // Reconcile to the score the game log actually shows. Anything the raw
+        // line can't explain lands in "Other" so the components always sum to
+        // the displayed total. (With custom settings the displayed score is
+        // itself computed from the raw line, so the residual is zero.)
+        let total = round2(g.points(scoring: scoring, settings: settings))
+        let explained = round2(components.reduce(0) { $0 + $1.points })
+        let residual = round2(total - explained)
+        if abs(residual) >= 0.05 {
+            components.append(ScoreComponent(
+                label: "Other",
+                detail: "2-pt, return TDs, etc.",
+                points: residual
+            ))
+        }
+
+        return (components, total)
+    }
+
     // MARK: - Stats overhaul helpers (Phase 1)
 
     // Returns season fantasy rank within each player's position. WR12 etc.
     // Players with no games this season are excluded (no signal to rank).
     static func positionRanks(
-        players: [String: Player], scoring: Scoring
+        players: [String: Player], scoring: Scoring, settings: ScoringSettings? = nil
     ) -> [String: PositionRank] {
         // Group players by position with their season total.
         var byPosition: [String: [(id: String, points: Double)]] = [:]
@@ -720,7 +788,7 @@ enum Fantasy {
             if totals.gamesPlayed == 0 { continue }
             let pos = p.position.uppercased()
             if pos.isEmpty { continue }
-            byPosition[pos, default: []].append((p.id, totals.points(scoring: scoring)))
+            byPosition[pos, default: []].append((p.id, totals.points(scoring: scoring, settings: settings)))
         }
         var out: [String: PositionRank] = [:]
         for (pos, list) in byPosition {
@@ -766,7 +834,8 @@ enum Fantasy {
         playerID: String,
         season: Int,
         snapshot: [String: Player],
-        scoring: Scoring
+        scoring: Scoring,
+        settings: ScoringSettings? = nil
     ) -> CareerSeasonLine? {
         guard let p = snapshot[playerID] else { return nil }
         let totals = seasonTotals(p.games)
@@ -775,8 +844,8 @@ enum Fantasy {
         for g in p.games.sorted(by: { $0.week < $1.week }) where !g.team.isEmpty {
             if !teams.contains(g.team) { teams.append(g.team) }
         }
-        let pts = totals.points(scoring: scoring)
-        let rank = positionRanks(players: snapshot, scoring: scoring)[playerID]
+        let pts = totals.points(scoring: scoring, settings: settings)
+        let rank = positionRanks(players: snapshot, scoring: scoring, settings: settings)[playerID]
         return CareerSeasonLine(
             season: season,
             teams: teams,
@@ -960,13 +1029,13 @@ enum Fantasy {
     // .flat when within 10% of season average; .up/.down when meaningfully
     // above/below.
     static func trendDirection(
-        games: [Game], scoring: Scoring, lookback: Int = 3
+        games: [Game], scoring: Scoring, settings: ScoringSettings? = nil, lookback: Int = 3
     ) -> Trend {
         guard games.count >= 2 else { return .flat }
         let sorted = games.sorted { $0.week < $1.week }
         let recent = Array(sorted.suffix(lookback))
-        let recentAvg  = recent.reduce(0.0) { $0 + $1.points(scoring: scoring) } / Double(recent.count)
-        let seasonAvg  = sorted.reduce(0.0) { $0 + $1.points(scoring: scoring) } / Double(sorted.count)
+        let recentAvg  = recent.reduce(0.0) { $0 + $1.points(scoring: scoring, settings: settings) } / Double(recent.count)
+        let seasonAvg  = sorted.reduce(0.0) { $0 + $1.points(scoring: scoring, settings: settings) } / Double(sorted.count)
         if seasonAvg == 0 { return .flat }
         let delta = (recentAvg - seasonAvg) / seasonAvg
         if delta > 0.10  { return .up }

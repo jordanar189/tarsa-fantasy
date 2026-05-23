@@ -7,6 +7,7 @@ import Charts
 struct WeeklyTrendChart: View {
     let games: [Game]
     let scoring: Scoring
+    var settings: ScoringSettings? = nil
 
     private struct Point: Identifiable {
         let id: Int        // week
@@ -16,7 +17,7 @@ struct WeeklyTrendChart: View {
 
     private var data: [Point] {
         games.sorted { $0.week < $1.week }
-             .map { Point(id: $0.week, week: $0.week, points: $0.points(scoring: scoring)) }
+             .map { Point(id: $0.week, week: $0.week, points: $0.points(scoring: scoring, settings: settings)) }
     }
 
     private var seasonAvg: Double {

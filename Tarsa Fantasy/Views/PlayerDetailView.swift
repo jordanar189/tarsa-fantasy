@@ -25,6 +25,10 @@ struct PlayerDetailView: View {
     }
 
     @State private var scoring: Scoring = .ppr
+    // Custom per-stat weights from the selected league, when it overrides the
+    // preset. Threaded alongside `scoring` so every point figure on the page
+    // reflects the league's actual scoring.
+    @State private var scoringSettings: ScoringSettings? = nil
     @State private var section: Section = .overview
     @State private var schedules: [NFLGame] = []
     @State private var snapCounts: [String: [Int: SnapCount]] = [:]
@@ -39,6 +43,7 @@ struct PlayerDetailView: View {
     @State private var careerLoading = false
     @State private var careerLoadedPlayerID: String? = nil
     @State private var careerLoadToken = 0
+    @State private var breakdownGame: Game? = nil
 
     private var player: Player? { app.displaySelectedPlayers()[playerID] }
     private var isProjected: Bool { app.isProjectedSeason(app.selectedSeason) }
@@ -89,22 +94,24 @@ struct PlayerDetailView: View {
                 }
             }
             .task(id: playerID) {
-                // Stats inherit the selected league's scoring.
+                // Stats inherit the selected league's scoring (preset + any
+                // custom per-stat weights).
                 scoring = app.activeScoring
+                scoringSettings = app.activeScoringSettings
                 careerSeasons = []
                 careerLoadedPlayerID = nil
                 await app.ensureProjectedSnapshot(season: app.selectedSeason)
                 schedules = await app.schedules(season: app.selectedSeason)
                 snapCounts = await app.snapCounts(season: app.selectedSeason)
                 rankByID = Fantasy.positionRanks(
-                    players: app.displaySelectedPlayers(), scoring: scoring
+                    players: app.displaySelectedPlayers(), scoring: scoring, settings: scoringSettings
                 )
                 let players = app.displaySelectedPlayers()
                 teamTargets = Fantasy.teamTargetsPerWeek(players: players)
                 teamTDs     = Fantasy.teamTouchdownsPerWeek(players: players)
                 warByID = Fantasy.warByPlayer(
                     players: players, scoring: scoring,
-                    settings: app.selectedLeague?.scoringSettings,
+                    settings: scoringSettings,
                     config: app.selectedLeague?.rosterConfig ?? .default,
                     teamCount: app.selectedLeague?.teams.count ?? 12
                 )
@@ -128,29 +135,16 @@ struct PlayerDetailView: View {
                 }
             }
             .onChange(of: app.activeScoring) { _, new in scoring = new }
-            .onChange(of: scoring) { _, _ in
-                let players = app.displaySelectedPlayers()
-                rankByID = Fantasy.positionRanks(players: players, scoring: scoring)
-                warByID = Fantasy.warByPlayer(
-                    players: players, scoring: scoring,
-                    settings: app.selectedLeague?.scoringSettings,
-                    config: app.selectedLeague?.rosterConfig ?? .default,
-                    teamCount: app.selectedLeague?.teams.count ?? 12
+            .onChange(of: app.activeScoringSettings) { _, new in scoringSettings = new }
+            .onChange(of: scoring) { _, _ in applyScoringChange() }
+            .onChange(of: scoringSettings) { _, _ in applyScoringChange() }
+            .sheet(item: $breakdownGame) { g in
+                ScoreBreakdownSheet(
+                    playerName: player?.name ?? "Player",
+                    game: g,
+                    scoring: scoring,
+                    settings: scoringSettings
                 )
-                Task {
-                    projection = await app.liveProjection(
-                        playerID: playerID, season: app.selectedSeason, scoring: scoring
-                    )
-                }
-                if careerLoadedPlayerID == playerID {
-                    if section == .career, let player {
-                        Task { await loadCareer(for: player) }
-                    } else {
-                        // Loaded under the old scoring; drop it so the tab
-                        // reloads with the new scoring when next opened.
-                        careerLoadedPlayerID = nil
-                    }
-                }
             }
         }
     }
@@ -159,13 +153,40 @@ struct PlayerDetailView: View {
         careerLoadToken &+= 1
         let token = careerLoadToken
         careerLoading = true
-        let result = await app.careerSeasons(playerID: p.id, scoring: scoring)
+        let result = await app.careerSeasons(playerID: p.id, scoring: scoring, settings: scoringSettings)
         // Ignore a result a newer request (scoring/section change) superseded —
         // otherwise a slow PPR load could overwrite a fresher Standard one.
         guard token == careerLoadToken else { return }
         careerSeasons = result
         careerLoadedPlayerID = p.id
         careerLoading = false
+    }
+
+    // Recompute the scoring-dependent derived state after the active scoring
+    // (preset or custom weights) changes — e.g. when the user switches leagues.
+    private func applyScoringChange() {
+        let players = app.displaySelectedPlayers()
+        rankByID = Fantasy.positionRanks(players: players, scoring: scoring, settings: scoringSettings)
+        warByID = Fantasy.warByPlayer(
+            players: players, scoring: scoring,
+            settings: scoringSettings,
+            config: app.selectedLeague?.rosterConfig ?? .default,
+            teamCount: app.selectedLeague?.teams.count ?? 12
+        )
+        Task {
+            projection = await app.liveProjection(
+                playerID: playerID, season: app.selectedSeason, scoring: scoring
+            )
+        }
+        if careerLoadedPlayerID == playerID {
+            if section == .career, let player {
+                Task { await loadCareer(for: player) }
+            } else {
+                // Loaded under the old scoring; drop it so the tab reloads with
+                // the new scoring when next opened.
+                careerLoadedPlayerID = nil
+            }
+        }
     }
 
     // MARK: - Header
@@ -272,14 +293,14 @@ struct PlayerDetailView: View {
     }
 
     private func trendLabel(games: [Game]) -> String {
-        switch Fantasy.trendDirection(games: games, scoring: scoring) {
+        switch Fantasy.trendDirection(games: games, scoring: scoring, settings: scoringSettings) {
         case .up:   return "↑ Rising"
         case .flat: return "→ Steady"
         case .down: return "↓ Cooling"
         }
     }
     private func trendColor(games: [Game]) -> Color {
-        switch Fantasy.trendDirection(games: games, scoring: scoring) {
+        switch Fantasy.trendDirection(games: games, scoring: scoring, settings: scoringSettings) {
         case .up:   return FFColor.positive
         case .flat: return FFColor.textSecondary
         case .down: return FFColor.negative
@@ -459,7 +480,7 @@ struct PlayerDetailView: View {
             if !p.games.isEmpty {
                 VStack(alignment: .leading, spacing: FFSpace.s) {
                     Text("WEEKLY POINTS").ffEyebrow().padding(.leading, FFSpace.s)
-                    WeeklyTrendChart(games: p.games, scoring: scoring)
+                    WeeklyTrendChart(games: p.games, scoring: scoring, settings: scoringSettings)
                         .padding(FFSpace.m)
                         .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
                         .overlay(
@@ -469,7 +490,7 @@ struct PlayerDetailView: View {
                 }
                 VStack(alignment: .leading, spacing: FFSpace.s) {
                     Text("WEEKLY DISTRIBUTION").ffEyebrow().padding(.leading, FFSpace.s)
-                    PositionDistributionChart(games: p.games, scoring: scoring)
+                    PositionDistributionChart(games: p.games, scoring: scoring, settings: scoringSettings)
                         .padding(FFSpace.m)
                         .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
                         .overlay(
@@ -553,7 +574,7 @@ struct PlayerDetailView: View {
 
     private func totalsCard(for p: Player) -> some View {
         let t = Fantasy.seasonTotals(p.games)
-        let pts = t.points(scoring: scoring)
+        let pts = t.points(scoring: scoring, settings: scoringSettings)
         let gp = max(t.gamesPlayed, 1)
         return VStack(alignment: .leading, spacing: FFSpace.l) {
             HStack(alignment: .top) {
@@ -603,7 +624,7 @@ struct PlayerDetailView: View {
     }
 
     private func bestWorstCard(for p: Player) -> some View {
-        let sorted = p.games.sorted { $0.points(scoring: scoring) > $1.points(scoring: scoring) }
+        let sorted = p.games.sorted { $0.points(scoring: scoring, settings: scoringSettings) > $1.points(scoring: scoring, settings: scoringSettings) }
         let best = sorted.first
         let worst = sorted.last
         return VStack(alignment: .leading, spacing: FFSpace.s) {
@@ -627,7 +648,7 @@ struct PlayerDetailView: View {
                 .font(.ffBody).foregroundStyle(FFColor.textPrimary)
             Text("vs \(game.opponent)").font(.ffCaption).foregroundStyle(FFColor.textTertiary)
             Spacer()
-            Text(game.points(scoring: scoring).fpString)
+            Text(game.points(scoring: scoring, settings: scoringSettings).fpString)
                 .font(.ffStatMedium)
                 .foregroundStyle(color)
         }
@@ -662,7 +683,7 @@ struct PlayerDetailView: View {
     }
 
     private func gameRow(_ g: Game, snap: SnapCount?) -> some View {
-        let pts = g.points(scoring: scoring)
+        let pts = g.points(scoring: scoring, settings: scoringSettings)
         return HStack(alignment: .top, spacing: FFSpace.m) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Week \(g.week)")
@@ -697,10 +718,21 @@ struct PlayerDetailView: View {
                         .foregroundStyle(FFColor.textTertiary)
                 }
             }
-            Text(pts.fpString)
-                .font(.ffStatMedium)
-                .foregroundStyle(FFColor.textPrimary)
+            Button {
+                breakdownGame = g
+            } label: {
+                HStack(spacing: 3) {
+                    Text(pts.fpString)
+                        .font(.ffStatMedium)
+                        .foregroundStyle(FFColor.textPrimary)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(FFColor.textTertiary)
+                }
                 .frame(minWidth: 56, alignment: .trailing)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.m)
         .ffHairlineBottom()
@@ -749,7 +781,7 @@ struct PlayerDetailView: View {
 
     private func avgPoints(_ games: [Game]) -> Double {
         guard !games.isEmpty else { return 0 }
-        let total = games.reduce(0.0) { $0 + $1.points(scoring: scoring) }
+        let total = games.reduce(0.0) { $0 + $1.points(scoring: scoring, settings: scoringSettings) }
         return Fantasy.round2(total / Double(games.count))
     }
 
@@ -930,8 +962,8 @@ struct PlayerDetailView: View {
         // loaded yet) by opponent and compute totals.
         let groups = Dictionary(grouping: p.games, by: { $0.opponent })
             .map { opp, games -> (opp: String, gp: Int, avg: Double, best: Double) in
-                let avg = games.reduce(0.0) { $0 + $1.points(scoring: scoring) } / Double(games.count)
-                let best = games.map { $0.points(scoring: scoring) }.max() ?? 0
+                let avg = games.reduce(0.0) { $0 + $1.points(scoring: scoring, settings: scoringSettings) } / Double(games.count)
+                let best = games.map { $0.points(scoring: scoring, settings: scoringSettings) }.max() ?? 0
                 return (opp, games.count, Fantasy.round2(avg), Fantasy.round2(best))
             }
             .sorted { $0.avg > $1.avg }
@@ -1033,7 +1065,7 @@ struct PlayerDetailView: View {
         let agg = Fantasy.combinedTotals(careerSeasons.map(\.totals))
         // Derive from the exact aggregate, not the per-season rounded points,
         // so the header matches the stat grid over a long career.
-        let totalPts = Fantasy.round2(agg.points(scoring: scoring))
+        let totalPts = Fantasy.round2(agg.points(scoring: scoring, settings: scoringSettings))
         let ppg = totalGP > 0 ? Fantasy.round2(totalPts / Double(totalGP)) : 0
         let bestLine = careerSeasons
             .filter { $0.positionRank != nil }
@@ -1162,5 +1194,134 @@ struct PlayerDetailView: View {
         default:
             return []
         }
+    }
+}
+
+// MARK: - Score breakdown sheet
+
+// Tapping a score in the game log opens this: a line-by-line accounting of how
+// each box-score stat contributed to that week's fantasy points, under the
+// scoring the game log is showing.
+private struct ScoreBreakdownSheet: View {
+    let playerName: String
+    let game: Game
+    let scoring: Scoring
+    // Computed once at init — the inputs are immutable for the sheet's lifetime,
+    // so there's no need to recompute on every layout pass.
+    private let breakdown: (components: [Fantasy.ScoreComponent], total: Double)
+    @Environment(\.dismiss) private var dismiss
+
+    init(playerName: String, game: Game, scoring: Scoring, settings: ScoringSettings?) {
+        self.playerName = playerName
+        self.game = game
+        self.scoring = scoring
+        self.breakdown = Fantasy.scoreBreakdown(game: game, scoring: scoring, settings: settings)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                FFColor.bg.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: FFSpace.l) {
+                        headerCard(total: breakdown.total)
+                        if breakdown.components.isEmpty {
+                            emptyCard
+                        } else {
+                            componentsCard(breakdown.components, total: breakdown.total)
+                        }
+                    }
+                    .padding(FFSpace.l)
+                }
+            }
+            .navigationTitle("Scoring Breakdown")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(FFColor.bg, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .foregroundStyle(FFColor.accent)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func headerCard(total: Double) -> some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            Text(playerName.uppercased()).ffEyebrow(color: FFColor.accent)
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Week \(game.week)")
+                        .font(.ffTitle)
+                        .foregroundStyle(FFColor.textPrimary)
+                    Text(game.opponent.isEmpty ? scoring.label : "vs \(game.opponent) · \(scoring.label)")
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(total.fpString)
+                        .font(.ffStatLarge)
+                        .foregroundStyle(FFColor.textPrimary)
+                    Text("PTS").ffEyebrow(color: FFColor.textTertiary)
+                }
+            }
+        }
+        .ffCard(padding: FFSpace.l)
+    }
+
+    private func componentsCard(_ components: [Fantasy.ScoreComponent], total: Double) -> some View {
+        VStack(spacing: 0) {
+            ForEach(components) { c in
+                HStack(alignment: .firstTextBaseline, spacing: FFSpace.m) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(c.label)
+                            .font(.ffBody)
+                            .foregroundStyle(FFColor.textPrimary)
+                        Text(c.detail)
+                            .font(.ffMicro)
+                            .foregroundStyle(FFColor.textTertiary)
+                    }
+                    Spacer()
+                    Text(signed(c.points))
+                        .font(.ffStatSmall)
+                        .foregroundStyle(c.points < 0 ? FFColor.negative : FFColor.textPrimary)
+                }
+                .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.m)
+                .ffHairlineBottom()
+            }
+            HStack {
+                Text("TOTAL").ffEyebrow()
+                Spacer()
+                Text(total.fpString)
+                    .font(.ffStatMedium)
+                    .foregroundStyle(FFColor.accent)
+            }
+            .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.m)
+        }
+        .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+        .overlay(
+            RoundedRectangle(cornerRadius: FFRadius.m)
+                .strokeBorder(FFColor.border, lineWidth: 1)
+        )
+    }
+
+    private var emptyCard: some View {
+        Text("No scoring stats for this game.")
+            .font(.ffBody).foregroundStyle(FFColor.textSecondary)
+            .padding(FFSpace.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+            .overlay(
+                RoundedRectangle(cornerRadius: FFRadius.m)
+                    .strokeBorder(FFColor.border, lineWidth: 1)
+            )
+    }
+
+    // Always show the sign so positive contributions read as additive.
+    private func signed(_ v: Double) -> String {
+        "\(v >= 0 ? "+" : "")\(v.fpString)"
     }
 }
