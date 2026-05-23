@@ -219,7 +219,7 @@ struct MatchupTabView: View {
         VStack(spacing: 4) {
             Text(label).ffEyebrow(color: winning ? FFColor.accent : FFColor.textTertiary)
             TeamCrestView(team: s.team, size: 38)
-            Text(s.team.shortLabel).font(.ffCaption).foregroundStyle(FFColor.textSecondary).lineLimit(1)
+            Text(s.team.shortLabel).font(.ffCaption).foregroundStyle(FFColor.textPrimary).lineLimit(1)
             Text(s.actual.fpString)
                 .font(.ffStatLarge)
                 .foregroundStyle(winning ? FFColor.accent : FFColor.textPrimary)

@@ -188,7 +188,7 @@ struct GameCenterView: View {
             }
             Text(abbr)
                 .font(.ffCaption.bold())
-                .foregroundStyle(isWinning ? FFColor.textPrimary : FFColor.textSecondary)
+                .foregroundStyle(FFColor.textPrimary)
             if let s = score, status != .scheduled {
                 Text("\(s)")
                     .font(.ffStatLarge)
