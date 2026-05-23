@@ -16,6 +16,7 @@ struct PlayerDetailView: View {
 
     enum Section: String, CaseIterable, Identifiable, Hashable {
         case overview = "Overview"
+        case career   = "Career"
         case gameLog  = "Game Log"
         case splits   = "Splits"
         case advanced = "Advanced"
@@ -34,6 +35,10 @@ struct PlayerDetailView: View {
     @State private var projection: PlayerProjection? = nil
     @State private var nicknameHistory: [NicknameHistoryEntry] = []
     @State private var warByID: [String: Double] = [:]
+    @State private var careerSeasons: [Fantasy.CareerSeasonLine] = []
+    @State private var careerLoading = false
+    @State private var careerLoadedPlayerID: String? = nil
+    @State private var careerLoadToken = 0
 
     private var player: Player? { app.displaySelectedPlayers()[playerID] }
     private var isProjected: Bool { app.isProjectedSeason(app.selectedSeason) }
@@ -52,6 +57,7 @@ struct PlayerDetailView: View {
                             sectionPicker
                             switch section {
                             case .overview: overviewSection(for: player)
+                            case .career:   careerSection(for: player)
                             case .gameLog:  gameLogSection(for: player)
                             case .splits:   splitsSection(for: player)
                             case .advanced: advancedSection(for: player)
@@ -85,6 +91,8 @@ struct PlayerDetailView: View {
             .task(id: playerID) {
                 // Stats inherit the selected league's scoring.
                 scoring = app.activeScoring
+                careerSeasons = []
+                careerLoadedPlayerID = nil
                 await app.ensureProjectedSnapshot(season: app.selectedSeason)
                 schedules = await app.schedules(season: app.selectedSeason)
                 snapCounts = await app.snapCounts(season: app.selectedSeason)
@@ -110,6 +118,14 @@ struct PlayerDetailView: View {
                     playerID: playerID, season: app.selectedSeason, scoring: scoring
                 )
                 nicknameHistory = await app.playerNicknameHistory(playerID: playerID)
+                if section == .career, let player {
+                    await loadCareer(for: player)
+                }
+            }
+            .onChange(of: section) { _, new in
+                if new == .career, careerLoadedPlayerID != playerID, let player {
+                    Task { await loadCareer(for: player) }
+                }
             }
             .onChange(of: app.activeScoring) { _, new in scoring = new }
             .onChange(of: scoring) { _, _ in
@@ -126,8 +142,30 @@ struct PlayerDetailView: View {
                         playerID: playerID, season: app.selectedSeason, scoring: scoring
                     )
                 }
+                if careerLoadedPlayerID == playerID {
+                    if section == .career, let player {
+                        Task { await loadCareer(for: player) }
+                    } else {
+                        // Loaded under the old scoring; drop it so the tab
+                        // reloads with the new scoring when next opened.
+                        careerLoadedPlayerID = nil
+                    }
+                }
             }
         }
+    }
+
+    private func loadCareer(for p: Player) async {
+        careerLoadToken &+= 1
+        let token = careerLoadToken
+        careerLoading = true
+        let result = await app.careerSeasons(playerID: p.id, scoring: scoring)
+        // Ignore a result a newer request (scoring/section change) superseded —
+        // otherwise a slow PPR load could overwrite a fresher Standard one.
+        guard token == careerLoadToken else { return }
+        careerSeasons = result
+        careerLoadedPlayerID = p.id
+        careerLoading = false
     }
 
     // MARK: - Header
@@ -944,6 +982,185 @@ struct PlayerDetailView: View {
                         .strokeBorder(FFColor.border, lineWidth: 1)
                 )
             }
+        }
+    }
+
+    // MARK: - Career (multi-season history)
+
+    // Year-by-year breakdown across every season we have data for: a career
+    // aggregate up top, then a card per season with that year's fantasy
+    // position rank and position-relevant counting stats. Loaded lazily the
+    // first time the tab is opened (it touches every season's snapshot).
+    @ViewBuilder
+    private func careerSection(for p: Player) -> some View {
+        VStack(alignment: .leading, spacing: FFSpace.l) {
+            if careerLoading && careerSeasons.isEmpty {
+                careerMessageCard {
+                    HStack(spacing: FFSpace.s) {
+                        ProgressView().tint(FFColor.accent)
+                        Text("Loading career…")
+                            .font(.ffBody).foregroundStyle(FFColor.textSecondary)
+                    }
+                }
+            } else if careerSeasons.isEmpty {
+                careerMessageCard {
+                    Text("No career stats available.")
+                        .font(.ffBody).foregroundStyle(FFColor.textSecondary)
+                }
+            } else {
+                careerSummaryCard(for: p)
+                Text("BY SEASON").ffEyebrow().padding(.leading, FFSpace.s)
+                ForEach(careerSeasons) { line in
+                    careerSeasonCard(line)
+                }
+            }
+        }
+    }
+
+    private func careerMessageCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .padding(FFSpace.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+            .overlay(
+                RoundedRectangle(cornerRadius: FFRadius.m)
+                    .strokeBorder(FFColor.border, lineWidth: 1)
+            )
+    }
+
+    private func careerSummaryCard(for p: Player) -> some View {
+        let totalGP  = careerSeasons.reduce(0) { $0 + $1.gamesPlayed }
+        let agg = Fantasy.combinedTotals(careerSeasons.map(\.totals))
+        // Derive from the exact aggregate, not the per-season rounded points,
+        // so the header matches the stat grid over a long career.
+        let totalPts = Fantasy.round2(agg.points(scoring: scoring))
+        let ppg = totalGP > 0 ? Fantasy.round2(totalPts / Double(totalGP)) : 0
+        let bestLine = careerSeasons
+            .filter { $0.positionRank != nil }
+            .min { $0.positionRank!.rank < $1.positionRank!.rank }
+        let stats = careerStatLine(position: p.position, totals: agg)
+        return VStack(alignment: .leading, spacing: FFSpace.l) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("CAREER").ffEyebrow(color: FFColor.accent)
+                    Text(totalPts.fpString)
+                        .font(.ffStatLarge)
+                        .foregroundStyle(FFColor.textPrimary)
+                    Text("\(careerSeasons.count) seasons · \(totalGP) games · \(ppg.fpString)/g")
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                Spacer()
+                if let bestLine, let rank = bestLine.positionRank {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("BEST FINISH").ffEyebrow(color: FFColor.textTertiary)
+                        Text(rank.label)
+                            .font(.ffStatMedium)
+                            .foregroundStyle(FFColor.accent)
+                        Text(String(bestLine.season))
+                            .font(.ffMicro)
+                            .foregroundStyle(FFColor.textTertiary)
+                    }
+                }
+            }
+            if !stats.isEmpty {
+                Rectangle().fill(FFColor.border).frame(height: 1)
+                let cols = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+                LazyVGrid(columns: cols, alignment: .leading, spacing: FFSpace.m) {
+                    ForEach(stats, id: \.0) { s in stat(s.0, s.1) }
+                }
+            }
+        }
+        .ffCard(padding: FFSpace.l)
+    }
+
+    private func careerSeasonCard(_ line: Fantasy.CareerSeasonLine) -> some View {
+        let stats = careerStatLine(position: line.position, totals: line.totals)
+        return VStack(alignment: .leading, spacing: FFSpace.m) {
+            HStack(alignment: .firstTextBaseline, spacing: FFSpace.s) {
+                Text(String(line.season))
+                    .font(.ffStatMedium)
+                    .foregroundStyle(FFColor.textPrimary)
+                Text(line.teamLabel)
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textSecondary)
+                Spacer()
+                if let rank = line.positionRank { careerRankPill(rank) }
+            }
+            if !stats.isEmpty {
+                let cols = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+                LazyVGrid(columns: cols, alignment: .leading, spacing: FFSpace.s) {
+                    ForEach(stats, id: \.0) { s in stat(s.0, s.1) }
+                }
+            }
+            Rectangle().fill(FFColor.border).frame(height: 1)
+            HStack(spacing: FFSpace.l) {
+                stat("PTS", line.points.fpString)
+                stat("PPG", line.pointsPerGame.fpString)
+                stat("GP", "\(line.gamesPlayed)")
+                Spacer()
+            }
+        }
+        .ffCard(padding: FFSpace.l)
+    }
+
+    private func careerRankPill(_ rank: PositionRank) -> some View {
+        let color = careerRankColor(rank.rank)
+        return HStack(spacing: 4) {
+            Text(rank.label)
+                .font(.ffCaption.bold())
+                .padding(.horizontal, FFSpace.s).padding(.vertical, 3)
+                .background(color.opacity(0.15), in: Capsule())
+                .foregroundStyle(color)
+            Text("of \(rank.totalAtPosition)")
+                .font(.ffMicro)
+                .foregroundStyle(FFColor.textTertiary)
+        }
+    }
+
+    private func careerRankColor(_ r: Int) -> Color {
+        switch r {
+        case ...5:  return FFColor.positive
+        case ...12: return FFColor.accent
+        case ...24: return FFColor.warning
+        default:    return FFColor.textSecondary
+        }
+    }
+
+    // Position-relevant counting totals for a career row. K (and anything we
+    // don't carry box-score stats for) shows points only.
+    private func careerStatLine(position: String, totals t: SeasonTotals) -> [(String, String)] {
+        switch position.uppercased() {
+        case "QB":
+            return [
+                ("PASS YD", t.passingYards.statString),
+                ("PASS TD", t.passingTDs.statString),
+                ("INT",     t.passingInterceptions.statString),
+                ("RUSH YD", t.rushingYards.statString),
+                ("RUSH TD", t.rushingTDs.statString),
+                ("CMP",     t.completions.statString),
+            ]
+        case "RB":
+            return [
+                ("RUSH YD", t.rushingYards.statString),
+                ("RUSH TD", t.rushingTDs.statString),
+                ("CAR",     t.carries.statString),
+                ("REC",     t.receptions.statString),
+                ("REC YD",  t.receivingYards.statString),
+                ("REC TD",  t.receivingTDs.statString),
+            ]
+        case "WR", "TE":
+            return [
+                ("REC",     t.receptions.statString),
+                ("TGT",     t.targets.statString),
+                ("REC YD",  t.receivingYards.statString),
+                ("REC TD",  t.receivingTDs.statString),
+            ] + (t.carries > 0 ? [
+                ("RUSH YD", t.rushingYards.statString),
+                ("RUSH TD", t.rushingTDs.statString),
+            ] : [])
+        default:
+            return []
         }
     }
 }

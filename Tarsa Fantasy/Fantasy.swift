@@ -737,6 +737,83 @@ enum Fantasy {
         return out
     }
 
+    // MARK: - Career (multi-season history)
+
+    // One season's line in a player's career table: that season's counting
+    // totals, fantasy points, and fantasy position rank (computed within the
+    // season's own field) under the chosen scoring preset.
+    struct CareerSeasonLine: Identifiable, Hashable {
+        let season: Int
+        // Teams the player logged a game for that season, in order of first
+        // appearance (handles mid-season trades — usually a single team).
+        let teams: [String]
+        let position: String
+        let gamesPlayed: Int
+        let totals: SeasonTotals
+        let points: Double
+        let pointsPerGame: Double
+        let positionRank: PositionRank?
+        var id: Int { season }
+        var teamLabel: String { teams.isEmpty ? "—" : teams.joined(separator: "/") }
+    }
+
+    // Builds one career line for a player from a single season's snapshot.
+    // Returns nil when the player logged no games that season. Team(s) are
+    // derived from the games (the per-season snapshot's `team` field is the
+    // player's *current* team, not that season's). Pure; the caller supplies
+    // one season snapshot at a time so peak memory stays at one season.
+    static func careerSeasonLine(
+        playerID: String,
+        season: Int,
+        snapshot: [String: Player],
+        scoring: Scoring
+    ) -> CareerSeasonLine? {
+        guard let p = snapshot[playerID] else { return nil }
+        let totals = seasonTotals(p.games)
+        guard totals.gamesPlayed > 0 else { return nil }
+        var teams: [String] = []
+        for g in p.games.sorted(by: { $0.week < $1.week }) where !g.team.isEmpty {
+            if !teams.contains(g.team) { teams.append(g.team) }
+        }
+        let pts = totals.points(scoring: scoring)
+        let rank = positionRanks(players: snapshot, scoring: scoring)[playerID]
+        return CareerSeasonLine(
+            season: season,
+            teams: teams,
+            position: p.position.uppercased(),
+            gamesPlayed: totals.gamesPlayed,
+            totals: totals,
+            points: round2(pts),
+            pointsPerGame: round2(pts / Double(max(totals.gamesPlayed, 1))),
+            positionRank: rank
+        )
+    }
+
+    // Sum a set of per-season totals into one career aggregate.
+    static func combinedTotals(_ totals: [SeasonTotals]) -> SeasonTotals {
+        var t = SeasonTotals()
+        for s in totals {
+            t.gamesPlayed          += s.gamesPlayed
+            t.completions          += s.completions
+            t.attempts             += s.attempts
+            t.passingYards         += s.passingYards
+            t.passingTDs           += s.passingTDs
+            t.passingInterceptions += s.passingInterceptions
+            t.carries              += s.carries
+            t.rushingYards         += s.rushingYards
+            t.rushingTDs           += s.rushingTDs
+            t.receptions           += s.receptions
+            t.targets              += s.targets
+            t.receivingYards       += s.receivingYards
+            t.receivingTDs         += s.receivingTDs
+            t.fumblesLost          += s.fumblesLost
+            t.fantasyPoints        += s.fantasyPoints
+            t.fantasyPointsPPR     += s.fantasyPointsPPR
+            t.fantasyPointsHalfPPR += s.fantasyPointsHalfPPR
+        }
+        return t
+    }
+
     // MARK: - Trade value (VOR)
 
     // Per-player trade value on a 0–100 scale via Value Over Replacement: a
