@@ -245,7 +245,11 @@ struct ImportedLeagueRow: View {
                     .foregroundStyle(FFColor.textPrimary)
                     .lineLimit(1)
                 HStack(spacing: FFSpace.s) {
-                    FFPill { Text("SLEEPER").foregroundStyle(FFColor.accent) }
+                    if league.isActivated {
+                        FFPill { Text("ACTIVE").foregroundStyle(FFColor.positive) }
+                    } else {
+                        FFPill { Text("SLEEPER").foregroundStyle(FFColor.accent) }
+                    }
                     if league.seasonYear > 0 { FFPill { Text(String(league.seasonYear)) } }
                     if !league.scoringLabel.isEmpty { FFPill { Text(league.scoringLabel.uppercased()) } }
                     if league.seasons.count > 1 { FFPill { Text("\(league.seasons.count) SEASONS") } }

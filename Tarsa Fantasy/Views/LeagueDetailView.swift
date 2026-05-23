@@ -13,6 +13,10 @@ struct LeagueDetailView: View {
     @State private var showingDraftRoom: Bool = false
     @State private var showingDraftSettings: Bool = false
     @State private var customizingTeam: FantasyTeam? = nil
+    // True when this league has at least one archived season (a completed
+    // season, a rolled-over parent, or seasons backfilled from a Sleeper
+    // import). Drives whether the History section is offered.
+    @State private var hasHistory: Bool = false
 
     // Unified section set used for both simulation and standard leagues.
     // Standard leagues additionally surface History (when available).
@@ -189,7 +193,7 @@ struct LeagueDetailView: View {
         var sections: [SimSection] = [.overview]
         if lg.playoffTeams >= 2 { sections.append(.playoffs) }
         sections.append(contentsOf: [.draft, .manage])
-        if !lg.isTest, lg.seasonCompleted || lg.parentLeagueID != nil {
+        if !lg.isTest, lg.seasonCompleted || lg.parentLeagueID != nil || hasHistory {
             sections.append(.history)
         }
         return sections
@@ -213,6 +217,11 @@ struct LeagueDetailView: View {
         await app.loadSeason(league?.season ?? app.selectedSeason)
         await app.loadLeagueNicknames(leagueID: leagueID)
         draft = await app.draft(leagueID: leagueID)
+        // Surface History when archives exist even before a season is completed
+        // here (e.g. a Sleeper import backfilled prior seasons).
+        if let lg = league, !lg.isTest, !lg.seasonCompleted, lg.parentLeagueID == nil {
+            hasHistory = !(await app.leagueHistory(leagueID: leagueID)).isEmpty
+        }
     }
 
     @ViewBuilder

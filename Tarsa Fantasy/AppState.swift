@@ -745,6 +745,100 @@ final class AppState {
         importedSleeperLeagues.first { $0.id == id }
     }
 
+    // Promotes a read-only Sleeper import into a real, playable Tarsa league
+    // owned by the signed-in user (the "replacement for Sleeper" path). It:
+    //   • creates the live league + teams using the import's latest season —
+    //     scoring, roster slots and regular-season length are carried over;
+    //   • claims the user's chosen team as commissioner and leaves the rest
+    //     open so leaguemates can join with the league's join code;
+    //   • populates every team's current roster from the latest Sleeper season
+    //     (mapped to app player ids) and auto-fills a starting lineup;
+    //   • backfills each completed prior season's final standings into league
+    //     history so the History tab shows past champions and records.
+    // Going-forward scoring uses this app's nflverse engine, so it won't
+    // reproduce Sleeper's historical per-week points exactly.
+    @discardableResult
+    func promoteSleeperLeague(importedID: String, myRosterID: Int, name: String? = nil) async throws -> League {
+        guard let session else { throw AppError.notSignedIn }
+        guard let imported = importedSleeperLeague(id: importedID),
+              let latest = imported.latest,
+              let myTeam = latest.teams.first(where: { $0.rosterID == myRosterID })
+        else { throw AppError.leagueNotFound }
+
+        let scoring = SleeperPromotion.scoring(fromLabel: latest.scoringLabel)
+        let rosterConfig = SleeperPromotion.rosterConfig(from: latest.rosterPositions)
+        let regularSeasonWeeks = SleeperPromotion.regularSeasonWeeks(from: latest)
+        let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let leagueName = (trimmedName?.isEmpty == false ? trimmedName! : imported.name)
+        let seasonYear = latest.seasonYear
+
+        // Order teams so the user's team is first — createLeague claims index 0
+        // for the creator. Keep the parallel ImportedTeam order to map rosters
+        // back to the created teams (returned in the same sort order). Names are
+        // forced non-empty so createLeague can't drop a blank-named team and
+        // throw the zip below out of alignment.
+        let others = latest.teams.filter { $0.rosterID != myRosterID }
+        let orderedSources = [myTeam] + others
+        func teamName(_ t: ImportedTeam) -> String {
+            let n = t.teamName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return n.isEmpty ? "Team \(t.rosterID)" : n
+        }
+
+        let league = try await remote.createLeague(
+            creatorID: session.userID,
+            name: leagueName,
+            season: seasonYear,
+            scoring: scoring,
+            rosterConfig: rosterConfig,
+            yourTeamName: teamName(myTeam),
+            otherTeamNames: others.map(teamName),
+            regularSeasonWeeks: regularSeasonWeeks
+        )
+
+        // Populate current rosters. Created teams come back sorted by the
+        // [myTeam] + others order we inserted them in.
+        let snapshot = await loadSeason(seasonYear) ?? players(season: seasonYear)
+        let lookup = latest.playerLookup
+        for (created, source) in zip(league.teams, orderedSources) {
+            let roster = SleeperPromotion.appRosterIDs(for: source, lookup: lookup)
+            guard !roster.isEmpty else { continue }
+            let starters = Fantasy.autoFillLineup(
+                roster: roster, players: snapshot,
+                config: rosterConfig, scoring: scoring
+            )
+            _ = try? await remote.setRoster(teamID: created.id, roster: roster, starters: starters)
+        }
+
+        // Backfill prior seasons' final standings into history. Any season
+        // older than the live one is finished, so its standings are final.
+        for season in imported.seasons where season.seasonYear < seasonYear {
+            let standings = SleeperPromotion.standingsRows(for: season)
+            guard !standings.isEmpty else { continue }
+            let leaderName = season.standings.max(by: { $0.pointsFor < $1.pointsFor })?.teamName
+            let champName = season.championRosterID.flatMap { season.teamsByRoster[$0]?.teamName }
+            try? await remote.archiveImportedSeason(
+                leagueID: league.id,
+                season: season.seasonYear,
+                standings: standings,
+                scoringLeaderTeamName: leaderName,
+                championTeamName: champName
+            )
+        }
+
+        // Tag the local import as activated so the UI routes to the live league.
+        if let idx = importedSleeperLeagues.firstIndex(where: { $0.id == importedID }) {
+            importedSleeperLeagues[idx].activatedLeagueID = league.id
+            SleeperStore.shared.saveAll(importedSleeperLeagues)
+        }
+
+        await reloadLeagues()
+        await selectLeague(league.id)
+        // selectLeague has already loaded the fully-populated league into
+        // selectedLeague; callers here only need the id, so return the row
+        // createLeague handed back.
+        return league
+    }
+
     // MARK: - League history (multi-season)
 
     // Snapshots the current standings + per-week matchups into the
