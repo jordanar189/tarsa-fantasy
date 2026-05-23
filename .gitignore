@@ -4,6 +4,9 @@
 # Local environment (App Store Connect API credentials)
 .env
 
+# Build-time secrets (GIPHY API key, etc.) — see Config/Secrets.example.xcconfig
+Config/Secrets.xcconfig
+
 # Build artifacts from scripts/upload-testflight.sh
 build/
 *.xcarchive

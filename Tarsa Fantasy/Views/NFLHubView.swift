@@ -22,7 +22,6 @@ struct NFLHubView: View {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
                 VStack(spacing: 0) {
-                    LeagueSwitcherBar()
                     SegmentedTabPicker(items: SubTab.allCases, selection: $subTab) {
                         Text($0.rawValue)
                     }
@@ -45,6 +44,7 @@ struct NFLHubView: View {
             .toolbar {
                 SeasonPickerToolbar()
             }
+            .leagueSwitcher()
             .sheet(item: $selectedPlayerID.asIdentifiable) { id in
                 PlayerDetailView(playerID: id.id)
                     .presentationDetents([.large])

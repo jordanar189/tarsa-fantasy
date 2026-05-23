@@ -1,0 +1,59 @@
+name: Claude PR review
+
+# Automated code review on every pull request, similar to the Codex reviewer.
+# Requires a CLAUDE_CODE_OAUTH_TOKEN repo secret (generate locally with
+# `claude setup-token`; Settings → Secrets and variables → Actions). Swap to
+# `anthropic_api_key` if you'd rather authenticate with a metered API key.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# One review at a time per PR; a new push cancels the in-flight review.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Fork PRs and Dependabot PRs run with a read-only token and no access to
+    # repo secrets, so the Claude step can't authenticate — skip them rather
+    # than fail their checks.
+    if: >-
+      github.event.pull_request.head.repo.fork == false &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            Review this pull request for correctness, security, and adherence to
+            the repo's conventions in CLAUDE.md. Leave inline comments on the
+            specific lines that need attention; skip nitpicks and praise.
+
+            Prioritise:
+            - Logic and correctness bugs, off-by-one and nil/optional handling.
+            - Swift concurrency / actor-isolation mistakes (this project uses
+              SWIFT_APPROACHABLE_CONCURRENCY with explicit per-type isolation —
+              do not suggest SWIFT_DEFAULT_ACTOR_ISOLATION).
+            - Data-layer issues: Supabase queries/RLS, Codable decoding, and
+              migrations (these apply only on merge to main).
+            - Anything that breaks the AppState → actor service boundary.
+
+            This is an iOS/Xcode app that cannot be compiled in CI, so reason
+            about the code statically. Tag each finding with a severity
+            (P1/P2/P3). If the PR looks good, say so briefly without inventing
+            issues.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*)"

@@ -26,14 +26,12 @@ struct MatchupTabView: View {
         NavigationStack {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
-                VStack(spacing: 0) {
-                    LeagueSwitcherBar()
-                    content
-                }
+                content
             }
             .navigationTitle("Matchup")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
+            .leagueSwitcher()
         }
         .onAppear { if !didInit { week = defaultWeek; didInit = true } }
         .task(id: contextKey) { await reload() }
@@ -492,7 +490,7 @@ struct MatchupTabView: View {
             HStack {
                 Text("HEAD TO HEAD").ffEyebrow()
                 Spacer()
-                RecordText(wins: myWins, losses: losses, ties: ties)
+                ColoredRecord(wins: myWins, losses: losses, ties: ties, font: .ffStatSmall)
             }
             VStack(spacing: 0) {
                 ForEach(h2h.prefix(8)) { e in

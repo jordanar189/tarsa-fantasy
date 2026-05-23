@@ -636,6 +636,19 @@ actor RemoteService {
         .array(items.map { .string($0) })
     }
 
+    // Serializes a structured-message payload to jsonb, omitting nil fields so
+    // each card type only stores the keys it uses.
+    private func chatPayloadAsAnyJSON(_ p: ChatPayload) -> AnyJSON {
+        var obj: [String: AnyJSON] = [:]
+        if let question = p.question { obj["question"] = .string(question) }
+        if let options = p.options   { obj["options"] = .array(options.map { .string($0) }) }
+        if let correct = p.correct   { obj["correct"] = .integer(correct) }
+        if let players = p.players   { obj["players"] = .array(players.map { .string($0) }) }
+        if let note = p.note         { obj["note"] = .string(note) }
+        if let teamName = p.teamName { obj["teamName"] = .string(teamName) }
+        return .object(obj)
+    }
+
     private func scheduleAsAnyJSON(_ plans: [ScheduleWeek]) -> AnyJSON {
         .array(plans.map { plan in
             .object([
@@ -1986,15 +1999,20 @@ actor RemoteService {
             let content: String
             let imageUrl: String?
             let createdAt: Date
+            let messageType: String?
+            let payload: ChatPayload?
             let profiles: ProfilesJoin?
             let leagueMessageReactions: [ReactionJoin]?
+            let messageResponses: [ResponseJoin]?
             enum CodingKeys: String, CodingKey {
-                case id, content, profiles
+                case id, content, profiles, payload
                 case leagueId  = "league_id"
                 case userId    = "user_id"
                 case imageUrl  = "image_url"
                 case createdAt = "created_at"
+                case messageType = "message_type"
                 case leagueMessageReactions = "league_message_reactions"
+                case messageResponses = "message_responses"
             }
         }
         struct ProfilesJoin: Decodable { let username: String? }
@@ -2006,8 +2024,16 @@ actor RemoteService {
                 case userId = "user_id"
             }
         }
+        struct ResponseJoin: Decodable {
+            let userId: UUID
+            let choice: Int
+            enum CodingKeys: String, CodingKey {
+                case choice
+                case userId = "user_id"
+            }
+        }
         let rows: [Row] = (try? await client.from("league_messages")
-            .select("id, league_id, user_id, content, image_url, created_at, profiles!user_id(username), league_message_reactions(user_id, emoji)")
+            .select("id, league_id, user_id, content, image_url, created_at, message_type, payload, profiles!user_id(username), league_message_reactions(user_id, emoji), message_responses(user_id, choice)")
             .eq("league_id", value: lid)
             .order("created_at", ascending: false)
             .limit(limit)
@@ -2015,6 +2041,7 @@ actor RemoteService {
 
         var messages: [LeagueMessage] = []
         var reactions: [String: [LeagueMessageReaction]] = [:]
+        var responses: [String: [MessageResponse]] = [:]
         for r in rows.reversed() {
             let mid = r.id.uuidString
             messages.append(LeagueMessage(
@@ -2024,7 +2051,9 @@ actor RemoteService {
                 username: r.profiles?.username,
                 content: r.content,
                 imageURL: r.imageUrl,
-                createdAt: r.createdAt
+                createdAt: r.createdAt,
+                kind: MessageKind(rawValue: r.messageType ?? "text") ?? .text,
+                payload: r.payload
             ))
             if let list = r.leagueMessageReactions, !list.isEmpty {
                 reactions[mid] = list.map {
@@ -2035,8 +2064,17 @@ actor RemoteService {
                     )
                 }
             }
+            if let list = r.messageResponses, !list.isEmpty {
+                responses[mid] = list.map {
+                    MessageResponse(
+                        messageID: mid,
+                        userID: $0.userId.uuidString,
+                        choice: $0.choice
+                    )
+                }
+            }
         }
-        return LeagueChatLoad(messages: messages, reactions: reactions)
+        return LeagueChatLoad(messages: messages, reactions: reactions, responses: responses)
     }
 
     @discardableResult
@@ -2091,6 +2129,73 @@ actor RemoteService {
         _ = try await client.from("league_messages")
             .delete()
             .eq("id", value: mid)
+            .execute()
+    }
+
+    // Posts a structured card (poll / pick'em / trivia / trade block). Content
+    // is empty — the card's data lives in the jsonb payload.
+    @discardableResult
+    func sendStructuredMessage(
+        leagueID: String, userID: String, kind: MessageKind, payload: ChatPayload
+    ) async throws -> LeagueMessage {
+        guard let lid = UUID(uuidString: leagueID),
+              let uid = UUID(uuidString: userID) else {
+            throw RemoteError.invalidUserID
+        }
+        guard kind != .text else { throw RemoteError.emptyMessage }
+        struct Insert: Encodable {
+            let league_id: UUID
+            let user_id: UUID
+            let content: String
+            let message_type: String
+            let payload: AnyJSON
+        }
+        struct Row: Decodable {
+            let id: UUID; let leagueId: UUID; let userId: UUID
+            let content: String; let createdAt: Date
+            enum CodingKeys: String, CodingKey {
+                case id, content
+                case leagueId  = "league_id"
+                case userId    = "user_id"
+                case createdAt = "created_at"
+            }
+        }
+        let row: Row = try await client.from("league_messages")
+            .insert(Insert(
+                league_id: lid, user_id: uid, content: "",
+                message_type: kind.rawValue,
+                payload: chatPayloadAsAnyJSON(payload)
+            ))
+            .select()
+            .single()
+            .execute().value
+        let profile = try? await fetchProfile(userID: uid)
+        return LeagueMessage(
+            id: row.id.uuidString, leagueID: row.leagueId.uuidString,
+            userID: row.userId.uuidString, username: profile?.username,
+            content: row.content, imageURL: nil, createdAt: row.createdAt,
+            kind: kind, payload: payload
+        )
+    }
+
+    // Records (or changes) the caller's response to a structured message.
+    // Upserts on the (message_id, user_id) primary key so re-voting replaces
+    // the previous choice.
+    func respond(messageID: String, userID: String, choice: Int) async throws {
+        guard let mid = UUID(uuidString: messageID),
+              let uid = UUID(uuidString: userID) else {
+            throw RemoteError.invalidUserID
+        }
+        struct Upsert: Encodable {
+            let message_id: UUID
+            let user_id: UUID
+            let choice: Int
+        }
+        _ = try await client.from("message_responses")
+            .upsert(
+                Upsert(message_id: mid, user_id: uid, choice: choice),
+                onConflict: "message_id,user_id"
+            )
             .execute()
     }
 

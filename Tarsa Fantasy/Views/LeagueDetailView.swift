@@ -35,26 +35,22 @@ struct LeagueDetailView: View {
     var body: some View {
         ZStack {
             FFColor.bg.ignoresSafeArea()
-            VStack(spacing: 0) {
-                LeagueSwitcherBar()
-                if let league {
-                    ScrollView {
-                        VStack(spacing: FFSpace.l) {
-                            simulationContent(league)
-                        }
-                        .padding(.horizontal, FFSpace.l)
-                        .padding(.top, FFSpace.s)
-                        .padding(.bottom, 40)
+            if let league {
+                ScrollView {
+                    VStack(spacing: FFSpace.l) {
+                        simulationContent(league)
                     }
-                } else {
-                    Spacer()
-                    ProgressView().tint(FFColor.accent)
-                    Spacer()
+                    .padding(.horizontal, FFSpace.l)
+                    .padding(.top, FFSpace.s)
+                    .padding(.bottom, 40)
                 }
+            } else {
+                ProgressView().tint(FFColor.accent)
             }
         }
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .leagueSwitcher()
         .toolbarBackground(FFColor.bg, for: .navigationBar)
         .toolbar {
             if let lg = league {
