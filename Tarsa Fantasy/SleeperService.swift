@@ -186,7 +186,8 @@ actor SleeperService {
         var seen: Set<String> = []
         var players: [ImportedPlayer] = []
         for r in rosters {
-            for pid in (r.players ?? []) + (r.starters ?? []) + (r.reserve ?? []) + (r.taxi ?? []) {
+            let rosterIDs: [String] = (r.players ?? []) + (r.starters ?? []) + (r.reserve ?? []) + (r.taxi ?? [])
+            for pid in rosterIDs {
                 guard pid != "0", seen.insert(pid).inserted else { continue }
                 players.append(resolve(pid, index))
             }

@@ -333,7 +333,6 @@ struct PlayerDetailView: View {
 
     // MARK: - Ranks card (team off vs next opponent def, from MFL)
 
-    @ViewBuilder
     private func ranksCard(for p: Player) -> Self.RanksCardView? {
         let own = app.teamRanks[p.team]
         let oppTeam = nextOpponentTeam(for: p)
