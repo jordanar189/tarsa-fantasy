@@ -38,6 +38,7 @@ struct PlayerDetailView: View {
     @State private var careerSeasons: [Fantasy.CareerSeasonLine] = []
     @State private var careerLoading = false
     @State private var careerLoadedPlayerID: String? = nil
+    @State private var careerLoadToken = 0
 
     private var player: Player? { app.displaySelectedPlayers()[playerID] }
     private var isProjected: Bool { app.isProjectedSeason(app.selectedSeason) }
@@ -141,21 +142,30 @@ struct PlayerDetailView: View {
                         playerID: playerID, season: app.selectedSeason, scoring: scoring
                     )
                 }
-                if careerLoadedPlayerID == playerID, let player {
-                    Task { await loadCareer(for: player) }
+                if careerLoadedPlayerID == playerID {
+                    if section == .career, let player {
+                        Task { await loadCareer(for: player) }
+                    } else {
+                        // Loaded under the old scoring; drop it so the tab
+                        // reloads with the new scoring when next opened.
+                        careerLoadedPlayerID = nil
+                    }
                 }
             }
         }
     }
 
     private func loadCareer(for p: Player) async {
+        careerLoadToken &+= 1
+        let token = careerLoadToken
         careerLoading = true
-        defer { careerLoading = false }
         let result = await app.careerSeasons(playerID: p.id, scoring: scoring)
-        // The presented player may have changed while we awaited the load.
-        guard p.id == playerID else { return }
+        // Ignore a result a newer request (scoring/section change) superseded —
+        // otherwise a slow PPR load could overwrite a fresher Standard one.
+        guard token == careerLoadToken else { return }
         careerSeasons = result
         careerLoadedPlayerID = p.id
+        careerLoading = false
     }
 
     // MARK: - Header
@@ -1020,9 +1030,11 @@ struct PlayerDetailView: View {
 
     private func careerSummaryCard(for p: Player) -> some View {
         let totalGP  = careerSeasons.reduce(0) { $0 + $1.gamesPlayed }
-        let totalPts = careerSeasons.reduce(0.0) { $0 + $1.points }
-        let ppg = totalGP > 0 ? totalPts / Double(totalGP) : 0
         let agg = Fantasy.combinedTotals(careerSeasons.map(\.totals))
+        // Derive from the exact aggregate, not the per-season rounded points,
+        // so the header matches the stat grid over a long career.
+        let totalPts = Fantasy.round2(agg.points(scoring: scoring))
+        let ppg = totalGP > 0 ? Fantasy.round2(totalPts / Double(totalGP)) : 0
         let bestLine = careerSeasons
             .filter { $0.positionRank != nil }
             .min { $0.positionRank!.rank < $1.positionRank!.rank }
@@ -1031,10 +1043,10 @@ struct PlayerDetailView: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("CAREER").ffEyebrow(color: FFColor.accent)
-                    Text(Fantasy.round2(totalPts).fpString)
+                    Text(totalPts.fpString)
                         .font(.ffStatLarge)
                         .foregroundStyle(FFColor.textPrimary)
-                    Text("\(careerSeasons.count) seasons · \(totalGP) games · \(Fantasy.round2(ppg).fpString)/g")
+                    Text("\(careerSeasons.count) seasons · \(totalGP) games · \(ppg.fpString)/g")
                         .font(.ffCaption)
                         .foregroundStyle(FFColor.textTertiary)
                 }
@@ -1143,9 +1155,10 @@ struct PlayerDetailView: View {
                 ("TGT",     t.targets.statString),
                 ("REC YD",  t.receivingYards.statString),
                 ("REC TD",  t.receivingTDs.statString),
+            ] + (t.carries > 0 ? [
                 ("RUSH YD", t.rushingYards.statString),
                 ("RUSH TD", t.rushingTDs.statString),
-            ]
+            ] : [])
         default:
             return []
         }
