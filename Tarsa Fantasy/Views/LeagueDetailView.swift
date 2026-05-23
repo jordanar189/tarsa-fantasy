@@ -291,9 +291,8 @@ struct LeagueDetailView: View {
                     showingDraftRoom = true
                 } label: {
                     Text(draft.status == .live ? "Enter draft room" : "Open draft room")
-                        .ffPrimaryButton()
                 }
-                .buttonStyle(.plain)
+                .ffPrimaryButton()
             }
         }
         .ffCard()

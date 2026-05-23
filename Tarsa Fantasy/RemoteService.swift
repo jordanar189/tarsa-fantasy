@@ -2485,6 +2485,80 @@ actor RemoteService {
         return true
     }
 
+    // Discussion thread for a single feedback item, oldest first. RLS limits
+    // reads to the feedback author + admins, so a non-privileged caller gets
+    // an empty list rather than someone else's thread.
+    func feedbackComments(feedbackID: String) async -> [FeedbackComment] {
+        guard let fid = UUID(uuidString: feedbackID) else { return [] }
+        struct Row: Decodable {
+            let id: UUID; let userId: UUID; let content: String; let createdAt: Date
+            enum CodingKeys: String, CodingKey {
+                case id, content
+                case userId    = "user_id"
+                case createdAt = "created_at"
+            }
+        }
+        let rows: [Row] = (try? await client.from("feedback_comments")
+            .select("id, user_id, content, created_at")
+            .eq("feedback_id", value: fid)
+            .order("created_at", ascending: true)
+            .execute().value) ?? []
+        let names = await usernames(forIDs: Set(rows.map(\.userId)))
+        return rows.map { r in
+            FeedbackComment(
+                id: r.id.uuidString, feedbackID: feedbackID,
+                userID: r.userId.uuidString, username: names[r.userId] ?? "Unknown",
+                content: r.content, createdAt: r.createdAt
+            )
+        }
+    }
+
+    @discardableResult
+    func addFeedbackComment(
+        feedbackID: String, userID: String, content: String
+    ) async throws -> FeedbackComment {
+        guard let fid = UUID(uuidString: feedbackID),
+              let uid = UUID(uuidString: userID) else { throw RemoteError.invalidUserID }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw RemoteError.emptyMessage }
+        struct Insert: Encodable {
+            let feedback_id: UUID
+            let user_id: UUID
+            let content: String
+        }
+        struct Row: Decodable {
+            let id: UUID; let userId: UUID; let content: String; let createdAt: Date
+            enum CodingKeys: String, CodingKey {
+                case id, content
+                case userId    = "user_id"
+                case createdAt = "created_at"
+            }
+        }
+        let row: Row = try await client.from("feedback_comments")
+            .insert(Insert(feedback_id: fid, user_id: uid, content: trimmed))
+            .select("id, user_id, content, created_at")
+            .single()
+            .execute().value
+        let names = await usernames(forIDs: [row.userId])
+        return FeedbackComment(
+            id: row.id.uuidString, feedbackID: feedbackID,
+            userID: row.userId.uuidString, username: names[row.userId] ?? "You",
+            content: row.content, createdAt: row.createdAt
+        )
+    }
+
+    // Admin-only grant/revoke of the admin flag on another profile. The RPC
+    // re-checks the caller is an admin server-side.
+    @discardableResult
+    func setAdminRole(userID: String, isAdmin: Bool) async throws -> Bool {
+        guard let uid = UUID(uuidString: userID) else { throw RemoteError.invalidUserID }
+        struct Args: Encodable { let p_user: UUID; let p_is_admin: Bool }
+        let row: ProfileRow = try await client
+            .rpc("set_admin_role", params: Args(p_user: uid, p_is_admin: isAdmin))
+            .execute().value
+        return row.isAdmin
+    }
+
     // MARK: - Friendships
 
     private struct FriendshipRow: Decodable {

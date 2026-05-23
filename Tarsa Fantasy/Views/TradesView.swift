@@ -92,9 +92,8 @@ struct TradesView: View {
                         .font(.system(size: 14, weight: .semibold))
                     Text("Propose a trade")
                 }
-                .ffPrimaryButton(disabled: !canPropose)
             }
-            .buttonStyle(.plain)
+            .ffPrimaryButton(disabled: !canPropose)
             .disabled(!canPropose)
             if !canPropose, let deadline = league.tradeSettings.deadline, deadline < Date() {
                 Text("Trade deadline passed \(deadline.shortRelative).")

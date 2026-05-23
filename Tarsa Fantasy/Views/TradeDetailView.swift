@@ -259,41 +259,41 @@ struct TradeDetailView: View {
         if isRecipient && trade.status == .pending {
             VStack(spacing: FFSpace.s) {
                 Button { Task { await act { try await app.acceptTrade(trade.id) } } } label: {
-                    Text("Accept").ffPrimaryButton()
-                }.buttonStyle(.plain).disabled(saving)
+                    Text("Accept")
+                }.ffPrimaryButton().disabled(saving)
                 HStack(spacing: FFSpace.s) {
                     Button { Task { await act { try await app.rejectTrade(trade.id) } } } label: {
-                        Text("Reject").ffSecondaryButton()
-                    }.buttonStyle(.plain).disabled(saving)
+                        Text("Reject")
+                    }.ffSecondaryButton().disabled(saving)
                     Button { onCounter(trade) } label: {
-                        Text("Counter").ffSecondaryButton()
-                    }.buttonStyle(.plain).disabled(saving)
+                        Text("Counter")
+                    }.ffSecondaryButton().disabled(saving)
                 }
             }
         }
         if isProposer && trade.status == .pending {
             Button { Task { await act { try await app.cancelTrade(trade.id) } } } label: {
-                Text("Cancel trade").ffSecondaryButton()
-            }.buttonStyle(.plain).disabled(saving)
+                Text("Cancel trade")
+            }.ffSecondaryButton().disabled(saving)
         }
         if isCommish && trade.status == .pendingApproval {
             HStack(spacing: FFSpace.s) {
                 Button { Task { await commishAct(approve: true) } } label: {
-                    Text("Approve").ffPrimaryButton()
-                }.buttonStyle(.plain).disabled(saving)
+                    Text("Approve")
+                }.ffPrimaryButton().disabled(saving)
                 Button { Task { await commishAct(approve: false) } } label: {
-                    Text("Reject").ffSecondaryButton()
-                }.buttonStyle(.plain).disabled(saving)
+                    Text("Reject")
+                }.ffSecondaryButton().disabled(saving)
             }
         }
         if canVote {
             HStack(spacing: FFSpace.s) {
                 Button { Task { await voteAct("approve") } } label: {
-                    Text("Vote approve").ffSecondaryButton()
-                }.buttonStyle(.plain).disabled(saving)
+                    Text("Vote approve")
+                }.ffSecondaryButton().disabled(saving)
                 Button { Task { await voteAct("veto") } } label: {
-                    Text("Vote veto").ffPrimaryButton()
-                }.buttonStyle(.plain).disabled(saving)
+                    Text("Vote veto")
+                }.ffPrimaryButton().disabled(saving)
             }
         }
     }

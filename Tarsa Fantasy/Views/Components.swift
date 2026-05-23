@@ -610,3 +610,127 @@ extension String {
         return letters.joined().uppercased()
     }
 }
+
+// MARK: - Full-screen image viewer
+
+// Identifies a set of images to present full-screen, starting at `index`.
+// Use as a `.fullScreenCover(item:)` payload.
+struct ImageGallery: Identifiable {
+    let id = UUID()
+    let urls: [String]
+    let index: Int
+}
+
+// Full-screen, swipeable, pinch-to-zoom image viewer over a black backdrop.
+// Paging is enabled when more than one image is supplied.
+struct FullScreenImageViewer: View {
+    let urls: [String]
+    var startIndex: Int = 0
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selection: Int
+
+    init(urls: [String], startIndex: Int = 0) {
+        self.urls = urls
+        self.startIndex = startIndex
+        _selection = State(initialValue: max(0, min(startIndex, urls.count - 1)))
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+
+            TabView(selection: $selection) {
+                ForEach(Array(urls.enumerated()), id: \.offset) { idx, urlStr in
+                    ZoomableImage(urlString: urlStr)
+                        .tag(idx)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: urls.count > 1 ? .automatic : .never))
+            .ignoresSafeArea()
+
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(12)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .padding(.top, FFSpace.l)
+            .padding(.trailing, FFSpace.l)
+        }
+    }
+}
+
+// A single image with pinch-to-zoom, drag-to-pan (while zoomed), and
+// double-tap to toggle zoom. Reset back to fit when zoomed all the way out.
+private struct ZoomableImage: View {
+    let urlString: String
+
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    private let maxScale: CGFloat = 5
+
+    var body: some View {
+        GeometryReader { geo in
+            AsyncImage(url: URL(string: urlString)) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFit()
+                case .empty:
+                    ZStack { Color.clear; ProgressView().tint(.white) }
+                default:
+                    Image(systemName: "photo.badge.exclamationmark")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .scaleEffect(scale)
+            .offset(offset)
+            .gesture(magnify)
+            .simultaneousGesture(pan)
+            .onTapGesture(count: 2) { toggleZoom() }
+        }
+    }
+
+    private var magnify: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                scale = min(max(lastScale * value.magnification, 1), maxScale)
+            }
+            .onEnded { _ in
+                lastScale = scale
+                if scale <= 1 {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        offset = .zero; lastOffset = .zero
+                    }
+                }
+            }
+    }
+
+    private var pan: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                guard scale > 1 else { return }
+                offset = CGSize(
+                    width: lastOffset.width + value.translation.width,
+                    height: lastOffset.height + value.translation.height
+                )
+            }
+            .onEnded { _ in lastOffset = offset }
+    }
+
+    private func toggleZoom() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            if scale > 1 {
+                scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero
+            } else {
+                scale = 2.5; lastScale = 2.5
+            }
+        }
+    }
+}
