@@ -364,6 +364,7 @@ struct ProfileView: View {
         defer { testerWorking = false }
         do {
             _ = try await app.setTesterRole(userID: userID, isTester: newValue)
+            error = nil
             // Re-fetch so the toggle reflects server truth.
             profile = await app.profile(userID: userID)
         } catch {
@@ -376,6 +377,7 @@ struct ProfileView: View {
         defer { adminWorking = false }
         do {
             _ = try await app.setAdminRole(userID: userID, isAdmin: newValue)
+            error = nil
             // Re-fetch so the toggle reflects server truth.
             profile = await app.profile(userID: userID)
         } catch {
