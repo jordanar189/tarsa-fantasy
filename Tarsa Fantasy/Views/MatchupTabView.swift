@@ -468,13 +468,13 @@ struct MatchupTabView: View {
                         .foregroundStyle(FFColor.positionTint(e.slot.label)).frame(width: 40, alignment: .leading)
                     Text(e.playerID.isEmpty ? "Empty" : displayName(e))
                         .font(.ffBody).foregroundStyle(e.playerID.isEmpty ? FFColor.textTertiary : FFColor.textPrimary)
-                        .playerLink(e.playerID)
                     Spacer()
                     Text(context.actualPoints(e.playerID) != nil ? e.points.fpString
                          : (context.projectedPoints(e.playerID).map { $0.fpString } ?? "—"))
                         .font(.ffStatSmall).foregroundStyle(FFColor.textPrimary)
                 }
                 .padding(.horizontal, FFSpace.m).padding(.vertical, FFSpace.s).ffHairlineBottom()
+                .playerLink(e.playerID)
             }
         }
         .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))

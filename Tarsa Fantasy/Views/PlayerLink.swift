@@ -16,14 +16,17 @@ struct PlayerLinkModifier: ViewModifier {
     let playerID: String?
 
     func body(content: Content) -> some View {
-        if let playerID, !playerID.isEmpty {
-            Button {
+        // Single, stable view type regardless of playerID so SwiftUI keeps the
+        // wrapped content's identity when an empty slot fills in (no layout
+        // flash). A nil/empty id makes the tap a no-op.
+        let active = !(playerID ?? "").isEmpty
+        return content
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard active, let playerID else { return }
                 if let presenter { presenter(playerID) } else { app.showPlayer(playerID) }
-            } label: { content }
-                .buttonStyle(.plain)
-        } else {
-            content
-        }
+            }
+            .accessibilityAddTraits(active ? .isButton : [])
     }
 }
 
