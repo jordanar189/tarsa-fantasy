@@ -160,14 +160,14 @@ struct ImportedSeason: Codable, Hashable, Identifiable {
     func matchupPairs(week: Int) -> [(a: ImportedMatchup, b: ImportedMatchup?)] {
         let rows = matchups.filter { $0.week == week }
         let grouped = Dictionary(grouping: rows.filter { $0.matchupID != nil }, by: { $0.matchupID! })
-        var pairs: [(ImportedMatchup, ImportedMatchup?)] = []
+        var pairs: [(a: ImportedMatchup, b: ImportedMatchup?)] = []
         for key in grouped.keys.sorted() {
             let sides = grouped[key]!.sorted { $0.rosterID < $1.rosterID }
-            pairs.append((sides[0], sides.count > 1 ? sides[1] : nil))
+            pairs.append((a: sides[0], b: sides.count > 1 ? sides[1] : nil))
         }
         // Byes / unpaired rows.
         for row in rows where row.matchupID == nil {
-            pairs.append((row, nil))
+            pairs.append((a: row, b: nil))
         }
         return pairs
     }
