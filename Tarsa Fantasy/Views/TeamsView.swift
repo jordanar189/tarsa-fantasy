@@ -4,7 +4,6 @@ import SwiftUI
 // open its profile.
 struct TeamsView: View {
     @Environment(AppState.self) private var app
-    @Binding var selectedPlayerID: String?
 
     @State private var teams: [NFLTeamMeta] = []
     @State private var selectedTeam: NFLTeamMeta? = nil
@@ -54,7 +53,7 @@ struct TeamsView: View {
         }
         .task { teams = await app.nflTeams() }
         .sheet(item: $selectedTeam) { team in
-            TeamProfileView(team: team, selectedPlayerID: $selectedPlayerID)
+            TeamProfileView(team: team)
         }
     }
 

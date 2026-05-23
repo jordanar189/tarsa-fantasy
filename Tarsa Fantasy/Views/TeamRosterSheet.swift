@@ -35,6 +35,7 @@ struct TeamRosterSheet: View {
                 }
             }
         }
+        .hostsPlayerProfileSheet()
     }
 
     private var rosterCard: some View {
@@ -163,6 +164,7 @@ struct TeamRosterSheet: View {
                         Text(summary.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
                     }
                 }
+                .playerLink(playerID)
                 Spacer()
                 Text(summary.points.fpString)
                     .font(.ffStatSmall)

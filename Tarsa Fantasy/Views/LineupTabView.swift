@@ -316,6 +316,7 @@ struct LineupTabView: View {
                     Text(name(pid, player)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                     contextLine(pid: pid, player: player)
                 }
+                .playerLink(pid)
             } else {
                 emptyDot
                 Text(pid).font(.ffBody).foregroundStyle(FFColor.textTertiary)
@@ -370,6 +371,7 @@ struct LineupTabView: View {
                         if let inj = context.injury(pid) { InjuryBadge(injury: inj) }
                     }
                 }
+                .playerLink(pid)
             } else {
                 emptyDot
                 Text(pid).font(.ffBody).foregroundStyle(FFColor.textTertiary)

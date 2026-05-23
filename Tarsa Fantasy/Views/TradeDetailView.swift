@@ -73,6 +73,7 @@ struct TradeDetailView: View {
             }
             .task(id: trade.id) { await reloadVotes() }
         }
+        .hostsPlayerProfileSheet()
     }
 
     private var statusBanner: some View {
@@ -195,6 +196,7 @@ struct TradeDetailView: View {
                                 }
                             }
                         }
+                        .playerLink(pid)
                         Spacer()
                         Text(summary?.points.fpString ?? "—")
                             .font(.ffStatSmall)

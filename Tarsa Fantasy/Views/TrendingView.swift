@@ -5,7 +5,6 @@ import SwiftUI
 // from the last 3 weeks of cached player_games.
 struct TrendingView: View {
     @Environment(AppState.self) private var app
-    @Binding var selectedPlayerID: String?
 
     enum Tab: String, CaseIterable, Identifiable, Hashable {
         case added   = "Added"
@@ -70,7 +69,7 @@ struct TrendingView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { idx, t in
                         Button {
-                            selectedPlayerID = t.playerID
+                            app.showPlayer(t.playerID)
                         } label: {
                             trendingRow(rank: idx + 1, item: t, players: players)
                         }
@@ -162,7 +161,7 @@ struct TrendingView: View {
                         .ffEyebrow().padding(.leading, FFSpace.s)
                     VStack(spacing: 0) {
                         ForEach(Array(rows.enumerated()), id: \.element.id) { idx, e in
-                            Button { selectedPlayerID = e.player.id } label: {
+                            Button { app.showPlayer(e.player.id) } label: {
                                 streakRow(rank: idx + 1, entry: e, top: top)
                             }
                             .buttonStyle(.plain)

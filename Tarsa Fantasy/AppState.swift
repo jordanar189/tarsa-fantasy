@@ -8,6 +8,16 @@ final class AppState {
     // Tab selection
     var tab: AppTab = .nfl
 
+    // Globally-presented player profile. Set via showPlayer(_:) so tapping a
+    // player name anywhere in the app opens PlayerDetailView, without threading
+    // a binding down through every view. ContentView hosts the sheet.
+    var presentedPlayerID: String? = nil
+
+    func showPlayer(_ playerID: String?) {
+        guard let playerID, !playerID.isEmpty else { return }
+        presentedPlayerID = playerID
+    }
+
     // The league currently in focus. nil = show the league overview/landing
     // screen; non-nil = the tabbed (NFL + League) experience for this league.
     // selectedLeague holds the fully-loaded League so league-specific numbers

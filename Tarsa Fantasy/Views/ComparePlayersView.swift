@@ -55,6 +55,7 @@ struct ComparePlayersView: View {
                 snapCounts  = await app.snapCounts(season: app.selectedSeason)
             }
         }
+        .hostsPlayerProfileSheet()
     }
 
     private var headers: some View {
@@ -75,6 +76,7 @@ struct ComparePlayersView: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
+                .playerLink(p.id)
             }
         }
     }

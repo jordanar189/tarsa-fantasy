@@ -7,7 +7,6 @@ struct TeamProfileView: View {
     @Environment(AppState.self) private var app
     @Environment(\.dismiss) private var dismiss
     let team: NFLTeamMeta
-    @Binding var selectedPlayerID: String?
 
     enum Section: String, CaseIterable, Identifiable, Hashable {
         case roster = "Roster"
@@ -73,6 +72,7 @@ struct TeamProfileView: View {
                 schedules = all.filter { $0.home == team.abbr || $0.away == team.abbr }
             }
         }
+        .hostsPlayerProfileSheet()
     }
 
     private var header: some View {
@@ -116,8 +116,7 @@ struct TeamProfileView: View {
                                 Fantasy.seasonTotals($0.games).points(scoring: app.activeScoring) >
                                 Fantasy.seasonTotals($1.games).points(scoring: app.activeScoring)
                             }) { p in
-                                Button { selectedPlayerID = p.id } label: { rosterRow(p) }
-                                    .buttonStyle(.plain)
+                                rosterRow(p).playerLink(p.id)
                             }
                         }
                         .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
@@ -235,30 +234,28 @@ struct TeamProfileView: View {
             Text("TOP 10 FANTASY PRODUCERS").ffEyebrow().padding(.leading, FFSpace.s)
             VStack(spacing: 0) {
                 ForEach(Array(ranked.enumerated()), id: \.element.id) { idx, p in
-                    Button { selectedPlayerID = p.id } label: {
-                        HStack(spacing: FFSpace.m) {
-                            Text("\(idx + 1)")
-                                .font(.ffStatSmall)
-                                .foregroundStyle(idx < 3 ? FFColor.accent : FFColor.textTertiary)
-                                .frame(width: 26, alignment: .leading)
-                            PlayerAvatar(url: p.headshotURL, fallback: p.name.initialsFromName, size: 36)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(p.name).font(.ffBody).foregroundStyle(FFColor.textPrimary)
-                                HStack(spacing: 6) {
-                                    PositionPill(position: p.position)
-                                    Text("\(Fantasy.seasonTotals(p.games).gamesPlayed) GP")
-                                        .font(.ffCaption).foregroundStyle(FFColor.textTertiary)
-                                }
+                    HStack(spacing: FFSpace.m) {
+                        Text("\(idx + 1)")
+                            .font(.ffStatSmall)
+                            .foregroundStyle(idx < 3 ? FFColor.accent : FFColor.textTertiary)
+                            .frame(width: 26, alignment: .leading)
+                        PlayerAvatar(url: p.headshotURL, fallback: p.name.initialsFromName, size: 36)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(p.name).font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                            HStack(spacing: 6) {
+                                PositionPill(position: p.position)
+                                Text("\(Fantasy.seasonTotals(p.games).gamesPlayed) GP")
+                                    .font(.ffCaption).foregroundStyle(FFColor.textTertiary)
                             }
-                            Spacer()
-                            Text(Fantasy.summary(p, scoring: app.activeScoring).points.fpString)
-                                .font(.ffStatMedium)
-                                .foregroundStyle(FFColor.textPrimary)
                         }
-                        .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.s)
-                        .ffHairlineBottom()
+                        Spacer()
+                        Text(Fantasy.summary(p, scoring: app.activeScoring).points.fpString)
+                            .font(.ffStatMedium)
+                            .foregroundStyle(FFColor.textPrimary)
                     }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.s)
+                    .ffHairlineBottom()
+                    .playerLink(p.id)
                 }
             }
             .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))

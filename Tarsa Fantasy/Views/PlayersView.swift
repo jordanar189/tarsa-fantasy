@@ -1,10 +1,9 @@
 import SwiftUI
 
-// Embedded inside NFLHubView's "Players" sub-tab. Selection bubbles up via
-// the binding so the detail sheet is presented by the parent.
+// Embedded inside NFLHubView's "Players" sub-tab. Tapping a row opens the
+// player profile via the app-wide presenter (app.showPlayer).
 struct PlayersBrowser: View {
     @Environment(AppState.self) private var app
-    @Binding var selectedPlayerID: String?
     @State private var query: String = ""
     @State private var position: Position = .all
     @State private var availability: Availability = .all
@@ -102,7 +101,7 @@ struct PlayersBrowser: View {
                         if comparing {
                             toggleCompare(row.id)
                         } else {
-                            selectedPlayerID = row.id
+                            app.showPlayer(row.id)
                         }
                     } label: {
                         PlayerRow(
