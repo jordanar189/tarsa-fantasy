@@ -189,33 +189,18 @@ extension View {
     // Primary call-to-action button. Full width, brand gradient fill, pill
     // shape. White foreground reads cleanly on the cyan→violet gradient in
     // both modes — don't swap it for FFColor.bg or it'll vanish in light.
+    //
+    // Implemented as a ButtonStyle so the fill + hit shape are applied to the
+    // button's *label* (inside the button), which is the only way the whole
+    // pill becomes tappable. Apply directly to a Button.
     func ffPrimaryButton(disabled: Bool = false) -> some View {
-        self
-            .font(.ffHeadline)
-            .foregroundStyle(disabled ? FFColor.textTertiary : .white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(
-                RoundedRectangle(cornerRadius: FFRadius.s)
-                    .fill(disabled
-                          ? AnyShapeStyle(FFColor.borderStrong)
-                          : AnyShapeStyle(FFGradient.brand))
-            )
-            .shadow(color: disabled ? .clear : FFBrand.violet.opacity(0.30),
-                    radius: 14, y: 6)
+        buttonStyle(FFPrimaryButtonStyle(disabled: disabled))
     }
 
-    // Secondary button — outlined, smaller emphasis.
+    // Secondary button — outlined, smaller emphasis. Also a ButtonStyle so the
+    // empty outlined fill still gets a full-bleed hit target.
     func ffSecondaryButton() -> some View {
-        self
-            .font(.ffHeadline)
-            .foregroundStyle(FFColor.textPrimary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .overlay(
-                RoundedRectangle(cornerRadius: FFRadius.s)
-                    .strokeBorder(FFColor.border, lineWidth: 1)
-            )
+        buttonStyle(FFSecondaryButtonStyle())
     }
 
     // Small uppercased label — section headers, eyebrows, badges.
@@ -230,6 +215,51 @@ extension View {
     // Container background — applies the app's base color to a screen.
     func ffScreen() -> some View {
         self.background(FFColor.bg.ignoresSafeArea())
+    }
+}
+
+// MARK: - Button styles
+
+// The styling lives in ButtonStyle.makeBody (applied to configuration.label)
+// rather than as a plain view modifier so the full pill — padding, fill, and
+// border included — is the tappable region. A bare `.frame(maxWidth:.infinity)`
+// modifier on a Button only stretches the frame; the hit target stays the
+// label's intrinsic size unless contentShape is set *inside* the button.
+struct FFPrimaryButtonStyle: ButtonStyle {
+    var disabled: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.ffHeadline)
+            .foregroundStyle(disabled ? FFColor.textTertiary : .white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: FFRadius.s)
+                    .fill(disabled
+                          ? AnyShapeStyle(FFColor.borderStrong)
+                          : AnyShapeStyle(FFGradient.brand))
+            )
+            .contentShape(Rectangle())
+            .shadow(color: disabled ? .clear : FFBrand.violet.opacity(0.30),
+                    radius: 14, y: 6)
+            .opacity(configuration.isPressed ? 0.85 : 1)
+    }
+}
+
+struct FFSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.ffHeadline)
+            .foregroundStyle(FFColor.textPrimary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .contentShape(Rectangle())
+            .overlay(
+                RoundedRectangle(cornerRadius: FFRadius.s)
+                    .strokeBorder(FFColor.border, lineWidth: 1)
+            )
+            .opacity(configuration.isPressed ? 0.6 : 1)
     }
 }
 

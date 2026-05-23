@@ -230,9 +230,8 @@ struct DraftRoomView: View {
                         }
                     } label: {
                         Text("Start draft now")
-                            .ffPrimaryButton()
                     }
-                    .buttonStyle(.plain)
+                    .ffPrimaryButton()
                     .padding(.top, FFSpace.s)
                 } else if isCommish {
                     Text("You'll be able to start the draft once the scheduled time arrives.")
@@ -299,9 +298,9 @@ struct DraftRoomView: View {
                         } catch { self.error = error.localizedDescription }
                     }
                 } label: {
-                    Text("Resume").ffPrimaryButton()
+                    Text("Resume")
                 }
-                .buttonStyle(.plain)
+                .ffPrimaryButton()
                 .padding(.top, FFSpace.s)
             }
         }

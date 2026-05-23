@@ -1325,6 +1325,11 @@ final class AppState {
         try await remote.setTesterRole(userID: userID, isTester: isTester)
     }
 
+    @discardableResult
+    func setAdminRole(userID: String, isAdmin: Bool) async throws -> Bool {
+        try await remote.setAdminRole(userID: userID, isAdmin: isAdmin)
+    }
+
     func uploadFeedbackImage(data: Data, contentType: String) async throws -> String {
         guard let session else { throw AppError.notSignedIn }
         return try await remote.uploadFeedbackImage(
@@ -1340,14 +1345,29 @@ final class AppState {
         )
     }
 
+    // Review list. Server RLS returns every item to admins and only the
+    // caller's own items to non-admin testers, so the same call powers both
+    // the admin triage inbox and a tester's "my feedback" view.
     func feedbackInbox() async -> [FeedbackItem] {
-        guard isAdmin else { return [] }
+        guard canGiveFeedback else { return [] }
         return await remote.feedbackInbox()
     }
 
     @discardableResult
     func setFeedbackStatus(id: String, status: FeedbackStatus) async throws -> Bool {
         try await remote.setFeedbackStatus(id: id, status: status)
+    }
+
+    func feedbackComments(feedbackID: String) async -> [FeedbackComment] {
+        await remote.feedbackComments(feedbackID: feedbackID)
+    }
+
+    @discardableResult
+    func addFeedbackComment(feedbackID: String, content: String) async throws -> FeedbackComment {
+        guard let session else { throw AppError.notSignedIn }
+        return try await remote.addFeedbackComment(
+            feedbackID: feedbackID, userID: session.userID, content: content
+        )
     }
 
     // MARK: - Simulations

@@ -136,8 +136,8 @@ struct AuthGateView: View {
                         Text(mode.cta)
                     }
                 }
-                .ffPrimaryButton(disabled: submitDisabled)
             }
+            .ffPrimaryButton(disabled: submitDisabled)
             .disabled(submitDisabled)
         }
     }

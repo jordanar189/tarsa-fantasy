@@ -16,6 +16,7 @@ struct ProfileView: View {
     @State private var error: String? = nil
     @State private var openingThread: DMThread? = nil
     @State private var testerWorking: Bool = false
+    @State private var adminWorking: Bool = false
 
     private var isMe: Bool { userID == app.session?.userID }
 
@@ -91,35 +92,71 @@ struct ProfileView: View {
     @ViewBuilder
     private var adminTesterSection: some View {
         let isTester = profile?.isTester ?? false
+        let isAdminUser = profile?.isAdmin ?? false
         VStack(alignment: .leading, spacing: FFSpace.s) {
             HStack { Text("Admin").ffEyebrow(); Spacer() }
-            VStack(alignment: .leading, spacing: FFSpace.s) {
-                HStack(spacing: FFSpace.s) {
-                    Image(systemName: isTester ? "checkmark.seal.fill" : "seal")
-                        .foregroundStyle(isTester ? FFColor.positive : FFColor.textTertiary)
-                    Text(isTester ? "Tester" : "Not a tester")
-                        .font(.ffHeadline)
-                        .foregroundStyle(FFColor.textPrimary)
-                    Spacer()
-                }
-                Text("Testers see the in-app feedback button everywhere.")
-                    .font(.ffCaption)
-                    .foregroundStyle(FFColor.textSecondary)
-                Button {
-                    Task { await toggleTester(to: !isTester) }
-                } label: {
-                    if testerWorking {
-                        ProgressView().tint(FFColor.accent)
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        Label(
-                            isTester ? "Remove tester role" : "Make tester",
-                            systemImage: isTester ? "person.badge.minus" : "person.badge.plus"
-                        )
+            VStack(alignment: .leading, spacing: FFSpace.l) {
+                // Tester role
+                VStack(alignment: .leading, spacing: FFSpace.s) {
+                    HStack(spacing: FFSpace.s) {
+                        Image(systemName: isTester ? "checkmark.seal.fill" : "seal")
+                            .foregroundStyle(isTester ? FFColor.positive : FFColor.textTertiary)
+                        Text(isTester ? "Tester" : "Not a tester")
+                            .font(.ffHeadline)
+                            .foregroundStyle(FFColor.textPrimary)
+                        Spacer()
                     }
+                    Text("Testers see the in-app feedback button everywhere.")
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.textSecondary)
+                    Button {
+                        Task { await toggleTester(to: !isTester) }
+                    } label: {
+                        if testerWorking {
+                            ProgressView().tint(FFColor.accent)
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Label(
+                                isTester ? "Remove tester role" : "Make tester",
+                                systemImage: isTester ? "person.badge.minus" : "person.badge.plus"
+                            )
+                        }
+                    }
+                    .ffSecondaryButton()
+                    .disabled(testerWorking)
                 }
-                .ffSecondaryButton()
-                .disabled(testerWorking)
+
+                Divider().background(FFColor.border)
+
+                // Admin role
+                VStack(alignment: .leading, spacing: FFSpace.s) {
+                    HStack(spacing: FFSpace.s) {
+                        Image(systemName: isAdminUser ? "crown.fill" : "crown")
+                            .foregroundStyle(isAdminUser ? FFColor.warning : FFColor.textTertiary)
+                        Text(isAdminUser ? "Admin" : "Not an admin")
+                            .font(.ffHeadline)
+                            .foregroundStyle(FFColor.textPrimary)
+                        Spacer()
+                    }
+                    Text("Admins review all feedback and can grant roles to other users.")
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.textSecondary)
+                    Button {
+                        Task { await toggleAdmin(to: !isAdminUser) }
+                    } label: {
+                        if adminWorking {
+                            ProgressView().tint(FFColor.accent)
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Label(
+                                isAdminUser ? "Remove admin role" : "Make admin",
+                                systemImage: isAdminUser ? "person.badge.minus" : "crown.fill"
+                            )
+                        }
+                    }
+                    .ffSecondaryButton()
+                    .disabled(adminWorking)
+                }
             }
             .ffCard()
         }
@@ -327,6 +364,20 @@ struct ProfileView: View {
         defer { testerWorking = false }
         do {
             _ = try await app.setTesterRole(userID: userID, isTester: newValue)
+            error = nil
+            // Re-fetch so the toggle reflects server truth.
+            profile = await app.profile(userID: userID)
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func toggleAdmin(to newValue: Bool) async {
+        adminWorking = true
+        defer { adminWorking = false }
+        do {
+            _ = try await app.setAdminRole(userID: userID, isAdmin: newValue)
+            error = nil
             // Re-fetch so the toggle reflects server truth.
             profile = await app.profile(userID: userID)
         } catch {

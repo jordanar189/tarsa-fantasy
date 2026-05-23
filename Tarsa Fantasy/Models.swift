@@ -964,6 +964,17 @@ struct FeedbackItem: Identifiable, Hashable, Sendable {
     let createdAt: Date
 }
 
+// One message in a feedback item's discussion thread. Visible to the feedback
+// author and admins; posted by either side.
+struct FeedbackComment: Identifiable, Hashable, Sendable {
+    let id: String
+    let feedbackID: String
+    let userID: String
+    let username: String
+    let content: String
+    let createdAt: Date
+}
+
 // One row of the friendships table. Stored canonically (user_a < user_b),
 // but the FriendshipStatus helpers below project it into "the other user"
 // from the caller's perspective.

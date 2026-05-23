@@ -241,14 +241,12 @@ struct SimulationOverviewView: View {
             scoreboardSide(team: teamByID(m.home.teamID), name: m.home.name,
                            points: m.home.points, alignment: .leading,
                            winning: leader == m.home.teamID,
-                           losing: m.played && leader != nil && leader != m.home.teamID,
-                           played: m.played)
+                           losing: m.played && leader != nil && leader != m.home.teamID)
             Text("VS").ffEyebrow(color: FFColor.textTertiary)
             scoreboardSide(team: teamByID(m.away.teamID), name: m.away.name,
                            points: m.away.points, alignment: .trailing,
                            winning: leader == m.away.teamID,
-                           losing: m.played && leader != nil && leader != m.away.teamID,
-                           played: m.played)
+                           losing: m.played && leader != nil && leader != m.away.teamID)
         }
         .padding(.vertical, FFSpace.s)
         .ffHairlineBottom()
@@ -256,7 +254,7 @@ struct SimulationOverviewView: View {
 
     private func scoreboardSide(team: FantasyTeam?, name: String, points: Double,
                                 alignment: HorizontalAlignment, winning: Bool,
-                                losing: Bool = false, played: Bool) -> some View {
+                                losing: Bool = false) -> some View {
         let frameAlign: Alignment = (alignment == .leading) ? .leading : .trailing
         let label = team?.shortLabel ?? name
         return VStack(alignment: alignment, spacing: 4) {
@@ -267,7 +265,7 @@ struct SimulationOverviewView: View {
                     if alignment == .leading, let team { TeamCrestView(team: team, size: 22) }
                     Text(label)
                         .font(.ffBody)
-                        .foregroundStyle(winning ? FFColor.textPrimary : FFColor.textSecondary)
+                        .foregroundStyle(FFColor.textPrimary)
                         .lineLimit(1)
                         .multilineTextAlignment(alignment == .leading ? .leading : .trailing)
                     if alignment == .trailing, let team { TeamCrestView(team: team, size: 22) }
@@ -276,11 +274,12 @@ struct SimulationOverviewView: View {
             }
             .buttonStyle(.plain)
             .disabled(team == nil)
+            // Win/loss tints the score; an unplayed 0.0 stays primary (it's
+            // upcoming, not deactivated) rather than greyed out.
             Text(points.fpString)
                 .font(.ffStatMedium)
                 .foregroundStyle(winning ? FFColor.accent
-                                 : (losing ? FFColor.negative
-                                    : (played ? FFColor.textPrimary : FFColor.textTertiary)))
+                                 : (losing ? FFColor.negative : FFColor.textPrimary))
         }
         .frame(maxWidth: .infinity, alignment: frameAlign)
     }
@@ -294,7 +293,7 @@ struct SimulationOverviewView: View {
                 if let team { TeamCrestView(team: team, size: 22) }
                 Text(team?.shortLabel ?? bye.name)
                     .font(.ffBody)
-                    .foregroundStyle(FFColor.textSecondary)
+                    .foregroundStyle(FFColor.textPrimary)
                 Spacer()
                 Text("BYE")
                     .font(.ffMicro.bold())
