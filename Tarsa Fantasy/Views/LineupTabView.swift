@@ -544,10 +544,12 @@ struct LineupTabView: View {
 
     private func firstOpenSlot(for pid: String) -> Int? {
         guard let p = leaguePlayers[pid] else { return nil }
-        if let empty = slots.indices.first(where: { starters[$0].isEmpty && slots[$0].accepts(position: p.position) }) {
+        // `starters` is briefly empty before the async reload populates it, so
+        // never index it by a slot index without a bounds check.
+        if let empty = slots.indices.first(where: { $0 < starters.count && starters[$0].isEmpty && slots[$0].accepts(position: p.position) }) {
             return empty
         }
-        return slots.indices.first(where: { slots[$0].accepts(position: p.position) && !context.isLocked(starters[$0]) })
+        return slots.indices.first(where: { $0 < starters.count && slots[$0].accepts(position: p.position) && !context.isLocked(starters[$0]) })
     }
 
     private func setStarter(slot: Int, pid: String) {
