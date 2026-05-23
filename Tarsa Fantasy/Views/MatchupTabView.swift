@@ -474,6 +474,7 @@ struct MatchupTabView: View {
                         .font(.ffStatSmall).foregroundStyle(FFColor.textPrimary)
                 }
                 .padding(.horizontal, FFSpace.m).padding(.vertical, FFSpace.s).ffHairlineBottom()
+                .playerLink(e.playerID)
             }
         }
         .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))

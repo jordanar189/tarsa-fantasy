@@ -153,6 +153,7 @@ struct WaiversView: View {
                     }
                 }
             }
+            .playerLink(row.id)
             Spacer()
             Text(row.points.fpString)
                 .font(.ffStatSmall)
@@ -282,6 +283,7 @@ struct WaiversView: View {
                     }
                 }
             }
+            .playerLink(claim.addPlayerID)
             Spacer()
             Button {
                 Task {
@@ -320,6 +322,7 @@ struct WaiversView: View {
                         .foregroundStyle(FFColor.accent)
                 }
             }
+            .playerLink(d.playerID)
             Spacer()
             actionButton(label: "Claim", disabled: locked || myTeam == nil) {
                 guard let team = myTeam, let summary else { return }

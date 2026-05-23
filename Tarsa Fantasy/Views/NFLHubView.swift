@@ -15,7 +15,6 @@ struct NFLHubView: View {
     }
 
     @State private var subTab: SubTab = .players
-    @State private var selectedPlayerID: String? = nil
 
     var body: some View {
         NavigationStack {
@@ -30,10 +29,10 @@ struct NFLHubView: View {
                     .padding(.bottom, FFSpace.s)
                     Group {
                         switch subTab {
-                        case .games:    GameCenterView(selectedPlayerID: $selectedPlayerID)
-                        case .players:  PlayersBrowser(selectedPlayerID: $selectedPlayerID)
-                        case .teams:    TeamsView(selectedPlayerID: $selectedPlayerID)
-                        case .trending: TrendingView(selectedPlayerID: $selectedPlayerID)
+                        case .games:    GameCenterView()
+                        case .players:  PlayersBrowser()
+                        case .teams:    TeamsView()
+                        case .trending: TrendingView()
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -45,10 +44,6 @@ struct NFLHubView: View {
                 SeasonPickerToolbar()
             }
             .leagueSwitcher()
-            .sheet(item: $selectedPlayerID.asIdentifiable) { id in
-                PlayerDetailView(playerID: id.id)
-                    .presentationDetents([.large])
-            }
         }
     }
 

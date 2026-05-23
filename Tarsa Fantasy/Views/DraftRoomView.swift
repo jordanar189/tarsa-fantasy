@@ -421,6 +421,7 @@ struct DraftRoomView: View {
                     Text(row.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
                 }
             }
+            .playerLink(row.id)
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
                 if let a = adp[row.id] {
@@ -543,6 +544,7 @@ struct DraftRoomView: View {
                         }
                     }
                 }
+                .playerLink(playerID)
                 Spacer()
             } else {
                 Text(playerID).font(.ffBody).foregroundStyle(FFColor.textSecondary)
@@ -656,6 +658,7 @@ struct DraftRoomView: View {
             RoundedRectangle(cornerRadius: 6)
                 .strokeBorder(isCurrent ? FFColor.accent : FFColor.border, lineWidth: 1)
         )
+        .playerLink(player?.id)
     }
 
     // MARK: - Teams (opponent rosters)
@@ -742,6 +745,7 @@ struct DraftRoomView: View {
                         Text(player.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
                     }
                 }
+                .playerLink(player.id)
                 Spacer()
             } else {
                 Text(pick.playerID)
@@ -786,6 +790,7 @@ struct DraftRoomView: View {
                                     }
                                 }
                             }
+                            .playerLink(p.playerID)
                             Spacer()
                         }
                         .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.s)

@@ -460,6 +460,7 @@ struct SimulationOverviewView: View {
                     Text(p.uppercased()).ffEyebrow(color: FFColor.textTertiary)
                 }
             }
+            .playerLink(t.playerID)
             Spacer()
             Text(String(format: "+%.0f%%", t.adds))
                 .font(.ffStatSmall)
@@ -514,6 +515,7 @@ struct SimulationOverviewView: View {
                     }
                 }
             }
+            .playerLink(inj.playerID)
             Spacer()
             Text(inj.badge)
                 .font(.ffMicro.bold())

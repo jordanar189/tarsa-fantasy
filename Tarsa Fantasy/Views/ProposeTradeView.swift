@@ -22,6 +22,8 @@ struct ProposeTradeView: View {
     @State private var note: String = ""
     @State private var saving: Bool = false
     @State private var error: String? = nil
+    @State private var values: [String: Double] = [:]
+    @State private var valuationPlayers: [String: Player] = [:]
 
     init(league: League, fromTeam: FantasyTeam, counterOf: Trade?,
          onDone: @escaping (Trade?) -> Void) {
@@ -61,6 +63,7 @@ struct ProposeTradeView: View {
                         if recipientTeam != nil {
                             rosterSection(team: fromTeam, label: "YOU SEND", selected: $sendingPlayerIDs)
                             rosterSection(team: recipientTeam!, label: "YOU REQUEST", selected: $requestingPlayerIDs)
+                            balanceCard
                             noteField
                         }
                         if let error {
@@ -89,7 +92,30 @@ struct ProposeTradeView: View {
                     .disabled(!canSend || saving)
                 }
             }
+            .task {
+                await app.ensureProjectedSnapshot(season: league.season)
+                let snapshot = Fantasy.playersFor(league: league, snapshot: app.displayPlayers(season: league.season))
+                valuationPlayers = snapshot
+                values = Fantasy.tradeValues(
+                    players: snapshot, scoring: league.scoring,
+                    settings: league.scoringSettings, config: league.rosterConfig,
+                    teamCount: league.teams.count
+                )
+            }
         }
+    }
+
+    // Live fairness gauge. Each side is valued by what it *receives*: you get the
+    // requested players, they get the ones you send.
+    private var balanceCard: some View {
+        TradeBalanceView(
+            players: valuationPlayers,
+            values: values,
+            leftName: "You",
+            leftReceives: Array(requestingPlayerIDs),
+            rightName: recipientTeam?.name ?? "Them",
+            rightReceives: Array(sendingPlayerIDs)
+        )
     }
 
     private var recipientPicker: some View {

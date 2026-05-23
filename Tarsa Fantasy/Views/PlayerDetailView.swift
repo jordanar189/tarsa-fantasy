@@ -33,6 +33,7 @@ struct PlayerDetailView: View {
     @State private var teamTDs: [String: [Int: Double]] = [:]
     @State private var projection: PlayerProjection? = nil
     @State private var nicknameHistory: [NicknameHistoryEntry] = []
+    @State private var warByID: [String: Double] = [:]
 
     private var player: Player? { app.displaySelectedPlayers()[playerID] }
     private var isProjected: Bool { app.isProjectedSeason(app.selectedSeason) }
@@ -93,6 +94,12 @@ struct PlayerDetailView: View {
                 let players = app.displaySelectedPlayers()
                 teamTargets = Fantasy.teamTargetsPerWeek(players: players)
                 teamTDs     = Fantasy.teamTouchdownsPerWeek(players: players)
+                warByID = Fantasy.warByPlayer(
+                    players: players, scoring: scoring,
+                    settings: app.selectedLeague?.scoringSettings,
+                    config: app.selectedLeague?.rosterConfig ?? .default,
+                    teamCount: app.selectedLeague?.teams.count ?? 12
+                )
                 // Load DvP for the player's own position only — that's the
                 // only matchup we render.
                 if let pos = player?.position.uppercased() {
@@ -106,8 +113,13 @@ struct PlayerDetailView: View {
             }
             .onChange(of: app.activeScoring) { _, new in scoring = new }
             .onChange(of: scoring) { _, _ in
-                rankByID = Fantasy.positionRanks(
-                    players: app.displaySelectedPlayers(), scoring: scoring
+                let players = app.displaySelectedPlayers()
+                rankByID = Fantasy.positionRanks(players: players, scoring: scoring)
+                warByID = Fantasy.warByPlayer(
+                    players: players, scoring: scoring,
+                    settings: app.selectedLeague?.scoringSettings,
+                    config: app.selectedLeague?.rosterConfig ?? .default,
+                    teamCount: app.selectedLeague?.teams.count ?? 12
                 )
                 Task {
                     projection = await app.liveProjection(
@@ -175,6 +187,10 @@ struct PlayerDetailView: View {
             }
             if let rank = rankByID[p.id] {
                 heroStat(label: "RANK", value: rank.label, color: FFColor.accent)
+            }
+            if let war = warByID[p.id] {
+                heroStat(label: "WAR", value: String(format: "%+.1f", war),
+                         color: war >= 0 ? FFColor.accent : FFColor.negative)
             }
             heroStat(
                 label: "TREND",
@@ -399,6 +415,7 @@ struct PlayerDetailView: View {
     private func overviewSection(for p: Player) -> some View {
         VStack(alignment: .leading, spacing: FFSpace.l) {
             totalsCard(for: p)
+            if warByID[p.id] != nil { warCard(for: p) }
             if let card = ranksCard(for: p) { card }
             if !nicknameHistory.isEmpty { nicknameHistoryCard }
             if !p.games.isEmpty {
@@ -463,6 +480,31 @@ struct PlayerDetailView: View {
                     .ffHairlineBottom()
                 }
             }
+            .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+            .overlay(
+                RoundedRectangle(cornerRadius: FFRadius.m)
+                    .strokeBorder(FFColor.border, lineWidth: 1)
+            )
+        }
+    }
+
+    // Wins Above Replacement: regular-season wins this player added over a
+    // freely-available replacement starter at his position, given the league's
+    // scoring and roster. Negative means a replacement would have done better.
+    private func warCard(for p: Player) -> some View {
+        let war = warByID[p.id] ?? 0
+        return VStack(alignment: .leading, spacing: FFSpace.s) {
+            Text(isProjected ? "PROJECTED WAR" : "WINS ABOVE REPLACEMENT")
+                .ffEyebrow().padding(.leading, FFSpace.s)
+            HStack(alignment: .firstTextBaseline, spacing: FFSpace.m) {
+                Text(String(format: "%+.1f", war))
+                    .font(.ffStatLarge)
+                    .foregroundStyle(war >= 0 ? FFColor.accent : FFColor.negative)
+                Text("\(isProjected ? "Projected " : "")regular-season wins added vs a replaceable \(p.position.uppercased()) starter.")
+                    .font(.ffCaption).foregroundStyle(FFColor.textSecondary)
+                Spacer(minLength: 0)
+            }
+            .padding(FFSpace.m)
             .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
             .overlay(
                 RoundedRectangle(cornerRadius: FFRadius.m)

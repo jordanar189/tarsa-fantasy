@@ -115,6 +115,7 @@ struct SimulationDraftReviewView: View {
                     Text(r.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
                 }
             }
+            .playerLink(r.playerID)
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
                 if let adp = r.adpRank {

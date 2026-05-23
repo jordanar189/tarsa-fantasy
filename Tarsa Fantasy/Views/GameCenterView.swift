@@ -6,7 +6,6 @@ import SwiftUI
 // season's cached player data.
 struct GameCenterView: View {
     @Environment(AppState.self) private var app
-    @Binding var selectedPlayerID: String?
 
     @State private var games: [NFLGame] = []
     @State private var teams: [String: NFLTeamMeta] = [:]
@@ -50,10 +49,9 @@ struct GameCenterView: View {
         .task(id: app.selectedSeason) { await reload() }
         .sheet(item: $selectedGame) { game in
             GameDetailView(game: game) { playerID in
-                // Close the game detail and pop the player detail at the
-                // parent (NFLHubView listens on this binding).
+                // Close the game detail, then open the player profile globally.
                 selectedGame = nil
-                selectedPlayerID = playerID
+                app.showPlayer(playerID)
             }
         }
     }
@@ -248,7 +246,6 @@ struct GameCenterView: View {
     }
 
     // Note: top performers used to render inline here; that surface now
-    // lives in GameDetailView's Overview tab. The @Binding selectedPlayerID
-    // is retained on the public API because NFLHubView still passes it,
-    // even though this view no longer mutates it.
+    // lives in GameDetailView's Overview tab, which opens the player profile
+    // via the global presenter (app.showPlayer).
 }

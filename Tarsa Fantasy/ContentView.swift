@@ -57,6 +57,10 @@ struct ContentView: View {
         }
         .preferredColorScheme(app.theme.preferredColorScheme)
         .tint(FFColor.accent)
+        .sheet(item: $app.presentedPlayerID.asIdentifiable) { id in
+            PlayerDetailView(playerID: id.id)
+                .presentationDetents([.large])
+        }
     }
 
     private var mainTabs: some View {
