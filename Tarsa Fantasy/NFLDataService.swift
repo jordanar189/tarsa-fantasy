@@ -288,6 +288,10 @@ actor NFLDataService {
                 birth_date, height_in, weight_lb, college, jersey_number,
                 draft_year, draft_round, draft_pick, years_exp, status, bye_week
                 """)
+                // Order by the primary key so offset pagination is stable.
+                // Without a deterministic total order Postgres may return a row
+                // on two pages (and skip another), duplicating/dropping players.
+                .order("id", ascending: true)
                 .range(from: from, to: from + page - 1)
                 .execute().value
             out.append(contentsOf: rows)
@@ -660,6 +664,12 @@ actor NFLDataService {
             let rows: [GameRowDB] = try await client.from("player_games")
                 .select()
                 .eq("season", value: season)
+                // Order by the full key (player_id, week) so offset pagination
+                // is deterministic. Ordering by `week` alone leaves rows within
+                // a week unordered, so across pages Postgres can repeat a row
+                // (showing a week twice in the game log) and skip another
+                // (a missing week) — the duplicate/missing-game bug.
+                .order("player_id", ascending: true)
                 .order("week", ascending: true)
                 .range(from: from, to: from + page - 1)
                 .execute().value

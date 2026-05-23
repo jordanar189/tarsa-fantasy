@@ -659,9 +659,10 @@ struct PlayerDetailView: View {
     // MARK: - Game Log
 
     private func gameLogSection(for p: Player) -> some View {
-        VStack(alignment: .leading, spacing: FFSpace.s) {
+        let games = gameLogRows(for: p)
+        return VStack(alignment: .leading, spacing: FFSpace.s) {
             Text(isProjected ? "PROJECTED GAME LOG" : "GAME LOG").ffEyebrow().padding(.leading, FFSpace.s)
-            if p.games.isEmpty {
+            if games.isEmpty {
                 Text("No games played yet.")
                     .font(.ffBody).foregroundStyle(FFColor.textSecondary)
                     .padding(FFSpace.l)
@@ -669,7 +670,7 @@ struct PlayerDetailView: View {
                     .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
             } else {
                 VStack(spacing: 0) {
-                    ForEach(p.games.sorted { $0.week < $1.week }) { g in
+                    ForEach(games) { g in
                         gameRow(g, snap: snapCounts[p.id]?[g.week])
                     }
                 }
@@ -680,6 +681,42 @@ struct PlayerDetailView: View {
                 )
             }
         }
+    }
+
+    // Game log rows, deduped to one per week and back-filled with 0-stat
+    // entries for every week the player's current team has already played but
+    // the player recorded nothing (DNP, inactive, healthy scratch). A bye week
+    // produces no schedule row, so it's naturally skipped. Display-only — the
+    // synthesized zeros never feed scoring, splits averages, or career totals.
+    private func gameLogRows(for p: Player) -> [Game] {
+        var byWeek: [Int: Game] = [:]
+        for g in p.games {
+            // Defensive de-dup: if two rows ever share a week, keep the one
+            // with real production over an empty stub.
+            if let existing = byWeek[g.week], existing.points(scoring: .ppr) >= g.points(scoring: .ppr) {
+                continue
+            }
+            byWeek[g.week] = g
+        }
+        // player_games is regular-season only, so the latest week with any
+        // stats across the league marks the REG boundary. Capping fills there
+        // keeps postseason schedule rows (weeks 19+) out of the log and avoids
+        // inventing zeros for weeks that haven't been played yet.
+        let maxRegWeek = app.availableWeeks(season: app.selectedSeason).max() ?? 0
+        if !p.team.isEmpty && maxRegWeek > 0 {
+            for sched in schedules {
+                guard sched.status == .final || sched.status == .inProgress else { continue }
+                guard sched.week <= maxRegWeek else { continue }
+                guard sched.home == p.team || sched.away == p.team, byWeek[sched.week] == nil else { continue }
+                var stub = Game()
+                stub.season = sched.season
+                stub.week = sched.week
+                stub.team = p.team
+                stub.opponent = sched.opponent(of: p.team) ?? ""
+                byWeek[sched.week] = stub
+            }
+        }
+        return byWeek.values.sorted { $0.week < $1.week }
     }
 
     private func gameRow(_ g: Game, snap: SnapCount?) -> some View {
