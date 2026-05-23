@@ -54,6 +54,10 @@ final class AppState {
     // Leagues belonging to the signed-in user
     var leagueSummaries: [LeagueSummary] = []
 
+    // Read-only leagues imported from Sleeper. Persisted locally (SleeperStore),
+    // not in Supabase — they're browsed, never played through the live engine.
+    var importedSleeperLeagues: [ImportedLeague] = []
+
     // Set when an invite link is opened. LeaguesView consumes it to present
     // the join sheet pre-filled. Held until the user is signed in and the
     // Leagues tab can pick it up.
@@ -92,10 +96,16 @@ final class AppState {
 
     private let data: NFLDataService
     private let remote: RemoteService
+    private let sleeper: SleeperService
 
-    init(data: NFLDataService = .shared, remote: RemoteService = .shared) {
+    init(data: NFLDataService = .shared, remote: RemoteService = .shared,
+         sleeper: SleeperService = .shared) {
         self.data = data
         self.remote = remote
+        self.sleeper = sleeper
+        // Imported Sleeper leagues are local data; load them synchronously so
+        // the Leagues tab can render them on first paint.
+        importedSleeperLeagues = SleeperStore.shared.loadAll()
         // Subscribe to live score updates pushed by LiveScoresListener; each
         // notification re-pulls the matching season snapshot from the data
         // actor so SwiftUI sees the new fantasy points immediately.
@@ -695,6 +705,44 @@ final class AppState {
     func deleteLeague(_ id: String) async {
         try? await remote.deleteLeague(id)
         await reloadLeagues()
+    }
+
+    // MARK: - Sleeper import
+
+    // Current NFL season per Sleeper, used to default the import picker.
+    func sleeperCurrentSeason() async -> Int? {
+        await sleeper.nflState()?.season
+    }
+
+    func sleeperUser(username: String) async throws -> SleeperUserBrief {
+        try await sleeper.user(username: username)
+    }
+
+    func sleeperLeagues(userID: String, season: Int) async throws -> [SleeperLeagueBrief] {
+        try await sleeper.leagues(userID: userID, season: season)
+    }
+
+    // Pulls a Sleeper league and its full season history, persists it locally,
+    // and returns it. Re-importing the same league refreshes it in place.
+    @discardableResult
+    func importSleeperLeague(rootLeagueID: String) async throws -> ImportedLeague {
+        let league = try await sleeper.importLeague(rootLeagueID: rootLeagueID)
+        if let idx = importedSleeperLeagues.firstIndex(where: { $0.id == league.id }) {
+            importedSleeperLeagues[idx] = league
+        } else {
+            importedSleeperLeagues.insert(league, at: 0)
+        }
+        SleeperStore.shared.saveAll(importedSleeperLeagues)
+        return league
+    }
+
+    func deleteImportedSleeperLeague(id: String) {
+        importedSleeperLeagues.removeAll { $0.id == id }
+        SleeperStore.shared.saveAll(importedSleeperLeagues)
+    }
+
+    func importedSleeperLeague(id: String) -> ImportedLeague? {
+        importedSleeperLeagues.first { $0.id == id }
     }
 
     // MARK: - League history (multi-season)
