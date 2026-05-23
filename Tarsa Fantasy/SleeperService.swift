@@ -186,7 +186,13 @@ actor SleeperService {
         var seen: Set<String> = []
         var players: [ImportedPlayer] = []
         for r in rosters {
-            let rosterIDs: [String] = (r.players ?? []) + (r.starters ?? []) + (r.reserve ?? []) + (r.taxi ?? [])
+            // Built with separate appends rather than one chained `+`: the
+            // four-way `?? []` concatenation trips "expression too complex to
+            // type-check" under the whole-module Release build.
+            var rosterIDs = r.players ?? []
+            rosterIDs += r.starters ?? []
+            rosterIDs += r.reserve ?? []
+            rosterIDs += r.taxi ?? []
             for pid in rosterIDs {
                 guard pid != "0", seen.insert(pid).inserted else { continue }
                 players.append(resolve(pid, index))
