@@ -456,8 +456,8 @@ private struct FeedbackStatusPill: View {
     var body: some View {
         FFPill(isFilled: status == .resolved) {
             Text(status == .open ? "OPEN" : "RESOLVED")
+                .foregroundStyle(status == .open ? FFColor.warning : FFColor.positive)
         }
-        .foregroundStyle(status == .open ? FFColor.warning : FFColor.positive)
     }
 }
 
@@ -661,6 +661,7 @@ private struct FeedbackDetailView: View {
             let comment = try await app.addFeedbackComment(feedbackID: item.id, content: text)
             comments.append(comment)
             draft = ""
+            error = nil
         } catch {
             self.error = error.localizedDescription
         }
@@ -673,6 +674,7 @@ private struct FeedbackDetailView: View {
         do {
             _ = try await app.setFeedbackStatus(id: item.id, status: next)
             status = next
+            error = nil
             onChange(FeedbackItem(
                 id: item.id, userID: item.userID, username: item.username,
                 content: item.content, imageURLs: item.imageURLs,
