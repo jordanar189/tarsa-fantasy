@@ -39,6 +39,7 @@ struct PlayerDetailView: View {
     @State private var careerLoading = false
     @State private var careerLoadedPlayerID: String? = nil
     @State private var careerLoadToken = 0
+    @State private var breakdownGame: Game? = nil
 
     private var player: Player? { app.displaySelectedPlayers()[playerID] }
     private var isProjected: Bool { app.isProjectedSeason(app.selectedSeason) }
@@ -151,6 +152,13 @@ struct PlayerDetailView: View {
                         careerLoadedPlayerID = nil
                     }
                 }
+            }
+            .sheet(item: $breakdownGame) { g in
+                ScoreBreakdownSheet(
+                    playerName: player?.name ?? "Player",
+                    game: g,
+                    scoring: scoring
+                )
             }
         }
     }
@@ -697,10 +705,21 @@ struct PlayerDetailView: View {
                         .foregroundStyle(FFColor.textTertiary)
                 }
             }
-            Text(pts.fpString)
-                .font(.ffStatMedium)
-                .foregroundStyle(FFColor.textPrimary)
+            Button {
+                breakdownGame = g
+            } label: {
+                HStack(spacing: 3) {
+                    Text(pts.fpString)
+                        .font(.ffStatMedium)
+                        .foregroundStyle(FFColor.textPrimary)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(FFColor.textTertiary)
+                }
                 .frame(minWidth: 56, alignment: .trailing)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.m)
         .ffHairlineBottom()
@@ -1162,5 +1181,125 @@ struct PlayerDetailView: View {
         default:
             return []
         }
+    }
+}
+
+// MARK: - Score breakdown sheet
+
+// Tapping a score in the game log opens this: a line-by-line accounting of how
+// each box-score stat contributed to that week's fantasy points, under the
+// scoring the game log is showing.
+private struct ScoreBreakdownSheet: View {
+    let playerName: String
+    let game: Game
+    let scoring: Scoring
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let breakdown = Fantasy.scoreBreakdown(game: game, scoring: scoring)
+        NavigationStack {
+            ZStack {
+                FFColor.bg.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: FFSpace.l) {
+                        headerCard(total: breakdown.total)
+                        if breakdown.components.isEmpty {
+                            emptyCard
+                        } else {
+                            componentsCard(breakdown.components, total: breakdown.total)
+                        }
+                    }
+                    .padding(FFSpace.l)
+                }
+            }
+            .navigationTitle("Scoring Breakdown")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(FFColor.bg, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .foregroundStyle(FFColor.accent)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func headerCard(total: Double) -> some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            Text(playerName.uppercased()).ffEyebrow(color: FFColor.accent)
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Week \(game.week)")
+                        .font(.ffTitle)
+                        .foregroundStyle(FFColor.textPrimary)
+                    Text(game.opponent.isEmpty ? scoring.label : "vs \(game.opponent) · \(scoring.label)")
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(total.fpString)
+                        .font(.ffStatLarge)
+                        .foregroundStyle(FFColor.textPrimary)
+                    Text("PTS").ffEyebrow(color: FFColor.textTertiary)
+                }
+            }
+        }
+        .ffCard(padding: FFSpace.l)
+    }
+
+    private func componentsCard(_ components: [Fantasy.ScoreComponent], total: Double) -> some View {
+        VStack(spacing: 0) {
+            ForEach(components) { c in
+                HStack(alignment: .firstTextBaseline, spacing: FFSpace.m) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(c.label)
+                            .font(.ffBody)
+                            .foregroundStyle(FFColor.textPrimary)
+                        Text(c.detail)
+                            .font(.ffMicro)
+                            .foregroundStyle(FFColor.textTertiary)
+                    }
+                    Spacer()
+                    Text(signed(c.points))
+                        .font(.ffStatSmall)
+                        .foregroundStyle(c.points < 0 ? FFColor.negative : FFColor.textPrimary)
+                }
+                .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.m)
+                .ffHairlineBottom()
+            }
+            HStack {
+                Text("TOTAL").ffEyebrow()
+                Spacer()
+                Text(total.fpString)
+                    .font(.ffStatMedium)
+                    .foregroundStyle(FFColor.accent)
+            }
+            .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.m)
+        }
+        .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+        .overlay(
+            RoundedRectangle(cornerRadius: FFRadius.m)
+                .strokeBorder(FFColor.border, lineWidth: 1)
+        )
+    }
+
+    private var emptyCard: some View {
+        Text("No scoring stats for this game.")
+            .font(.ffBody).foregroundStyle(FFColor.textSecondary)
+            .padding(FFSpace.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+            .overlay(
+                RoundedRectangle(cornerRadius: FFRadius.m)
+                    .strokeBorder(FFColor.border, lineWidth: 1)
+            )
+    }
+
+    // Always show the sign so positive contributions read as additive.
+    private func signed(_ v: Double) -> String {
+        "\(v >= 0 ? "+" : "")\(v.fpString)"
     }
 }

@@ -706,6 +706,72 @@ enum Fantasy {
         }
     }
 
+    // MARK: - Score breakdown (game-log detail)
+
+    // One line in a single game's fantasy-score breakdown: a stat category,
+    // a short description of the rate that scored it, and the points it
+    // contributed under the chosen scoring.
+    struct ScoreComponent: Identifiable, Hashable {
+        let label: String
+        let detail: String
+        let points: Double
+        var id: String { label }
+    }
+
+    // Breaks a single game's fantasy points into per-stat contributions under
+    // the named scoring preset. Components are built from the raw box-score
+    // line; any gap between their sum and the precomputed score (2-pt
+    // conversions, return TDs, etc. the line doesn't carry) is folded into a
+    // trailing "Other" row so the parts always reconcile to the total shown
+    // in the game log.
+    static func scoreBreakdown(game g: Game, scoring: Scoring) -> (components: [ScoreComponent], total: Double) {
+        let s = ScoringSettings.preset(scoring)
+        var components: [ScoreComponent] = []
+
+        func yardLine(_ label: String, yards: Double, divisor: Double) {
+            guard yards != 0, divisor > 0 else { return }
+            components.append(ScoreComponent(
+                label: label,
+                detail: "\(yards.statString) yds · 1 pt/\(Int(divisor))",
+                points: round2(yards / divisor)
+            ))
+        }
+        func eventLine(_ label: String, count: Double, weight: Double) {
+            guard count != 0, weight != 0 else { return }
+            components.append(ScoreComponent(
+                label: label,
+                detail: "\(count.statString) × \(weight.statString) pts",
+                points: round2(count * weight)
+            ))
+        }
+
+        yardLine("Passing Yards", yards: g.passingYards, divisor: s.passingYardsPerPoint)
+        eventLine("Passing TDs", count: g.passingTDs, weight: s.passingTD)
+        eventLine("Interceptions", count: g.passingInterceptions, weight: s.interception)
+        yardLine("Rushing Yards", yards: g.rushingYards, divisor: s.rushingYardsPerPoint)
+        eventLine("Rushing TDs", count: g.rushingTDs, weight: s.rushingTD)
+        eventLine("Receptions", count: g.receptions, weight: s.reception)
+        yardLine("Receiving Yards", yards: g.receivingYards, divisor: s.receivingYardsPerPoint)
+        eventLine("Receiving TDs", count: g.receivingTDs, weight: s.receivingTD)
+        eventLine("Fumbles Lost", count: g.fumblesLost, weight: s.fumbleLost)
+
+        // Reconcile to the score the game log actually shows (nflverse's
+        // precomputed field). Anything the raw line can't explain lands in
+        // "Other" so the components always sum to the displayed total.
+        let total = round2(g.points(scoring: scoring))
+        let explained = round2(components.reduce(0) { $0 + $1.points })
+        let residual = round2(total - explained)
+        if abs(residual) >= 0.05 {
+            components.append(ScoreComponent(
+                label: "Other",
+                detail: "2-pt, return TDs, etc.",
+                points: residual
+            ))
+        }
+
+        return (components, total)
+    }
+
     // MARK: - Stats overhaul helpers (Phase 1)
 
     // Returns season fantasy rank within each player's position. WR12 etc.
