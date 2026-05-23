@@ -363,6 +363,44 @@ final class AppState {
         players(season: selectedSeason)
     }
 
+    // MARK: - Career (multi-season aggregation)
+
+    // A player's per-season career table across every available season, most
+    // recent first. For each season the snapshot comes from the in-memory cache
+    // if already loaded, else the disk cache, else the network — without the
+    // live-scores listener / background-refresh wiring loadSeason sets up for the
+    // *active* season, and without retaining historical seasons in memory.
+    //
+    // Heavy on a cold cache (a fetch per season missing from disk), so callers
+    // show a loading state. Seasons are processed one at a time to keep peak
+    // memory to a single snapshot, and the disk decode / fetch / rank crunch all
+    // run off the main actor. Ranks/points use the supplied scoring preset.
+    func careerSeasons(playerID: String, scoring: Scoring) async -> [Fantasy.CareerSeasonLine] {
+        var lines: [Fantasy.CareerSeasonLine] = []
+        for season in seasons {
+            let inMemory = playersBySeason[season]
+            let line = await Task.detached(priority: .userInitiated) { [data] in
+                let snapshot: [String: Player]
+                if let inMemory {
+                    snapshot = inMemory
+                } else if let cached = PlayerCacheStore.shared.loadSync(season: season) {
+                    snapshot = cached
+                } else if let fetched = try? await data.players(season: season) {
+                    PlayerCacheStore.shared.save(season: season, players: fetched)
+                    snapshot = fetched
+                } else {
+                    return nil
+                }
+                return Fantasy.careerSeasonLine(
+                    playerID: playerID, season: season,
+                    snapshot: snapshot, scoring: scoring
+                )
+            }.value
+            if let line { lines.append(line) }
+        }
+        return lines.sorted { $0.season > $1.season }
+    }
+
     // MARK: - Preseason projection snapshots
 
     // A season is "preseason" when its roster is loaded but no games have been
