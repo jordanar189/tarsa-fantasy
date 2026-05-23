@@ -375,7 +375,7 @@ final class AppState {
     // show a loading state. Seasons are processed one at a time to keep peak
     // memory to a single snapshot, and the disk decode / fetch / rank crunch all
     // run off the main actor. Ranks/points use the supplied scoring preset.
-    func careerSeasons(playerID: String, scoring: Scoring) async -> [Fantasy.CareerSeasonLine] {
+    func careerSeasons(playerID: String, scoring: Scoring, settings: ScoringSettings? = nil) async -> [Fantasy.CareerSeasonLine] {
         var lines: [Fantasy.CareerSeasonLine] = []
         for season in seasons {
             let inMemory = playersBySeason[season]
@@ -393,7 +393,7 @@ final class AppState {
                 }
                 return Fantasy.careerSeasonLine(
                     playerID: playerID, season: season,
-                    snapshot: snapshot, scoring: scoring
+                    snapshot: snapshot, scoring: scoring, settings: settings
                 )
             }.value
             if let line { lines.append(line) }
