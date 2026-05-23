@@ -111,8 +111,14 @@ struct SimulationOverviewView: View {
                 column(label: "RANK",
                        value: mine.map { "#\($0.rank)" } ?? "—",
                        color: mine?.rank == 1 ? FFColor.accent : FFColor.textPrimary)
-                column(label: "RECORD",
-                       value: mine.map(formatRecord) ?? "—")
+                column(label: "RECORD") {
+                    if let mine {
+                        ColoredRecord(wins: mine.wins, losses: mine.losses,
+                                      ties: mine.ties, font: .ffStatMedium)
+                    } else {
+                        Text("—").font(.ffStatMedium).foregroundStyle(FFColor.textPrimary)
+                    }
+                }
                 column(label: "POINTS FOR",
                        value: mine.map { $0.pointsFor.fpString } ?? "—")
             }
@@ -128,9 +134,13 @@ struct SimulationOverviewView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func formatRecord(_ r: StandingsRow) -> String {
-        if r.ties > 0 { return "\(r.wins)–\(r.losses)–\(r.ties)" }
-        return "\(r.wins)–\(r.losses)"
+    private func column<Content: View>(label: String,
+                                       @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).ffEyebrow(color: FFColor.textTertiary)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Scoreboard
@@ -230,11 +240,15 @@ struct SimulationOverviewView: View {
         return HStack(alignment: .center, spacing: FFSpace.s) {
             scoreboardSide(team: teamByID(m.home.teamID), name: m.home.name,
                            points: m.home.points, alignment: .leading,
-                           winning: leader == m.home.teamID, played: m.played)
+                           winning: leader == m.home.teamID,
+                           losing: m.played && leader != nil && leader != m.home.teamID,
+                           played: m.played)
             Text("VS").ffEyebrow(color: FFColor.textTertiary)
             scoreboardSide(team: teamByID(m.away.teamID), name: m.away.name,
                            points: m.away.points, alignment: .trailing,
-                           winning: leader == m.away.teamID, played: m.played)
+                           winning: leader == m.away.teamID,
+                           losing: m.played && leader != nil && leader != m.away.teamID,
+                           played: m.played)
         }
         .padding(.vertical, FFSpace.s)
         .ffHairlineBottom()
@@ -242,7 +256,7 @@ struct SimulationOverviewView: View {
 
     private func scoreboardSide(team: FantasyTeam?, name: String, points: Double,
                                 alignment: HorizontalAlignment, winning: Bool,
-                                played: Bool) -> some View {
+                                losing: Bool = false, played: Bool) -> some View {
         let frameAlign: Alignment = (alignment == .leading) ? .leading : .trailing
         let label = team?.shortLabel ?? name
         return VStack(alignment: alignment, spacing: 4) {
@@ -265,7 +279,8 @@ struct SimulationOverviewView: View {
             Text(points.fpString)
                 .font(.ffStatMedium)
                 .foregroundStyle(winning ? FFColor.accent
-                                 : (played ? FFColor.textPrimary : FFColor.textTertiary))
+                                 : (losing ? FFColor.negative
+                                    : (played ? FFColor.textPrimary : FFColor.textTertiary)))
         }
         .frame(maxWidth: .infinity, alignment: frameAlign)
     }

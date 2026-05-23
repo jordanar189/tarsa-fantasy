@@ -104,9 +104,7 @@ struct LeagueHistoryView: View {
                     Text("YOU").ffEyebrow(color: FFColor.accent)
                 }
                 Spacer()
-                Text("\(row.wins)–\(row.losses)\(row.ties > 0 ? "–\(row.ties)" : "")")
-                    .font(.ffStatSmall)
-                    .foregroundStyle(FFColor.textSecondary)
+                ColoredRecord(wins: row.wins, losses: row.losses, ties: row.ties, font: .ffStatSmall)
                     .frame(width: 56, alignment: .trailing)
                 Text(row.pointsFor.fpString)
                     .font(.ffStatSmall)

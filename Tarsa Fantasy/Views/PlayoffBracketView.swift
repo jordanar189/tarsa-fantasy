@@ -82,16 +82,21 @@ struct PlayoffBracketView: View {
     }
 
     private func gameCard(_ game: PlayoffGame) -> some View {
-        VStack(spacing: 0) {
-            sideRow(game.top, isWinner: game.winnerTeamID != nil && game.winnerTeamID == game.top.teamID)
+        let decided = game.winnerTeamID != nil
+        return VStack(spacing: 0) {
+            sideRow(game.top,
+                    isWinner: decided && game.winnerTeamID == game.top.teamID,
+                    isLoser: decided && game.top.teamID != nil && game.winnerTeamID != game.top.teamID)
             Rectangle().fill(FFColor.border).frame(height: 1)
-            sideRow(game.bottom, isWinner: game.winnerTeamID != nil && game.winnerTeamID == game.bottom.teamID)
+            sideRow(game.bottom,
+                    isWinner: decided && game.winnerTeamID == game.bottom.teamID,
+                    isLoser: decided && game.bottom.teamID != nil && game.winnerTeamID != game.bottom.teamID)
         }
         .background(FFColor.surfaceElevated, in: RoundedRectangle(cornerRadius: FFRadius.s))
         .overlay(RoundedRectangle(cornerRadius: FFRadius.s).strokeBorder(FFColor.border, lineWidth: 1))
     }
 
-    private func sideRow(_ side: PlayoffSide, isWinner: Bool) -> some View {
+    private func sideRow(_ side: PlayoffSide, isWinner: Bool, isLoser: Bool = false) -> some View {
         let team = teamByID(side.teamID)
         return HStack(spacing: FFSpace.s) {
             if let seed = side.seed {
@@ -112,7 +117,8 @@ struct PlayoffBracketView: View {
             if let pts = side.points {
                 Text(pts.fpString)
                     .font(.ffStatSmall)
-                    .foregroundStyle(isWinner ? FFColor.accent : FFColor.textSecondary)
+                    .foregroundStyle(isWinner ? FFColor.accent
+                                     : (isLoser ? FFColor.negative : FFColor.textSecondary))
             }
             if isWinner {
                 Image(systemName: "checkmark.circle.fill")
