@@ -793,6 +793,92 @@ enum Fantasy {
         return raw.mapValues { round2($0 / maxRaw * 100) }
     }
 
+    // MARK: - Wins Above Replacement (WAR)
+
+    // How many regular-season wins a player adds over a replacement-level
+    // starter at his position. Model: an average team scores ~μ each week with
+    // SD σ; swapping the position's *average* starter for this player shifts the
+    // team's expected score by (points − avgStarter), so its win probability vs
+    // an average opponent is Φ((points − avgStarter)/σ). A player's weekly WAR is
+    // that win prob minus a replacement starter's, summed over the games he
+    // actually played — so availability is rewarded and byes/misses add nothing.
+    //
+    // Baselines are derived from the supplied snapshot (so they track the
+    // league's scoring): the starter pool at a position is its top
+    // (teams × starters) players by per-game average, with FLEX split across
+    // RB/WR/TE; replacement is the next man up. σ is the team weekly-score SD,
+    // estimated from the average within-player weekly variance at each starter
+    // slot. Pure. Caller picks the snapshot (real in-season, projected before).
+    static func warByPlayer(
+        players: [String: Player],
+        scoring: Scoring,
+        settings: ScoringSettings? = nil,
+        config: RosterConfig,
+        teamCount: Int
+    ) -> [String: Double] {
+        let teams = max(teamCount, 1)
+        // Per-position: each player's weekly point series.
+        var byPos: [String: [(id: String, gamePts: [Double])]] = [:]
+        for (_, p) in players {
+            let pos = p.position.uppercased()
+            guard isFantasyPosition(pos) else { continue }
+            let pts = p.games.map { $0.points(scoring: scoring, settings: settings) }
+            guard !pts.isEmpty else { continue }
+            byPos[pos, default: []].append((p.id, pts))
+        }
+        let flexShare = Double(config.flex) / 3.0
+        let startersByPos: [String: Double] = [
+            "QB": Double(config.qb),
+            "RB": Double(config.rb) + flexShare,
+            "WR": Double(config.wr) + flexShare,
+            "TE": Double(config.te) + flexShare,
+            "K":  Double(config.k),
+        ]
+        var avgStarter: [String: Double] = [:]
+        var replacement: [String: Double] = [:]
+        var withinVar: [String: Double] = [:]   // mean within-player weekly variance among starters
+        for (pos, list) in byPos {
+            let ranked = list
+                .map { (id: $0.id, avg: $0.gamePts.reduce(0, +) / Double($0.gamePts.count), gp: $0.gamePts) }
+                .sorted { $0.avg > $1.avg }
+            let starterCount = max(1, Int((Double(teams) * (startersByPos[pos] ?? 0)).rounded()))
+            let starters = Array(ranked.prefix(min(starterCount, ranked.count)))
+            avgStarter[pos] = starters.map { $0.avg }.reduce(0, +) / Double(max(starters.count, 1))
+            let replIdx = min(starterCount, ranked.count - 1)
+            replacement[pos] = ranked[max(0, replIdx)].avg
+            // Average week-to-week variance of a starter at this position.
+            let vars: [Double] = starters.compactMap { s in
+                guard s.gp.count >= 2 else { return nil }
+                let m = s.gp.reduce(0, +) / Double(s.gp.count)
+                return s.gp.reduce(0.0) { $0 + ($1 - m) * ($1 - m) } / Double(s.gp.count)
+            }
+            withinVar[pos] = vars.isEmpty ? 0 : vars.reduce(0, +) / Double(vars.count)
+        }
+        // Team weekly-score SD ≈ sqrt(Σ over starter slots of positional variance).
+        var teamVar = 0.0
+        for (pos, n) in [("QB", config.qb), ("RB", config.rb), ("WR", config.wr),
+                         ("TE", config.te), ("K", config.k)] {
+            teamVar += Double(n) * (withinVar[pos] ?? 0)
+        }
+        if config.flex > 0 {
+            let flexVar = ["RB", "WR", "TE"].map { withinVar[$0] ?? 0 }.reduce(0, +) / 3.0
+            teamVar += Double(config.flex) * flexVar
+        }
+        let sigma = max(1.0, teamVar.squareRoot())
+        func phi(_ x: Double) -> Double { 0.5 * (1 + erf(x / 2.0.squareRoot())) }
+
+        var out: [String: Double] = [:]
+        for (pos, list) in byPos {
+            guard let aS = avgStarter[pos], let rep = replacement[pos] else { continue }
+            let replWin = phi((rep - aS) / sigma)
+            for entry in list {
+                let war = entry.gamePts.reduce(0.0) { $0 + phi(($1 - aS) / sigma) - replWin }
+                out[entry.id] = round2(war)
+            }
+        }
+        return out
+    }
+
     // Trend arrow based on average of last N games vs full-season average.
     // .flat when within 10% of season average; .up/.down when meaningfully
     // above/below.
