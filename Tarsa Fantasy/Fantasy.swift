@@ -737,6 +737,62 @@ enum Fantasy {
         return out
     }
 
+    // MARK: - Trade value (VOR)
+
+    // Per-player trade value on a 0–100 scale via Value Over Replacement: a
+    // player is worth his season (or projected, depending on the snapshot the
+    // caller passes) points above a replacement-level player at the same
+    // position. Replacement level is the last weekly starter the league rosters
+    // at that position — starters × teams, with FLEX split across RB/WR/TE — so
+    // positional scarcity is baked in (an elite RB outranks an equal-scoring QB
+    // in a 1-QB league). Scaled so the league's most valuable player ≈ 100.
+    // Pure: K is valued; team DEF isn't in the player data so it scores 0.
+    static func tradeValues(
+        players: [String: Player],
+        scoring: Scoring,
+        settings: ScoringSettings? = nil,
+        config: RosterConfig,
+        teamCount: Int
+    ) -> [String: Double] {
+        let teams = max(teamCount, 1)
+        var pointsByID: [String: Double] = [:]
+        var byPosition: [String: [Double]] = [:]
+        for (_, p) in players {
+            let pos = p.position.uppercased()
+            guard isFantasyPosition(pos) else { continue }
+            let pts = seasonTotals(p.games).points(scoring: scoring, settings: settings)
+            pointsByID[p.id] = pts
+            byPosition[pos, default: []].append(pts)
+        }
+        // Replacement-level points per position (FLEX spread over RB/WR/TE).
+        let flexShare = Double(config.flex) / 3.0
+        let startersByPos: [String: Double] = [
+            "QB": Double(config.qb),
+            "RB": Double(config.rb) + flexShare,
+            "WR": Double(config.wr) + flexShare,
+            "TE": Double(config.te) + flexShare,
+            "K":  Double(config.k),
+        ]
+        var replacement: [String: Double] = [:]
+        for (pos, pts) in byPosition {
+            let sorted = pts.sorted(by: >)
+            let starters = startersByPos[pos] ?? 0
+            guard starters > 0, !sorted.isEmpty else { replacement[pos] = 0; continue }
+            let idx = max(0, min(sorted.count - 1, Int((Double(teams) * starters).rounded()) - 1))
+            replacement[pos] = sorted[idx]
+        }
+        var raw: [String: Double] = [:]
+        var maxRaw = 0.0
+        for (id, pts) in pointsByID {
+            let pos = players[id]?.position.uppercased() ?? ""
+            let vor = max(0, pts - (replacement[pos] ?? 0))
+            raw[id] = vor
+            if vor > maxRaw { maxRaw = vor }
+        }
+        guard maxRaw > 0 else { return raw.mapValues { _ in 0.0 } }
+        return raw.mapValues { round2($0 / maxRaw * 100) }
+    }
+
     // Trend arrow based on average of last N games vs full-season average.
     // .flat when within 10% of season average; .up/.down when meaningfully
     // above/below.

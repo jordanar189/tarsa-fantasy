@@ -17,6 +17,8 @@ struct TradeDetailView: View {
     @State private var votes: [TradeVote] = []
     @State private var saving: Bool = false
     @State private var error: String? = nil
+    @State private var values: [String: Double] = [:]
+    @State private var valuationPlayers: [String: Player] = [:]
 
     private var myTeam: FantasyTeam? {
         guard let uid = app.session?.userID else { return nil }
@@ -42,6 +44,7 @@ struct TradeDetailView: View {
                     VStack(spacing: FFSpace.l) {
                         statusBanner
                         sidesCard
+                        balanceCard
                         if let note = trade.note, !note.isEmpty {
                             Text("“\(note)”")
                                 .font(.ffBody.italic())
@@ -71,9 +74,31 @@ struct TradeDetailView: View {
                         .foregroundStyle(FFColor.textSecondary)
                 }
             }
-            .task(id: trade.id) { await reloadVotes() }
+            .task(id: trade.id) {
+                await reloadVotes()
+                await app.ensureProjectedSnapshot(season: league.season)
+                let snapshot = Fantasy.playersFor(league: league, snapshot: app.displayPlayers(season: league.season))
+                valuationPlayers = snapshot
+                values = Fantasy.tradeValues(
+                    players: snapshot, scoring: league.scoring,
+                    settings: league.scoringSettings, config: league.rosterConfig,
+                    teamCount: league.teams.count
+                )
+            }
         }
         .hostsPlayerProfileSheet()
+    }
+
+    // Each team is valued by what it receives in the swap.
+    private var balanceCard: some View {
+        TradeBalanceView(
+            players: valuationPlayers,
+            values: values,
+            leftName: proposerTeam?.name ?? "Proposer",
+            leftReceives: trade.recipientPlayerIDs,
+            rightName: recipientTeam?.name ?? "Recipient",
+            rightReceives: trade.proposerPlayerIDs
+        )
     }
 
     private var statusBanner: some View {
