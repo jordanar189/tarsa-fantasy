@@ -109,10 +109,13 @@ struct LeagueShellView: View {
     @Environment(AppState.self) private var app
 
     @State private var chatExpanded = false
-    @State private var bodyMounted = false      // chat content lives only while open
     @State private var isDragging = false
-    @State private var dragOffset: CGFloat = 0   // positive = dragged up = taller
+    @State private var dragOffset: CGFloat = 0   // live drag: positive = dragged up
     @State private var keyboardHeight: CGFloat = 0
+    // Device bottom safe area (home indicator), cached so the layout pass doesn't
+    // walk the scene graph on every animation frame. Only used to seat the
+    // composer on the keyboard, so it's refreshed on appear and on keyboard show.
+    @State private var bottomSafeInset: CGFloat = 0
     // Seeded with the cold-start default so the first tab renders on frame one
     // (onAppear inserts the live value a tick later for any other entry point).
     @State private var visited: Set<AppTab> = [.league]
@@ -122,6 +125,14 @@ struct LeagueShellView: View {
     private let topGap: CGFloat = 8
 
     private static let tabOrder: [AppTab] = [.league, .lineup, .matchup, .players]
+
+    private static func deviceBottomInset() -> CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?
+            .keyWindow?
+            .safeAreaInsets.bottom ?? 0
+    }
 
     var body: some View {
         @Bindable var app = app
@@ -138,7 +149,10 @@ struct LeagueShellView: View {
             CustomTabBar(selection: $app.tab)
                 .ignoresSafeArea(.keyboard, edges: .bottom)
         }
-        .onAppear { visited.insert(app.tab) }
+        .onAppear {
+            visited.insert(app.tab)
+            bottomSafeInset = Self.deviceBottomInset()
+        }
         .onChange(of: app.tab) { _, t in
             visited.insert(t)
             // Switching tabs from the bar (which stays on top of the expanded
@@ -148,6 +162,7 @@ struct LeagueShellView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
             let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue ?? .zero
             let dur = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+            bottomSafeInset = Self.deviceBottomInset()
             withAnimation(.easeOut(duration: dur)) { keyboardHeight = frame.height }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { note in
@@ -182,49 +197,49 @@ struct LeagueShellView: View {
         }
     }
 
-    // The pull-up chat. Anchored so its bottom edge rests on top of the tab bar;
-    // it grows upward when expanded and, when the keyboard appears, shrinks from
-    // the bottom to sit on the keyboard so the composer stays visible.
+    // The pull-up chat. The panel is laid out once at full height with its bottom
+    // edge resting on top of the tab bar, then slid up/down with `.offset` —
+    // dragging only translates a static view (no per-frame relayout or shadow
+    // re-render), which keeps the motion smooth instead of stuttering.
     @ViewBuilder
     private var chatLayer: some View {
         if let lg = app.selectedLeague {
-            // The reader ignores the bottom safe area (and keyboard), so it
-            // spans down to the device's bottom edge and `geo.safeAreaInsets`
-            // reports the real home-indicator inset — no UIKit lookup needed.
+            // Reader respects the bottom safe area (so its bottom edge sits on the
+            // home indicator = top of the tab bar) but ignores the keyboard so the
+            // panel height stays stable while typing.
             GeometryReader { geo in
-                let sab = geo.safeAreaInsets.bottom   // home indicator
-                let sat = geo.safeAreaInsets.top      // status bar (0 here)
                 let available = geo.size.height
-                let navPad = CustomTabBar.height + sab
-                let expandedH = max(peekHeight, available - navPad - sat - topGap)
+                let fullH = max(peekHeight, available - CustomTabBar.height - topGap)
+                let collapseDist = fullH - peekHeight
                 let kb = chatExpanded ? keyboardHeight : 0
-                // With the keyboard up, lift the panel's bottom to the keyboard's
-                // top edge; otherwise rest it on top of the tab bar.
-                let bottomPad = kb > 0 ? max(navPad, kb) : navPad
-                let dragged = min(max((chatExpanded ? expandedH : peekHeight) + dragOffset, peekHeight), expandedH)
-                // While the keyboard is up, pin the top and let the panel shrink
-                // onto the keyboard instead of sliding off the top of the screen.
-                let live = kb > 0 ? max(peekHeight, available - sat - topGap - bottomPad) : dragged
-                let progress = Double((live - peekHeight) / max(1, expandedH - peekHeight))
+                // Raise the composer onto the keyboard by shrinking the panel from
+                // the bottom (the top stays put, so the header stays reachable).
+                // Only changes on keyboard show/hide, never during a drag.
+                let keyboardLift = kb > 0 ? max(0, kb - bottomSafeInset - CustomTabBar.height) : 0
+                let panelHeight = max(peekHeight, fullH - keyboardLift)
+                let bottomPad = CustomTabBar.height + keyboardLift
+                // Collapse/expand is a pure translation of the fixed-size panel.
+                let offsetY = min(max((chatExpanded ? 0 : collapseDist) - dragOffset, 0), collapseDist)
+                let progress = collapseDist > 0 ? max(0, min(1, 1 - offsetY / collapseDist)) : 0
 
                 ZStack(alignment: .bottom) {
-                    if bodyMounted {
-                        Color.black.opacity(0.45 * progress)
-                            .ignoresSafeArea()
-                            .contentShape(Rectangle())
-                            .onTapGesture { collapse() }
-                            .allowsHitTesting(chatExpanded && !isDragging)
-                    }
-                    chatPanel(lg, height: live, expandedH: expandedH)
+                    Color.black.opacity(0.45 * Double(progress))
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture { collapse() }
+                        .allowsHitTesting(chatExpanded && !isDragging)
+
+                    chatPanel(lg, height: panelHeight, collapseDist: collapseDist)
                         .padding(.bottom, bottomPad)
+                        .offset(y: offsetY)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
-            .ignoresSafeArea(edges: .bottom)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
         }
     }
 
-    private func chatPanel(_ lg: League, height: CGFloat, expandedH: CGFloat) -> some View {
+    private func chatPanel(_ lg: League, height: CGFloat, collapseDist: CGFloat) -> some View {
         let shape = UnevenRoundedRectangle(
             topLeadingRadius: 18, bottomLeadingRadius: 0,
             bottomTrailingRadius: 0, topTrailingRadius: 18
@@ -233,11 +248,9 @@ struct LeagueShellView: View {
             LeagueChatTopBar(onClose: chatExpanded ? { collapse() } : nil)
                 .contentShape(Rectangle())
                 .onTapGesture { chatExpanded ? collapse() : expand() }
-                .gesture(dragGesture(expandedH: expandedH))
-            if bodyMounted {
-                Divider().background(FFColor.border)
-                LeagueChatView(league: lg)
-            }
+                .gesture(dragGesture(collapseDist: collapseDist))
+            Divider().background(FFColor.border)
+            LeagueChatView(league: lg)
         }
         .frame(height: height, alignment: .top)
         .frame(maxWidth: .infinity)
@@ -247,23 +260,21 @@ struct LeagueShellView: View {
         .shadow(color: .black.opacity(0.25), radius: 12, y: -4)
     }
 
-    private func dragGesture(expandedH: CGFloat) -> some Gesture {
+    private func dragGesture(collapseDist: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 6)
             .onChanged { value in
                 isDragging = true
                 dragOffset = -value.translation.height
-                if dragOffset > 4 { bodyMounted = true }
             }
             .onEnded { value in
                 isDragging = false
                 let predicted = -value.predictedEndTranslation.height
-                let target = (chatExpanded ? expandedH : peekHeight) + predicted
-                if target > (peekHeight + expandedH) / 2 { expand() } else { collapse() }
+                let projected = (chatExpanded ? 0 : collapseDist) - predicted
+                if projected < collapseDist / 2 { expand() } else { collapse() }
             }
     }
 
     private func expand() {
-        bodyMounted = true
         withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
             chatExpanded = true
             dragOffset = 0
@@ -274,13 +285,9 @@ struct LeagueShellView: View {
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
         )
-        // Keep the chat mounted through the close animation, then tear down its
-        // realtime listener once the panel has settled.
         withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
             chatExpanded = false
             dragOffset = 0
-        } completion: {
-            if !chatExpanded { bodyMounted = false }
         }
     }
 }
