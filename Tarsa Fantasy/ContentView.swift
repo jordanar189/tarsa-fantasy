@@ -112,6 +112,10 @@ struct LeagueShellView: View {
     @State private var isDragging = false
     @State private var dragOffset: CGFloat = 0   // live drag: positive = dragged up
     @State private var keyboardHeight: CGFloat = 0
+    // Device bottom safe area (home indicator), cached so the layout pass doesn't
+    // walk the scene graph on every animation frame. Only used to seat the
+    // composer on the keyboard, so it's refreshed on appear and on keyboard show.
+    @State private var bottomSafeInset: CGFloat = 0
     // Seeded with the cold-start default so the first tab renders on frame one
     // (onAppear inserts the live value a tick later for any other entry point).
     @State private var visited: Set<AppTab> = [.league]
@@ -122,13 +126,11 @@ struct LeagueShellView: View {
 
     private static let tabOrder: [AppTab] = [.league, .lineup, .matchup, .players]
 
-    // Device bottom safe area (home indicator). Only needed to seat the composer
-    // on top of the keyboard, which is measured from the true screen bottom.
-    private var bottomSafeInset: CGFloat {
+    private static func deviceBottomInset() -> CGFloat {
         UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
-            .flatMap { $0.windows }
-            .first { $0.isKeyWindow }?
+            .first?
+            .keyWindow?
             .safeAreaInsets.bottom ?? 0
     }
 
@@ -147,7 +149,10 @@ struct LeagueShellView: View {
             CustomTabBar(selection: $app.tab)
                 .ignoresSafeArea(.keyboard, edges: .bottom)
         }
-        .onAppear { visited.insert(app.tab) }
+        .onAppear {
+            visited.insert(app.tab)
+            bottomSafeInset = Self.deviceBottomInset()
+        }
         .onChange(of: app.tab) { _, t in
             visited.insert(t)
             // Switching tabs from the bar (which stays on top of the expanded
@@ -157,6 +162,7 @@ struct LeagueShellView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
             let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue ?? .zero
             let dur = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+            bottomSafeInset = Self.deviceBottomInset()
             withAnimation(.easeOut(duration: dur)) { keyboardHeight = frame.height }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { note in
