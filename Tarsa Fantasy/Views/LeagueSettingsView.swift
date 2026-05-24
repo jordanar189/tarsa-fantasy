@@ -329,12 +329,27 @@ struct LeagueSettingsView: View {
                 scoringStepper("Rec TD",           value: $scoringSettings.receivingTD,          range: 0...10, step: 1)
                 scoringStepper("Per reception",    value: $scoringSettings.reception,            range: 0...2, step: 0.5)
                 scoringStepper("Fumble lost",      value: $scoringSettings.fumbleLost,           range: -5...0, step: 1)
+
+                Text("Kicking").ffEyebrow()
+                scoringStepper("FG 0–39",          value: $scoringSettings.fgUnder40,            range: 0...10, step: 1)
+                scoringStepper("FG 40–49",         value: $scoringSettings.fg40to49,            range: 0...10, step: 1)
+                scoringStepper("FG 50+",           value: $scoringSettings.fg50plus,            range: 0...10, step: 1)
+                scoringStepper("Extra point",      value: $scoringSettings.patMade,             range: 0...5, step: 1)
+                scoringStepper("Missed FG",        value: $scoringSettings.fgMissed,            range: -5...0, step: 1)
+                scoringStepper("Missed PAT",       value: $scoringSettings.patMissed,           range: -5...0, step: 1)
+
+                Text("Defense (DST)").ffEyebrow()
+                scoringStepper("Sack",             value: $scoringSettings.defSack,             range: 0...5, step: 0.5)
+                scoringStepper("Interception",     value: $scoringSettings.defInterception,     range: 0...10, step: 1)
+                scoringStepper("Fumble recovery",  value: $scoringSettings.defFumbleRecovery,   range: 0...10, step: 1)
+                scoringStepper("Defensive TD",     value: $scoringSettings.defTouchdown,        range: 0...10, step: 1)
+                scoringStepper("Safety",           value: $scoringSettings.defSafety,           range: 0...10, step: 1)
             }
         } header: {
             Text("Scoring").ffEyebrow()
         } footer: {
             Text(useCustomScoring
-                 ? "Custom weights are applied to every game retroactively, computed from raw stat lines."
+                 ? "Custom weights are applied to every game retroactively, computed from raw stat lines. Any player scores for any action they record. Defense points-allowed tiers use standard scoring."
                  : "Using the \(scoring.label) preset. Turn on custom scoring to set per-stat values.")
                 .foregroundStyle(FFColor.textTertiary)
         }
