@@ -143,6 +143,20 @@ struct ScoringSettings: Codable, Hashable {
     var receivingTD: Double
     var reception: Double               // PPR knob
     var fumbleLost: Double
+    // Kicking. Field goals score by distance; PATs and misses are flat.
+    var fgUnder40: Double               // FG 0–39 yds
+    var fg40to49: Double
+    var fg50plus: Double
+    var patMade: Double
+    var fgMissed: Double                // penalty per missed FG (negative)
+    var patMissed: Double               // penalty per missed PAT (negative)
+    // Team defense (DST). Event values are per-occurrence; the points-allowed
+    // tier bonus is standard (Game.pointsAllowedBonus).
+    var defSack: Double
+    var defInterception: Double
+    var defFumbleRecovery: Double
+    var defTouchdown: Double
+    var defSafety: Double
 
     static let standard = ScoringSettings(
         passingYardsPerPoint: 25, passingTD: 4, interception: -2,
@@ -187,13 +201,21 @@ struct ScoringSettings: Codable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case passingYardsPerPoint, passingTD, interception,
              rushingYardsPerPoint, rushingTD, receivingYardsPerPoint,
-             receivingTD, reception, fumbleLost
+             receivingTD, reception, fumbleLost,
+             fgUnder40, fg40to49, fg50plus, patMade, fgMissed, patMissed,
+             defSack, defInterception, defFumbleRecovery, defTouchdown, defSafety
     }
 
+    // New params default to standard K/DST so existing call sites (the offense
+    // presets) and decoded leagues pick up the defensive/kicking weights for free.
     init(passingYardsPerPoint: Double, passingTD: Double, interception: Double,
          rushingYardsPerPoint: Double, rushingTD: Double,
          receivingYardsPerPoint: Double, receivingTD: Double,
-         reception: Double, fumbleLost: Double) {
+         reception: Double, fumbleLost: Double,
+         fgUnder40: Double = 3, fg40to49: Double = 4, fg50plus: Double = 5,
+         patMade: Double = 1, fgMissed: Double = -1, patMissed: Double = -1,
+         defSack: Double = 1, defInterception: Double = 2, defFumbleRecovery: Double = 2,
+         defTouchdown: Double = 6, defSafety: Double = 2) {
         self.passingYardsPerPoint = passingYardsPerPoint
         self.passingTD = passingTD
         self.interception = interception
@@ -203,6 +225,17 @@ struct ScoringSettings: Codable, Hashable {
         self.receivingTD = receivingTD
         self.reception = reception
         self.fumbleLost = fumbleLost
+        self.fgUnder40 = fgUnder40
+        self.fg40to49 = fg40to49
+        self.fg50plus = fg50plus
+        self.patMade = patMade
+        self.fgMissed = fgMissed
+        self.patMissed = patMissed
+        self.defSack = defSack
+        self.defInterception = defInterception
+        self.defFumbleRecovery = defFumbleRecovery
+        self.defTouchdown = defTouchdown
+        self.defSafety = defSafety
     }
 
     init(from decoder: Decoder) throws {
@@ -217,6 +250,17 @@ struct ScoringSettings: Codable, Hashable {
         receivingTD            = try c.decodeIfPresent(Double.self, forKey: .receivingTD)            ?? d.receivingTD
         reception              = try c.decodeIfPresent(Double.self, forKey: .reception)              ?? d.reception
         fumbleLost             = try c.decodeIfPresent(Double.self, forKey: .fumbleLost)             ?? d.fumbleLost
+        fgUnder40         = try c.decodeIfPresent(Double.self, forKey: .fgUnder40)         ?? d.fgUnder40
+        fg40to49          = try c.decodeIfPresent(Double.self, forKey: .fg40to49)          ?? d.fg40to49
+        fg50plus          = try c.decodeIfPresent(Double.self, forKey: .fg50plus)          ?? d.fg50plus
+        patMade           = try c.decodeIfPresent(Double.self, forKey: .patMade)           ?? d.patMade
+        fgMissed          = try c.decodeIfPresent(Double.self, forKey: .fgMissed)          ?? d.fgMissed
+        patMissed         = try c.decodeIfPresent(Double.self, forKey: .patMissed)         ?? d.patMissed
+        defSack           = try c.decodeIfPresent(Double.self, forKey: .defSack)           ?? d.defSack
+        defInterception   = try c.decodeIfPresent(Double.self, forKey: .defInterception)   ?? d.defInterception
+        defFumbleRecovery = try c.decodeIfPresent(Double.self, forKey: .defFumbleRecovery) ?? d.defFumbleRecovery
+        defTouchdown      = try c.decodeIfPresent(Double.self, forKey: .defTouchdown)      ?? d.defTouchdown
+        defSafety         = try c.decodeIfPresent(Double.self, forKey: .defSafety)         ?? d.defSafety
     }
 }
 
@@ -285,7 +329,7 @@ struct Game: Codable, Hashable, Identifiable {
             rushingYards: rushingYards, rushingTDs: rushingTDs,
             receivingYards: receivingYards, receivingTDs: receivingTDs,
             receptions: receptions, fumblesLost: fumblesLost
-        ) + specialPoints
+        ) + specialPoints(settings)
     }
 
     // Single funnel for league scoring: when custom settings are present and
@@ -298,32 +342,35 @@ struct Game: Codable, Hashable, Identifiable {
         return points(scoring: scoring)
     }
 
-    // Kicker + team-defense points. Scoring-preset-independent (PPR doesn't move
-    // K/DST), so it's added on top of every offensive figure above. Each game
-    // row carries stats for exactly one role, so at most one term is non-zero.
-    var specialPoints: Double { kickerPoints + defensePoints }
+    // Kicker + team-defense points from the raw stat line, position-independent:
+    // any player credited with the action scores it (a kicker who runs scores
+    // rushing via the offensive path; a TE who kicks scores the FG here). Each
+    // game row carries stats for one role, so at most one term is non-zero.
+    func specialPoints(_ s: ScoringSettings) -> Double { kickerPoints(s) + defensePoints(s) }
 
-    // Distance-tiered kicker scoring: 3 pts inside 40, 4 pts 40–49, 5 pts 50+,
-    // 1 per PAT, −1 per missed FG/PAT.
-    var kickerPoints: Double {
-        (fieldGoals0_19 + fieldGoals20_29 + fieldGoals30_39) * 3
-            + fieldGoals40_49 * 4
-            + (fieldGoals50_59 + fieldGoals60Plus) * 5
-            + extraPointsMade * 1
-            - fieldGoalsMissed * 1
-            - extraPointsMissed * 1
+    // Default (standard-weight) special points — used by season aggregation,
+    // which is league-agnostic. Per-game league scoring threads real settings.
+    var specialPoints: Double { specialPoints(.standard) }
+
+    // Distance-tiered kicker scoring driven by the league's settings.
+    func kickerPoints(_ s: ScoringSettings) -> Double {
+        (fieldGoals0_19 + fieldGoals20_29 + fieldGoals30_39) * s.fgUnder40
+            + fieldGoals40_49 * s.fg40to49
+            + (fieldGoals50_59 + fieldGoals60Plus) * s.fg50plus
+            + extraPointsMade * s.patMade
+            + fieldGoalsMissed * s.fgMissed
+            + extraPointsMissed * s.patMissed
     }
 
-    // Standard team-defense scoring. Only DST rows (non-nil pointsAllowed) score;
-    // sacks +1, takeaways +2, def/ST TDs +6, safeties +2, plus a points-allowed
-    // tier bonus.
-    var defensePoints: Double {
+    // Team-defense scoring. Only DST rows (non-nil pointsAllowed) score; event
+    // values come from the league settings, plus the points-allowed tier bonus.
+    func defensePoints(_ s: ScoringSettings) -> Double {
         guard let pa = pointsAllowed else { return 0 }
-        return defSacks * 1
-            + defInterceptions * 2
-            + defFumbleRecoveries * 2
-            + defTouchdowns * 6
-            + defSafeties * 2
+        return defSacks * s.defSack
+            + defInterceptions * s.defInterception
+            + defFumbleRecoveries * s.defFumbleRecovery
+            + defTouchdowns * s.defTouchdown
+            + defSafeties * s.defSafety
             + Game.pointsAllowedBonus(pa)
     }
 

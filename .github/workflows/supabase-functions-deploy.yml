@@ -1,0 +1,44 @@
+name: Supabase functions deploy
+
+# Edge Function code (supabase/functions/**) previously only reached production
+# via a manual `supabase functions deploy`. That meant function changes merged
+# to main silently stayed stale until someone remembered to deploy by hand —
+# e.g. the kicker/DST parsing in sync_nflverse. This deploys them on merge,
+# mirroring the supabase-db-push workflow that handles migrations.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/functions/**'
+      - 'supabase/config.toml'
+      - '.github/workflows/supabase-functions-deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: supabase-functions-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link project
+        run: supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
+
+      # Deploys every function, honoring per-function verify_jwt from config.toml.
+      - name: Deploy Edge Functions
+        run: supabase functions deploy

@@ -759,22 +759,23 @@ enum Fantasy {
         eventLine("Receiving TDs", count: g.receivingTDs, weight: s.receivingTD)
         eventLine("Fumbles Lost", count: g.fumblesLost, weight: s.fumbleLost)
 
-        // Kicker (distance-tiered FGs + PATs). K/DST scoring is preset-independent
-        // and reads straight off the raw stat line.
-        eventLine("FG 0-39", count: g.fieldGoals0_19 + g.fieldGoals20_29 + g.fieldGoals30_39, weight: 3)
-        eventLine("FG 40-49", count: g.fieldGoals40_49, weight: 4)
-        eventLine("FG 50+", count: g.fieldGoals50_59 + g.fieldGoals60Plus, weight: 5)
-        eventLine("Extra Points", count: g.extraPointsMade, weight: 1)
-        eventLine("Missed FG", count: g.fieldGoalsMissed, weight: -1)
-        eventLine("Missed PAT", count: g.extraPointsMissed, weight: -1)
+        // Kicker (distance-tiered FGs + PATs). Reads straight off the raw stat
+        // line with the league's kicking weights — credited to whoever kicked,
+        // regardless of listed position.
+        eventLine("FG 0-39", count: g.fieldGoals0_19 + g.fieldGoals20_29 + g.fieldGoals30_39, weight: s.fgUnder40)
+        eventLine("FG 40-49", count: g.fieldGoals40_49, weight: s.fg40to49)
+        eventLine("FG 50+", count: g.fieldGoals50_59 + g.fieldGoals60Plus, weight: s.fg50plus)
+        eventLine("Extra Points", count: g.extraPointsMade, weight: s.patMade)
+        eventLine("Missed FG", count: g.fieldGoalsMissed, weight: s.fgMissed)
+        eventLine("Missed PAT", count: g.extraPointsMissed, weight: s.patMissed)
 
         // Team defense (only DST rows carry a points-allowed figure).
         if let pa = g.pointsAllowed {
-            eventLine("Sacks", count: g.defSacks, weight: 1)
-            eventLine("DEF Interceptions", count: g.defInterceptions, weight: 2)
-            eventLine("Fumble Recoveries", count: g.defFumbleRecoveries, weight: 2)
-            eventLine("Defensive TDs", count: g.defTouchdowns, weight: 6)
-            eventLine("Safeties", count: g.defSafeties, weight: 2)
+            eventLine("Sacks", count: g.defSacks, weight: s.defSack)
+            eventLine("DEF Interceptions", count: g.defInterceptions, weight: s.defInterception)
+            eventLine("Fumble Recoveries", count: g.defFumbleRecoveries, weight: s.defFumbleRecovery)
+            eventLine("Defensive TDs", count: g.defTouchdowns, weight: s.defTouchdown)
+            eventLine("Safeties", count: g.defSafeties, weight: s.defSafety)
             components.append(ScoreComponent(
                 label: "Points Allowed",
                 detail: "\(pa.statString) allowed",
