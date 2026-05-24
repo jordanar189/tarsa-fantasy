@@ -102,7 +102,15 @@ actor NFLDataService {
                 fumblesLost: g.fumblesLost,
                 fantasyPoints: g.fantasyPoints,
                 fantasyPointsPPR: g.fantasyPointsPPR,
-                fantasyPointsHalfPPR: g.fantasyPointsHalfPPR
+                fantasyPointsHalfPPR: g.fantasyPointsHalfPPR,
+                fieldGoals0_19: g.fieldGoals0_19, fieldGoals20_29: g.fieldGoals20_29,
+                fieldGoals30_39: g.fieldGoals30_39, fieldGoals40_49: g.fieldGoals40_49,
+                fieldGoals50_59: g.fieldGoals50_59, fieldGoals60Plus: g.fieldGoals60Plus,
+                fieldGoalsMissed: g.fieldGoalsMissed,
+                extraPointsMade: g.extraPointsMade, extraPointsMissed: g.extraPointsMissed,
+                defSacks: g.defSacks, defInterceptions: g.defInterceptions,
+                defFumbleRecoveries: g.defFumbleRecoveries, defTouchdowns: g.defTouchdowns,
+                defSafeties: g.defSafeties, pointsAllowed: g.pointsAllowed
             ))
         }
         for pid in assembled.keys {
@@ -255,6 +263,23 @@ actor NFLDataService {
         let fantasyPoints: Double
         let fantasyPointsPPR: Double
         let fantasyPointsHalfPPR: Double
+        // Kicking + team-defense inputs (added with the K/DST scoring overhaul).
+        // Decoded leniently so rows synced before the columns existed still load.
+        let fieldGoals0_19: Double
+        let fieldGoals20_29: Double
+        let fieldGoals30_39: Double
+        let fieldGoals40_49: Double
+        let fieldGoals50_59: Double
+        let fieldGoals60Plus: Double
+        let fieldGoalsMissed: Double
+        let extraPointsMade: Double
+        let extraPointsMissed: Double
+        let defSacks: Double
+        let defInterceptions: Double
+        let defFumbleRecoveries: Double
+        let defTouchdowns: Double
+        let defSafeties: Double
+        let pointsAllowed: Double?
         enum CodingKeys: String, CodingKey {
             case season, week, team, opponent, completions, attempts, carries, receptions, targets
             case playerID              = "player_id"
@@ -269,6 +294,60 @@ actor NFLDataService {
             case fantasyPoints         = "fantasy_points"
             case fantasyPointsPPR      = "fantasy_points_ppr"
             case fantasyPointsHalfPPR  = "fantasy_points_half_ppr"
+            case fieldGoals0_19        = "fg_made_0_19"
+            case fieldGoals20_29       = "fg_made_20_29"
+            case fieldGoals30_39       = "fg_made_30_39"
+            case fieldGoals40_49       = "fg_made_40_49"
+            case fieldGoals50_59       = "fg_made_50_59"
+            case fieldGoals60Plus      = "fg_made_60"
+            case fieldGoalsMissed      = "fg_missed"
+            case extraPointsMade       = "pat_made"
+            case extraPointsMissed     = "pat_missed"
+            case defSacks              = "def_sacks"
+            case defInterceptions      = "def_interceptions"
+            case defFumbleRecoveries   = "def_fumble_recoveries"
+            case defTouchdowns         = "def_tds"
+            case defSafeties           = "def_safeties"
+            case pointsAllowed         = "def_points_allowed"
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            playerID             = try c.decode(String.self, forKey: .playerID)
+            season               = try c.decode(Int.self,    forKey: .season)
+            week                 = try c.decode(Int.self,    forKey: .week)
+            team                 = try c.decodeIfPresent(String.self, forKey: .team) ?? ""
+            opponent             = try c.decodeIfPresent(String.self, forKey: .opponent) ?? ""
+            completions          = try c.decodeIfPresent(Double.self, forKey: .completions) ?? 0
+            attempts             = try c.decodeIfPresent(Double.self, forKey: .attempts) ?? 0
+            passingYards         = try c.decodeIfPresent(Double.self, forKey: .passingYards) ?? 0
+            passingTDs           = try c.decodeIfPresent(Double.self, forKey: .passingTDs) ?? 0
+            passingInterceptions = try c.decodeIfPresent(Double.self, forKey: .passingInterceptions) ?? 0
+            carries              = try c.decodeIfPresent(Double.self, forKey: .carries) ?? 0
+            rushingYards         = try c.decodeIfPresent(Double.self, forKey: .rushingYards) ?? 0
+            rushingTDs           = try c.decodeIfPresent(Double.self, forKey: .rushingTDs) ?? 0
+            receptions           = try c.decodeIfPresent(Double.self, forKey: .receptions) ?? 0
+            targets              = try c.decodeIfPresent(Double.self, forKey: .targets) ?? 0
+            receivingYards       = try c.decodeIfPresent(Double.self, forKey: .receivingYards) ?? 0
+            receivingTDs         = try c.decodeIfPresent(Double.self, forKey: .receivingTDs) ?? 0
+            fumblesLost          = try c.decodeIfPresent(Double.self, forKey: .fumblesLost) ?? 0
+            fantasyPoints        = try c.decodeIfPresent(Double.self, forKey: .fantasyPoints) ?? 0
+            fantasyPointsPPR     = try c.decodeIfPresent(Double.self, forKey: .fantasyPointsPPR) ?? 0
+            fantasyPointsHalfPPR = try c.decodeIfPresent(Double.self, forKey: .fantasyPointsHalfPPR) ?? 0
+            fieldGoals0_19       = try c.decodeIfPresent(Double.self, forKey: .fieldGoals0_19) ?? 0
+            fieldGoals20_29      = try c.decodeIfPresent(Double.self, forKey: .fieldGoals20_29) ?? 0
+            fieldGoals30_39      = try c.decodeIfPresent(Double.self, forKey: .fieldGoals30_39) ?? 0
+            fieldGoals40_49      = try c.decodeIfPresent(Double.self, forKey: .fieldGoals40_49) ?? 0
+            fieldGoals50_59      = try c.decodeIfPresent(Double.self, forKey: .fieldGoals50_59) ?? 0
+            fieldGoals60Plus     = try c.decodeIfPresent(Double.self, forKey: .fieldGoals60Plus) ?? 0
+            fieldGoalsMissed     = try c.decodeIfPresent(Double.self, forKey: .fieldGoalsMissed) ?? 0
+            extraPointsMade      = try c.decodeIfPresent(Double.self, forKey: .extraPointsMade) ?? 0
+            extraPointsMissed    = try c.decodeIfPresent(Double.self, forKey: .extraPointsMissed) ?? 0
+            defSacks             = try c.decodeIfPresent(Double.self, forKey: .defSacks) ?? 0
+            defInterceptions     = try c.decodeIfPresent(Double.self, forKey: .defInterceptions) ?? 0
+            defFumbleRecoveries  = try c.decodeIfPresent(Double.self, forKey: .defFumbleRecoveries) ?? 0
+            defTouchdowns        = try c.decodeIfPresent(Double.self, forKey: .defTouchdowns) ?? 0
+            defSafeties          = try c.decodeIfPresent(Double.self, forKey: .defSafeties) ?? 0
+            pointsAllowed        = try c.decodeIfPresent(Double.self, forKey: .pointsAllowed)
         }
     }
 

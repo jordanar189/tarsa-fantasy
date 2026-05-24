@@ -14,8 +14,9 @@ struct PlayerCacheStore {
     static let shared = PlayerCacheStore()
 
     // Bump when Player / Game / PlayerProfile shape changes so old caches
-    // discard cleanly. V2 adds the optional PlayerProfile field.
-    private static let version = 2
+    // discard cleanly. V2 adds the optional PlayerProfile field. V3 adds the
+    // kicker + team-defense stat fields on Game.
+    private static let version = 3
 
     private struct Envelope: Codable {
         let version: Int

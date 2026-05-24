@@ -6,8 +6,10 @@ enum Fantasy {
 
     // Fantasy-relevant positions for UI surfacing. nflverse data also includes
     // IDP rows (LB/DB/DL/CB/S/etc); the data layer keeps them for stats use
-    // but no browseable list should expose them until we add IDP support.
-    static let fantasyPositions: Set<String> = ["QB", "RB", "WR", "TE", "K"]
+    // but no browseable list should expose them until we add IDP support. DEF is
+    // the synthetic per-team defense (DEF_<TEAM>), surfaced now that team-defense
+    // scoring exists.
+    static let fantasyPositions: Set<String> = ["QB", "RB", "WR", "TE", "K", "DEF"]
     static func isFantasyPosition(_ position: String) -> Bool {
         fantasyPositions.contains(position.uppercased())
     }
@@ -34,6 +36,7 @@ enum Fantasy {
             t.fantasyPoints        += g.fantasyPoints
             t.fantasyPointsPPR     += g.fantasyPointsPPR
             t.fantasyPointsHalfPPR += g.fantasyPointsHalfPPR
+            t.specialPoints        += g.specialPoints
         }
         return t
     }
@@ -193,8 +196,8 @@ enum Fantasy {
     // cannot be picked again that loop — even if the per-round template
     // still permits it.
     //
-    // Final two rounds (rounds totalRounds-1 and totalRounds) prefer K
-    // (we don't model DEF as a roster position in this app).
+    // Final two rounds (rounds totalRounds-1 and totalRounds) are the K/DEF
+    // phase.
     //
     // If no allowed-pool candidate is available we fall back to the
     // highest-ADP player overall.
@@ -756,6 +759,29 @@ enum Fantasy {
         eventLine("Receiving TDs", count: g.receivingTDs, weight: s.receivingTD)
         eventLine("Fumbles Lost", count: g.fumblesLost, weight: s.fumbleLost)
 
+        // Kicker (distance-tiered FGs + PATs). K/DST scoring is preset-independent
+        // and reads straight off the raw stat line.
+        eventLine("FG 0-39", count: g.fieldGoals0_19 + g.fieldGoals20_29 + g.fieldGoals30_39, weight: 3)
+        eventLine("FG 40-49", count: g.fieldGoals40_49, weight: 4)
+        eventLine("FG 50+", count: g.fieldGoals50_59 + g.fieldGoals60Plus, weight: 5)
+        eventLine("Extra Points", count: g.extraPointsMade, weight: 1)
+        eventLine("Missed FG", count: g.fieldGoalsMissed, weight: -1)
+        eventLine("Missed PAT", count: g.extraPointsMissed, weight: -1)
+
+        // Team defense (only DST rows carry a points-allowed figure).
+        if let pa = g.pointsAllowed {
+            eventLine("Sacks", count: g.defSacks, weight: 1)
+            eventLine("DEF Interceptions", count: g.defInterceptions, weight: 2)
+            eventLine("Fumble Recoveries", count: g.defFumbleRecoveries, weight: 2)
+            eventLine("Defensive TDs", count: g.defTouchdowns, weight: 6)
+            eventLine("Safeties", count: g.defSafeties, weight: 2)
+            components.append(ScoreComponent(
+                label: "Points Allowed",
+                detail: "\(pa.statString) allowed",
+                points: Game.pointsAllowedBonus(pa)
+            ))
+        }
+
         // Reconcile to the score the game log actually shows. Anything the raw
         // line can't explain lands in "Other" so the components always sum to
         // the displayed total. (With custom settings the displayed score is
@@ -879,6 +905,7 @@ enum Fantasy {
             t.fantasyPoints        += s.fantasyPoints
             t.fantasyPointsPPR     += s.fantasyPointsPPR
             t.fantasyPointsHalfPPR += s.fantasyPointsHalfPPR
+            t.specialPoints        += s.specialPoints
         }
         return t
     }
@@ -892,7 +919,7 @@ enum Fantasy {
     // at that position — starters × teams, with FLEX split across RB/WR/TE — so
     // positional scarcity is baked in (an elite RB outranks an equal-scoring QB
     // in a 1-QB league). Scaled so the league's most valuable player ≈ 100.
-    // Pure: K is valued; team DEF isn't in the player data so it scores 0.
+    // Pure: K and team DEF are valued alongside the offensive positions.
     static func tradeValues(
         players: [String: Player],
         scoring: Scoring,
@@ -918,6 +945,7 @@ enum Fantasy {
             "WR": Double(config.wr) + flexShare,
             "TE": Double(config.te) + flexShare,
             "K":  Double(config.k),
+            "DEF": Double(config.def),
         ]
         var replacement: [String: Double] = [:]
         for (pos, pts) in byPosition {
@@ -979,6 +1007,7 @@ enum Fantasy {
             "WR": Double(config.wr) + flexShare,
             "TE": Double(config.te) + flexShare,
             "K":  Double(config.k),
+            "DEF": Double(config.def),
         ]
         var avgStarter: [String: Double] = [:]
         var replacement: [String: Double] = [:]
@@ -1003,7 +1032,7 @@ enum Fantasy {
         // Team weekly-score SD ≈ sqrt(Σ over starter slots of positional variance).
         var teamVar = 0.0
         for (pos, n) in [("QB", config.qb), ("RB", config.rb), ("WR", config.wr),
-                         ("TE", config.te), ("K", config.k)] {
+                         ("TE", config.te), ("K", config.k), ("DEF", config.def)] {
             teamVar += Double(n) * (withinVar[pos] ?? 0)
         }
         if config.flex > 0 {
