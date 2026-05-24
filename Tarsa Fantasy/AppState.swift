@@ -813,7 +813,7 @@ final class AppState {
         let lookup = latest.playerLookup
         var rosterFailures = 0
         for (created, source) in zip(league.teams, orderedSources) {
-            let roster = SleeperPromotion.appRosterIDs(for: source, lookup: lookup)
+            let roster = SleeperPromotion.resolveRoster(for: source, lookup: lookup, snapshot: snapshot)
             guard !roster.isEmpty else { continue }
             let starters = Fantasy.autoFillLineup(
                 roster: roster, players: snapshot,
