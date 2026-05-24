@@ -1483,6 +1483,31 @@ enum Fantasy {
         return out
     }
 
+    // Lifts precomputed projections out of a preseason projected snapshot for
+    // one week: each player's synthetic game for `week` becomes a
+    // PlayerProjection. The raw preseason snapshot has no games to project from,
+    // so the live projectAll pass returns nothing there — this lets the league
+    // Lineup/Matchup screens show the same numbers the browse surfaces already
+    // render off the projected snapshot. Only `points`/`opponent` are meaningful;
+    // the band/multiplier fields aren't surfaced for preseason rows.
+    static func projectionsFromSnapshot(
+        _ snapshot: [String: Player], season: Int, week: Int, scoring: Scoring
+    ) -> [String: PlayerProjection] {
+        var out: [String: PlayerProjection] = [:]
+        for (id, p) in snapshot where isFantasyPosition(p.position) {
+            guard let g = p.games.first(where: { $0.week == week }) else { continue }
+            let pts = round2(g.points(scoring: scoring))
+            out[id] = PlayerProjection(
+                playerID: id, season: season, week: week,
+                opponent: g.opponent, isHome: false,
+                points: pts, base: pts,
+                matchupMult: 1, scriptMult: 1, availability: 1,
+                low: pts, high: pts
+            )
+        }
+        return out
+    }
+
     // Builds a display-only snapshot for a not-yet-started season: each player's
     // `games` are replaced with synthetic per-week projections (points only, in
     // all three scoring fields) seeded from prior-season data. Feeding this into
