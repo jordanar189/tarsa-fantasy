@@ -113,7 +113,9 @@ struct LeagueShellView: View {
     @State private var isDragging = false
     @State private var dragOffset: CGFloat = 0   // positive = dragged up = taller
     @State private var keyboardHeight: CGFloat = 0
-    @State private var visited: Set<AppTab> = []
+    // Seeded with the cold-start default so the first tab renders on frame one
+    // (onAppear inserts the live value a tick later for any other entry point).
+    @State private var visited: Set<AppTab> = [.league]
 
     // Chat peek header height; the small gap left above an expanded panel.
     private let peekHeight: CGFloat = 56
@@ -272,14 +274,12 @@ struct LeagueShellView: View {
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
         )
+        // Keep the chat mounted through the close animation, then tear down its
+        // realtime listener once the panel has settled.
         withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
             chatExpanded = false
             dragOffset = 0
-        }
-        // Keep the chat mounted through the close animation, then tear down its
-        // realtime listener.
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 380_000_000)
+        } completion: {
             if !chatExpanded { bodyMounted = false }
         }
     }
@@ -324,6 +324,8 @@ struct CustomTabBar: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(item.label)
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
         .frame(height: Self.height)
