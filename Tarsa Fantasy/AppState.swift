@@ -814,6 +814,12 @@ final class AppState {
         let nameIndex = SleeperPromotion.nameIndex(for: snapshot)
         var rosterFailures = 0
         for (created, source) in zip(league.teams, orderedSources) {
+            // Carry the Sleeper team logo over (best-effort — purely cosmetic, so
+            // a failure here must never fail or roll back the promotion). Done
+            // before the empty-roster skip so logo-only teams still get branded.
+            if let logo = SleeperService.fullAvatarURLString(source.avatar) {
+                try? await remote.setTeamLogo(teamID: created.id, logoURL: logo)
+            }
             let roster = SleeperPromotion.resolveRoster(
                 for: source, lookup: lookup, snapshot: snapshot, nameIndex: nameIndex
             )

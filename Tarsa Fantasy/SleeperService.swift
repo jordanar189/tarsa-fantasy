@@ -35,7 +35,19 @@ actor SleeperService {
 
     nonisolated static func avatarURL(_ id: String?) -> URL? {
         guard let id, !id.isEmpty else { return nil }
+        // Custom (per-league) team avatars come through as full URLs already;
+        // plain user/league avatars are bare ids hosted under the thumbs CDN.
+        if id.hasPrefix("http://") || id.hasPrefix("https://") { return URL(string: id) }
         return URL(string: avatarBase + id)
+    }
+
+    // Full-resolution avatar URL string, for carrying a Sleeper team logo onto a
+    // promoted league's team (crests render larger than the thumbs used in the
+    // read-only archive list).
+    nonisolated static func fullAvatarURLString(_ id: String?) -> String? {
+        guard let id, !id.isEmpty else { return nil }
+        if id.hasPrefix("http://") || id.hasPrefix("https://") { return id }
+        return "https://sleepercdn.com/avatars/" + id
     }
 
     // MARK: - Light lookups (for the import picker)
@@ -150,7 +162,7 @@ actor SleeperService {
                 ownerID: r.ownerId,
                 teamName: teamName,
                 ownerName: owner?.displayName ?? owner?.username ?? "—",
-                avatar: owner?.avatar,
+                avatar: owner?.metadata?.avatar?.nilIfBlank ?? owner?.avatar,
                 wins: s?.wins ?? 0,
                 losses: s?.losses ?? 0,
                 ties: s?.ties ?? 0,
@@ -523,6 +535,9 @@ private struct SLUser: Decodable {
 }
 private struct SLUserMetadata: Decodable {
     let teamName: String?
+    // A custom per-league team avatar (full URL); takes precedence over the
+    // user's default avatar id when the manager set one.
+    let avatar: String?
 }
 
 private struct SLLeague: Decodable {

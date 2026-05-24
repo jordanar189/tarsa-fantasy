@@ -431,6 +431,19 @@ actor RemoteService {
         return try await league(id: updated.leagueId.uuidString)
     }
 
+    // Set just a team's logo. Used by Sleeper promotion to carry each team's
+    // avatar onto the created league. Skips the league re-fetch the fuller
+    // customization path does — promotion reloads the league once at the end.
+    // Commish-only on unclaimed teams via the teams_commish_update RLS policy.
+    func setTeamLogo(teamID: String, logoURL: String) async throws {
+        guard let teamUUID = UUID(uuidString: teamID) else { return }
+        struct LogoUpdate: Encodable { let logo_url: String }
+        _ = try await client.from("teams")
+            .update(LogoUpdate(logo_url: logoURL))
+            .eq("id", value: teamUUID)
+            .execute()
+    }
+
     // Team branding: name, logo URL, accent color, abbreviation. Any nil
     // leaves that field unchanged (name "" is treated as no-op for name);
     // logo_url / color_hex / abbreviation are sent as explicit JSON so passing
