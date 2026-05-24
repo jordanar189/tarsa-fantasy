@@ -1,35 +1,23 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @Environment(AppState.self) private var app
 
     init() {
-        // Tab bar + nav bar: use dynamic UIColors that resolve to dark or
-        // light per the current trait collection. SwiftUI's parent
-        // preferredColorScheme override flips the trait so these surfaces
-        // follow along automatically.
+        // Nav bar: use dynamic UIColors that resolve to dark or light per the
+        // current trait collection. SwiftUI's parent preferredColorScheme
+        // override flips the trait so these surfaces follow along automatically.
         let bgDynamic = UIColor { trait in
             trait.userInterfaceStyle == .dark
                 ? UIColor(red: 0.04, green: 0.05, blue: 0.10, alpha: 1)
                 : UIColor(red: 0.97, green: 0.97, blue: 0.98, alpha: 1)
-        }
-        let borderDynamic = UIColor { trait in
-            trait.userInterfaceStyle == .dark
-                ? UIColor(red: 0.14, green: 0.17, blue: 0.24, alpha: 1)
-                : UIColor(red: 0.88, green: 0.90, blue: 0.93, alpha: 1)
         }
         let titleDynamic = UIColor { trait in
             trait.userInterfaceStyle == .dark
                 ? UIColor(red: 0.91, green: 0.92, blue: 0.95, alpha: 1)
                 : UIColor(red: 0.07, green: 0.09, blue: 0.14, alpha: 1)
         }
-
-        let tabAppearance = UITabBarAppearance()
-        tabAppearance.configureWithOpaqueBackground()
-        tabAppearance.backgroundColor = bgDynamic
-        tabAppearance.shadowColor = borderDynamic
-        UITabBar.appearance().standardAppearance = tabAppearance
-        UITabBar.appearance().scrollEdgeAppearance = tabAppearance
 
         let navAppearance = UINavigationBarAppearance()
         navAppearance.configureWithOpaqueBackground()
@@ -112,49 +100,240 @@ struct ContentView: View {
     }
 }
 
-// The league-focused experience: NFL + League tabs with a Sleeper-style
-// pull-up league chat that peeks above the tab bar.
+// The league-focused experience: a custom bottom tab bar (League · Lineup ·
+// Matchup · Players) with a Sleeper-style pull-up league chat that peeks above
+// the bar. The chat is a custom panel rather than a sheet so its bottom edge
+// rests on top of the tab bar — pulling it up grows it upward and never covers
+// the bar.
 struct LeagueShellView: View {
     @Environment(AppState.self) private var app
-    @State private var showingChat = false
 
-    // Standard iPhone tab-bar height; lifts the chat peek so it sits just
-    // above the tab bar instead of covering it.
-    private let tabBarHeight: CGFloat = 49
+    @State private var chatExpanded = false
+    @State private var bodyMounted = false      // chat content lives only while open
+    @State private var isDragging = false
+    @State private var dragOffset: CGFloat = 0   // positive = dragged up = taller
+    @State private var keyboardHeight: CGFloat = 0
+    @State private var visited: Set<AppTab> = []
+
+    // Chat peek header height; the small gap left above an expanded panel.
+    private let peekHeight: CGFloat = 56
+    private let topGap: CGFloat = 8
+
+    private static let tabOrder: [AppTab] = [.league, .lineup, .matchup, .players]
 
     var body: some View {
         @Bindable var app = app
         ZStack(alignment: .bottom) {
-            TabView(selection: $app.tab) {
-                NFLHubView()
-                    .tabItem { Label("NFL", systemImage: "football.fill") }
-                    .tag(AppTab.nfl)
-
-                LeagueTabView()
-                    .tabItem { Label("League", systemImage: "trophy.fill") }
-                    .tag(AppTab.league)
-
-                LineupTabView()
-                    .tabItem { Label("Lineup", systemImage: "list.bullet.rectangle.portrait") }
-                    .tag(AppTab.lineup)
-
-                MatchupTabView()
-                    .tabItem { Label("Matchup", systemImage: "person.2.fill") }
-                    .tag(AppTab.matchup)
-            }
-            LeagueChatPeek { showingChat = true }
-                .padding(.bottom, tabBarHeight)
-        }
-        .sheet(isPresented: $showingChat) {
-            if let lg = app.selectedLeague {
-                VStack(spacing: 0) {
-                    LeagueChatTopBar(onClose: { showingChat = false })
-                    Divider().background(FFColor.border)
-                    LeagueChatView(league: lg)
+            tabContent
+                // Reserve room for the tab bar + chat peek so scroll content
+                // never hides behind them.
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    Color.clear.frame(height: CustomTabBar.height + peekHeight)
                 }
-                .presentationDetents([.large])
-                .presentationDragIndicator(.hidden)
+
+            chatLayer
+
+            CustomTabBar(selection: $app.tab)
+                .ignoresSafeArea(.keyboard, edges: .bottom)
+        }
+        .onAppear { visited.insert(app.tab) }
+        .onChange(of: app.tab) { _, t in
+            visited.insert(t)
+            // Switching tabs from the bar (which stays on top of the expanded
+            // chat) should drop the chat back down to reveal the new tab.
+            if chatExpanded { collapse() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+            let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue ?? .zero
+            let dur = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+            withAnimation(.easeOut(duration: dur)) { keyboardHeight = frame.height }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { note in
+            let dur = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+            withAnimation(.easeOut(duration: dur)) { keyboardHeight = 0 }
+        }
+    }
+
+    // All four tab roots are kept alive once visited (so per-tab state survives
+    // a switch), shown/hidden by opacity the way a TabView does. Lazy so a tab's
+    // data only loads after it's first opened.
+    private var tabContent: some View {
+        ZStack {
+            ForEach(Self.tabOrder, id: \.self) { tab in
+                if visited.contains(tab) {
+                    tabRoot(tab)
+                        .opacity(app.tab == tab ? 1 : 0)
+                        .allowsHitTesting(app.tab == tab)
+                        .zIndex(app.tab == tab ? 1 : 0)
+                }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func tabRoot(_ tab: AppTab) -> some View {
+        switch tab {
+        case .league:  LeagueTabView()
+        case .lineup:  LineupTabView()
+        case .matchup: MatchupTabView()
+        case .players: NFLHubView()
+        }
+    }
+
+    // The pull-up chat. Anchored so its bottom edge rests on top of the tab bar;
+    // it grows upward when expanded and, when the keyboard appears, shrinks from
+    // the bottom to sit on the keyboard so the composer stays visible.
+    @ViewBuilder
+    private var chatLayer: some View {
+        if let lg = app.selectedLeague {
+            // The reader ignores the bottom safe area (and keyboard), so it
+            // spans down to the device's bottom edge and `geo.safeAreaInsets`
+            // reports the real home-indicator inset — no UIKit lookup needed.
+            GeometryReader { geo in
+                let sab = geo.safeAreaInsets.bottom   // home indicator
+                let sat = geo.safeAreaInsets.top      // status bar (0 here)
+                let available = geo.size.height
+                let navPad = CustomTabBar.height + sab
+                let expandedH = max(peekHeight, available - navPad - sat - topGap)
+                let kb = chatExpanded ? keyboardHeight : 0
+                // With the keyboard up, lift the panel's bottom to the keyboard's
+                // top edge; otherwise rest it on top of the tab bar.
+                let bottomPad = kb > 0 ? max(navPad, kb) : navPad
+                let dragged = min(max((chatExpanded ? expandedH : peekHeight) + dragOffset, peekHeight), expandedH)
+                // While the keyboard is up, pin the top and let the panel shrink
+                // onto the keyboard instead of sliding off the top of the screen.
+                let live = kb > 0 ? max(peekHeight, available - sat - topGap - bottomPad) : dragged
+                let progress = Double((live - peekHeight) / max(1, expandedH - peekHeight))
+
+                ZStack(alignment: .bottom) {
+                    if bodyMounted {
+                        Color.black.opacity(0.45 * progress)
+                            .ignoresSafeArea()
+                            .contentShape(Rectangle())
+                            .onTapGesture { collapse() }
+                            .allowsHitTesting(chatExpanded && !isDragging)
+                    }
+                    chatPanel(lg, height: live, expandedH: expandedH)
+                        .padding(.bottom, bottomPad)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            }
+            .ignoresSafeArea(edges: .bottom)
+        }
+    }
+
+    private func chatPanel(_ lg: League, height: CGFloat, expandedH: CGFloat) -> some View {
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: 18, bottomLeadingRadius: 0,
+            bottomTrailingRadius: 0, topTrailingRadius: 18
+        )
+        return VStack(spacing: 0) {
+            LeagueChatTopBar(onClose: chatExpanded ? { collapse() } : nil)
+                .contentShape(Rectangle())
+                .onTapGesture { chatExpanded ? collapse() : expand() }
+                .gesture(dragGesture(expandedH: expandedH))
+            if bodyMounted {
+                Divider().background(FFColor.border)
+                LeagueChatView(league: lg)
+            }
+        }
+        .frame(height: height, alignment: .top)
+        .frame(maxWidth: .infinity)
+        .background(FFColor.surface)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(FFColor.border, lineWidth: 1))
+        .shadow(color: .black.opacity(0.25), radius: 12, y: -4)
+    }
+
+    private func dragGesture(expandedH: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                isDragging = true
+                dragOffset = -value.translation.height
+                if dragOffset > 4 { bodyMounted = true }
+            }
+            .onEnded { value in
+                isDragging = false
+                let predicted = -value.predictedEndTranslation.height
+                let target = (chatExpanded ? expandedH : peekHeight) + predicted
+                if target > (peekHeight + expandedH) / 2 { expand() } else { collapse() }
+            }
+    }
+
+    private func expand() {
+        bodyMounted = true
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            chatExpanded = true
+            dragOffset = 0
+        }
+    }
+
+    private func collapse() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
+        )
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            chatExpanded = false
+            dragOffset = 0
+        }
+        // Keep the chat mounted through the close animation, then tear down its
+        // realtime listener.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 380_000_000)
+            if !chatExpanded { bodyMounted = false }
+        }
+    }
+}
+
+// Custom bottom navigation bar styled to match the app: brand-gradient active
+// tab, surface fill, hairline top border. Fills the full width and extends its
+// background under the home indicator.
+struct CustomTabBar: View {
+    @Binding var selection: AppTab
+
+    static let height: CGFloat = 56
+
+    private static let items: [(tab: AppTab, label: String, icon: String)] = [
+        (.league,  "League",  "trophy.fill"),
+        (.lineup,  "Lineup",  "list.bullet.rectangle.portrait.fill"),
+        (.matchup, "Matchup", "person.2.fill"),
+        (.players, "Players", "football.fill"),
+    ]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Self.items, id: \.tab) { item in
+                let selected = selection == item.tab
+                Button {
+                    if selection != item.tab {
+                        withAnimation(.easeInOut(duration: 0.15)) { selection = item.tab }
+                    }
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: item.icon)
+                            .font(.system(size: 20, weight: .semibold))
+                        Text(item.label)
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .foregroundStyle(
+                        selected
+                            ? AnyShapeStyle(FFGradient.brand)
+                            : AnyShapeStyle(FFColor.textSecondary)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(height: Self.height)
+        .frame(maxWidth: .infinity)
+        .background(alignment: .top) {
+            FFColor.surface
+                .overlay(alignment: .top) {
+                    Rectangle().fill(FFColor.border).frame(height: 0.5)
+                }
+                .ignoresSafeArea(edges: .bottom)
         }
     }
 }
@@ -176,9 +355,9 @@ struct LeagueTabView: View {
 }
 
 // The shared "top of the chat page": a grabber + title row. Used both as the
-// peek (above the tab bar) and as the header of the expanded chat sheet, so
-// pulling the peek up reads as the same page rising. `onClose` is nil for the
-// peek and set for the sheet (collapse button).
+// collapsed peek (resting on top of the tab bar) and as the header of the
+// expanded panel, so pulling the peek up reads as the same page rising.
+// `onClose` is nil for the peek and set when expanded (collapse button).
 struct LeagueChatTopBar: View {
     var onClose: (() -> Void)? = nil
 
@@ -210,35 +389,6 @@ struct LeagueChatTopBar: View {
         }
         .frame(maxWidth: .infinity)
         .background(FFColor.surface)
-    }
-}
-
-// The peek shown above the tab bar — the top of the chat page poking up over
-// the bottom. Looks identical to the expanded sheet's header. Tap or swipe up
-// to open the full chat.
-struct LeagueChatPeek: View {
-    let open: () -> Void
-
-    private var topCorners: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            topLeadingRadius: 16, bottomLeadingRadius: 0,
-            bottomTrailingRadius: 0, topTrailingRadius: 16
-        )
-    }
-
-    var body: some View {
-        LeagueChatTopBar()
-            .clipShape(topCorners)
-            .overlay(topCorners.strokeBorder(FFColor.border, lineWidth: 1))
-            .shadow(color: .black.opacity(0.25), radius: 10, y: -3)
-            .contentShape(Rectangle())
-            .onTapGesture { open() }
-            .gesture(
-                DragGesture(minimumDistance: 10)
-                    .onEnded { value in
-                        if value.translation.height < -20 { open() }
-                    }
-            )
     }
 }
 

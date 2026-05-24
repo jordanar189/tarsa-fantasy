@@ -6,7 +6,7 @@ import Observation
 final class AppState {
 
     // Tab selection
-    var tab: AppTab = .nfl
+    var tab: AppTab = .league
 
     // Globally-presented player profile. Set via showPlayer(_:) so tapping a
     // player name anywhere in the app opens PlayerDetailView, without threading
