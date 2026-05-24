@@ -804,15 +804,14 @@ final class AppState {
             regularSeasonWeeks: regularSeasonWeeks
         )
 
-        // Populating rosters and backfilling history are both part of the
-        // promise of a "playable, imported" league, so treat them as one atomic
-        // unit: collect every write failure, and if anything fails roll the new
-        // league back and surface it rather than dropping the user into a
-        // half-populated league that looks like it succeeded. Created teams come
-        // back sorted by the [myTeam] + others order we inserted them in.
+        // Populating rosters is the core promise, so a failure here is fatal:
+        // collect failures and, if any occur, roll the new league back so the
+        // user gets a clean retry instead of a half-populated league that looks
+        // like it succeeded. Created teams come back sorted by the
+        // [myTeam] + others order we inserted them in.
         let snapshot = await loadSeason(seasonYear) ?? players(season: seasonYear)
         let lookup = latest.playerLookup
-        var failures: [String] = []
+        var rosterFailures = 0
         for (created, source) in zip(league.teams, orderedSources) {
             let roster = SleeperPromotion.appRosterIDs(for: source, lookup: lookup)
             guard !roster.isEmpty else { continue }
@@ -823,11 +822,20 @@ final class AppState {
             do {
                 _ = try await remote.setRoster(teamID: created.id, roster: roster, starters: starters)
             } catch {
-                failures.append("roster for \(created.name)")
+                rosterFailures += 1
             }
         }
+        guard rosterFailures == 0 else {
+            // Roll back so the user gets a clean retry instead of a partial
+            // league (and so retrying doesn't create a duplicate). Best-effort —
+            // if the delete itself fails we still report the original problem.
+            try? await remote.deleteLeague(league.id)
+            throw AppError.promotionFailed("\(rosterFailures) team roster\(rosterFailures == 1 ? "" : "s")")
+        }
 
-        // Backfill prior seasons' final standings into history. Any season
+        // Backfill prior seasons' final standings into history. Best-effort: the
+        // league is fully playable without it, so a history-write hiccup must
+        // never block (or undo) an otherwise-successful promotion. Any season
         // older than the live one is finished, so its standings are final.
         for season in imported.seasons where season.seasonYear < seasonYear {
             let standings = SleeperPromotion.standingsRows(for: season)
@@ -843,16 +851,13 @@ final class AppState {
                     championTeamName: champName
                 )
             } catch {
-                failures.append("\(season.seasonYear) history")
+                // Non-fatal — the league is fully playable without backfilled
+                // history. Log so a silent failure is still diagnosable rather
+                // than surfacing as an unexplained empty History tab.
+                #if DEBUG
+                print("Sleeper history backfill failed for \(season.seasonYear): \(error)")
+                #endif
             }
-        }
-
-        guard failures.isEmpty else {
-            // Roll back so the user gets a clean retry instead of a partial
-            // league (and so retrying doesn't create a duplicate). Best-effort —
-            // if the delete itself fails we still report the original problem.
-            try? await remote.deleteLeague(league.id)
-            throw AppError.promotionFailed(failures.joined(separator: ", "))
         }
 
         // Tag the local import as activated so the UI routes to the live league.

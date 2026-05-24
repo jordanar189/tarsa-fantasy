@@ -1789,6 +1789,16 @@ actor RemoteService {
                 "rank":           .integer(row.rank),
             ])
         })
+        // The deployed `write_league_season_archive(p_league_id, p_season,
+        // p_standings, p_scoring_leader_team_id, p_scoring_leader_name,
+        // p_champion_team_id default null, p_champion_team_name default null)`
+        // has NO SQL default for the scoring-leader params. Swift's synthesized
+        // Encodable omits nil optionals, which would drop those keys and make
+        // PostgREST fail to resolve the function — so encode every key
+        // explicitly (nil → JSON null) via a custom encode(to:). The champion
+        // params do have SQL defaults (an omitted key would be fine), but we
+        // encode them the same way so the payload is uniform — every parameter
+        // key is always present.
         struct ArchiveArgs: Encodable {
             let p_league_id: UUID
             let p_season: Int
@@ -1797,6 +1807,23 @@ actor RemoteService {
             let p_scoring_leader_name: String?
             let p_champion_team_id: UUID?
             let p_champion_team_name: String?
+
+            enum CodingKeys: String, CodingKey {
+                case p_league_id, p_season, p_standings
+                case p_scoring_leader_team_id, p_scoring_leader_name
+                case p_champion_team_id, p_champion_team_name
+            }
+            func encode(to encoder: Encoder) throws {
+                var c = encoder.container(keyedBy: CodingKeys.self)
+                try c.encode(p_league_id, forKey: .p_league_id)
+                try c.encode(p_season, forKey: .p_season)
+                try c.encode(p_standings, forKey: .p_standings)
+                // `encode` (not `encodeIfPresent`) so nil serializes as null.
+                try c.encode(p_scoring_leader_team_id, forKey: .p_scoring_leader_team_id)
+                try c.encode(p_scoring_leader_name, forKey: .p_scoring_leader_name)
+                try c.encode(p_champion_team_id, forKey: .p_champion_team_id)
+                try c.encode(p_champion_team_name, forKey: .p_champion_team_name)
+            }
         }
         _ = try await client.rpc("write_league_season_archive", params: ArchiveArgs(
             p_league_id: lid,
