@@ -318,6 +318,7 @@ struct MatchupTabView: View {
                             }
                         }
                     }
+                    .frame(maxWidth: .infinity)
                     if alignment == .trailing {
                         PlayerAvatar(url: e.headshotURL, fallback: e.name.initialsFromName, size: 30)
                     }
