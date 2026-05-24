@@ -4,23 +4,44 @@ import NukeUI
 
 // Shared small UI components used across screens.
 
+// Canonical headshot requests. Every small avatar decodes once, at one pixel
+// size, regardless of the point size it's shown at — so a player shown at
+// 30/34/36/40pt across screens shares a single decode and cache entry, and the
+// prefetcher can warm exactly the image the view later reads back (the cache
+// key includes the resize processor, so prefetch and display must build the
+// *same* request to hit). Headers above the canonical size (player detail,
+// compare) are few on screen and decode at their real size.
+enum AvatarImage {
+    // 44pt @3x — covers every list/roster avatar (≤40pt) with headroom.
+    static let canonicalMaxPoints: CGFloat = 44
+    static let canonicalPixels: CGFloat = 132
+
+    // Build the resize request in *pixels*. Passing pixels with `.pixels`
+    // avoids Nuke's `.points` path, which would multiply by the screen scale a
+    // second time and decode ~3× too large on retina devices.
+    static func request(_ url: String, displaySize: CGFloat = canonicalMaxPoints) -> ImageRequest? {
+        guard !url.isEmpty, let u = URL(string: url) else { return nil }
+        let pixels = displaySize <= canonicalMaxPoints
+            ? canonicalPixels
+            : displaySize * max(UIScreen.main.scale, 2)
+        return ImageRequest(
+            url: u,
+            processors: [ImageProcessors.Resize(
+                size: CGSize(width: pixels, height: pixels),
+                unit: .pixels,
+                contentMode: .aspectFill
+            )],
+            priority: .normal
+        )
+    }
+}
+
 struct PlayerAvatar: View {
     let url: String
     let fallback: String
     var size: CGFloat = 36
 
-    // Decode at the actual rendered pixel size so a 200px headshot doesn't
-    // sit in memory as a 200px UIImage for a 36pt avatar.
-    private var request: ImageRequest? {
-        guard let u = URL(string: url) else { return nil }
-        let scale = max(UIScreen.main.scale, 2)
-        let target = CGSize(width: size * scale, height: size * scale)
-        return ImageRequest(
-            url: u,
-            processors: [ImageProcessors.Resize(size: target, contentMode: .aspectFill)],
-            priority: .normal
-        )
-    }
+    private var request: ImageRequest? { AvatarImage.request(url, displaySize: size) }
 
     var body: some View {
         LazyImage(request: request) { state in
@@ -125,13 +146,14 @@ struct AvatarPrefetcher: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            // Prefetch the *same* canonical request PlayerAvatar reads back, so
+            // the warm lands in the decoded-image cache (keyed on the resize
+            // processor) and not just on disk.
             .onChange(of: urls) { _, new in
-                let requests = new.compactMap { URL(string: $0).map { ImageRequest(url: $0) } }
-                prefetcher.startPrefetching(with: requests)
+                prefetcher.startPrefetching(with: new.compactMap { AvatarImage.request($0) })
             }
             .onAppear {
-                let requests = urls.compactMap { URL(string: $0).map { ImageRequest(url: $0) } }
-                prefetcher.startPrefetching(with: requests)
+                prefetcher.startPrefetching(with: urls.compactMap { AvatarImage.request($0) })
             }
             .onDisappear { prefetcher.stopPrefetching() }
     }
