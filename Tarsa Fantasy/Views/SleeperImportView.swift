@@ -75,7 +75,7 @@ struct SleeperImportView: View {
             Text("Bring a league over")
                 .font(.ffTitle)
                 .foregroundStyle(FFColor.textPrimary)
-            Text("Import rosters, standings, matchups, transactions, the draft, and every prior season — read-only, straight from Sleeper.")
+            Text("Pull in rosters, standings, matchups, the draft and every prior season — then activate it as a live Tarsa league to draft, set lineups and trade here.")
                 .font(.ffBody)
                 .foregroundStyle(FFColor.textSecondary)
         }

@@ -26,6 +26,7 @@ struct ImportedLeagueDetailView: View {
     @State private var mode: Mode = .standings
     @State private var selectedSeasonID: String?
     @State private var reimporting = false
+    @State private var showingActivate = false
 
     private var league: ImportedLeague? { app.importedSleeperLeague(id: leagueID) }
 
@@ -67,11 +68,66 @@ struct ImportedLeagueDetailView: View {
                 }
             }
         }
+        .sheet(isPresented: $showingActivate) {
+            SleeperActivateView(leagueID: leagueID)
+        }
+    }
+
+    // Banner that turns the read-only archive into a real league. Once
+    // promoted, it instead jumps straight to the live league.
+    @ViewBuilder
+    private func activationBanner(league: ImportedLeague) -> some View {
+        if let liveID = league.activatedLeagueID {
+            Button {
+                Task { await app.selectLeague(liveID) }
+            } label: {
+                HStack(spacing: FFSpace.m) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(FFColor.positive)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Live in Tarsa").font(.ffHeadline).foregroundStyle(FFColor.textPrimary)
+                        Text("Open your playable league").font(.ffCaption).foregroundStyle(FFColor.textSecondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                .ffCard(padding: FFSpace.m)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, FFSpace.l)
+        } else {
+            Button {
+                showingActivate = true
+            } label: {
+                HStack(spacing: FFSpace.m) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .background(FFGradient.brand, in: Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Activate as a live league").font(.ffHeadline).foregroundStyle(FFColor.textPrimary)
+                        Text("Draft, set lineups & trade in Tarsa").font(.ffCaption).foregroundStyle(FFColor.textSecondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                .ffCard(padding: FFSpace.m)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, FFSpace.l)
+        }
     }
 
     @ViewBuilder
     private func content(league: ImportedLeague, season: ImportedSeason) -> some View {
         VStack(spacing: FFSpace.m) {
+            activationBanner(league: league)
             if league.seasons.count > 1 {
                 seasonSwitcher(league: league, season: season)
             }

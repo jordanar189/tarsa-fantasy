@@ -1763,6 +1763,52 @@ actor RemoteService {
         return fresh
     }
 
+    // Backfills one completed historical season's final standings into league
+    // history. Unlike completeLeagueSeason this targets an arbitrary past season
+    // and does NOT flip season_completed — it's a one-shot archive of imported
+    // (Sleeper) history. Historical teams/managers have no app UUIDs, so only
+    // names are stored for the scoring leader / champion (no head-to-head links).
+    func archiveImportedSeason(
+        leagueID: String,
+        season: Int,
+        standings: [StandingsRow],
+        scoringLeaderTeamName: String?,
+        championTeamName: String?
+    ) async throws {
+        guard let lid = UUID(uuidString: leagueID) else { return }
+        let standingsJSON: AnyJSON = .array(standings.map { row in
+            .object([
+                "id":             .string(row.id),
+                "name":           .string(row.name),
+                "wins":           .integer(row.wins),
+                "losses":         .integer(row.losses),
+                "ties":           .integer(row.ties),
+                "pointsFor":      .double(row.pointsFor),
+                "pointsAgainst":  .double(row.pointsAgainst),
+                "games":          .integer(row.games),
+                "rank":           .integer(row.rank),
+            ])
+        })
+        struct ArchiveArgs: Encodable {
+            let p_league_id: UUID
+            let p_season: Int
+            let p_standings: AnyJSON
+            let p_scoring_leader_team_id: UUID?
+            let p_scoring_leader_name: String?
+            let p_champion_team_id: UUID?
+            let p_champion_team_name: String?
+        }
+        _ = try await client.rpc("write_league_season_archive", params: ArchiveArgs(
+            p_league_id: lid,
+            p_season: season,
+            p_standings: standingsJSON,
+            p_scoring_leader_team_id: nil,
+            p_scoring_leader_name: scoringLeaderTeamName,
+            p_champion_team_id: nil,
+            p_champion_team_name: championTeamName
+        )).execute()
+    }
+
     // Commish-only. Spawns a new child league for the next season. Returns
     // the freshly created child League; teams are NOT cloned — callers can
     // claim teams normally with the new join code.

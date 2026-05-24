@@ -180,11 +180,16 @@ struct ImportedLeague: Codable, Hashable, Identifiable {
     let name: String
     let importedAt: Date
     let seasons: [ImportedSeason]
+    // Set once the import has been promoted into a live Tarsa league — holds
+    // that league's id so the UI can route to the playable league instead of
+    // the read-only archive. Optional (decodes to nil for pre-promotion files).
+    var activatedLeagueID: String? = nil
 
     var latest: ImportedSeason? { seasons.first }
     var seasonYear: Int { latest?.seasonYear ?? 0 }
     var scoringLabel: String { latest?.scoringLabel ?? "" }
     var teamCount: Int { latest?.teams.count ?? 0 }
+    var isActivated: Bool { activatedLeagueID != nil }
 }
 
 // MARK: - Lightweight pre-import lookups
