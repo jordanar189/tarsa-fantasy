@@ -1795,7 +1795,10 @@ actor RemoteService {
         // has NO SQL default for the scoring-leader params. Swift's synthesized
         // Encodable omits nil optionals, which would drop those keys and make
         // PostgREST fail to resolve the function — so encode every key
-        // explicitly (nil → JSON null) via a custom encode(to:).
+        // explicitly (nil → JSON null) via a custom encode(to:). The champion
+        // params do have SQL defaults (an omitted key would be fine), but we
+        // encode them the same way so the payload is uniform — every parameter
+        // key is always present.
         struct ArchiveArgs: Encodable {
             let p_league_id: UUID
             let p_season: Int

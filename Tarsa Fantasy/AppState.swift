@@ -842,13 +842,22 @@ final class AppState {
             guard !standings.isEmpty else { continue }
             let leaderName = season.standings.max(by: { $0.pointsFor < $1.pointsFor })?.teamName
             let champName = season.championRosterID.flatMap { season.teamsByRoster[$0]?.teamName }
-            try? await remote.archiveImportedSeason(
-                leagueID: league.id,
-                season: season.seasonYear,
-                standings: standings,
-                scoringLeaderTeamName: leaderName,
-                championTeamName: champName
-            )
+            do {
+                try await remote.archiveImportedSeason(
+                    leagueID: league.id,
+                    season: season.seasonYear,
+                    standings: standings,
+                    scoringLeaderTeamName: leaderName,
+                    championTeamName: champName
+                )
+            } catch {
+                // Non-fatal — the league is fully playable without backfilled
+                // history. Log so a silent failure is still diagnosable rather
+                // than surfacing as an unexplained empty History tab.
+                #if DEBUG
+                print("Sleeper history backfill failed for \(season.seasonYear): \(error)")
+                #endif
+            }
         }
 
         // Tag the local import as activated so the UI routes to the live league.
