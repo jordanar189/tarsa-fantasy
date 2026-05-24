@@ -261,7 +261,11 @@ struct LeagueShellView: View {
     }
 
     private func dragGesture(collapseDist: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 6)
+        // Measure in the global space, not the panel's local space: the panel is
+        // moved by .offset(y:) driven by this same gesture, so a local-space
+        // translation would shift with the panel and feed back into itself,
+        // making the drag stutter back and forth.
+        DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
                 isDragging = true
                 dragOffset = -value.translation.height
