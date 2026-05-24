@@ -241,15 +241,41 @@ struct Game: Codable, Hashable, Identifiable {
     var fantasyPoints: Double = 0
     var fantasyPointsPPR: Double = 0
     var fantasyPointsHalfPPR: Double = 0
+    // Kicking inputs (made FGs bucketed by distance + PATs + misses). Non-zero
+    // only on kicker rows; nflverse's fantasy_points is offense-only, so kicker
+    // points are computed here from these instead.
+    var fieldGoals0_19: Double = 0
+    var fieldGoals20_29: Double = 0
+    var fieldGoals30_39: Double = 0
+    var fieldGoals40_49: Double = 0
+    var fieldGoals50_59: Double = 0
+    var fieldGoals60Plus: Double = 0
+    var fieldGoalsMissed: Double = 0
+    var extraPointsMade: Double = 0
+    var extraPointsMissed: Double = 0
+    // Team-defense (DST) inputs, aggregated per team-week onto the DEF_<TEAM>
+    // row. `pointsAllowed` is non-nil only on those rows — it both feeds the
+    // points-allowed tier and flags the row as a team defense.
+    var defSacks: Double = 0
+    var defInterceptions: Double = 0
+    var defFumbleRecoveries: Double = 0
+    var defTouchdowns: Double = 0
+    var defSafeties: Double = 0
+    var pointsAllowed: Double? = nil
 
     var id: String { "\(season)-\(week)-\(team)" }
 
-    func points(scoring: Scoring) -> Double {
+    // Offensive points from nflverse's precomputed field for the named preset.
+    private func presetBase(_ scoring: Scoring) -> Double {
         switch scoring {
         case .standard: return fantasyPoints
         case .ppr:      return fantasyPointsPPR
         case .half:     return fantasyPointsHalfPPR
         }
+    }
+
+    func points(scoring: Scoring) -> Double {
+        presetBase(scoring) + specialPoints
     }
 
     func points(settings: ScoringSettings) -> Double {
@@ -259,7 +285,7 @@ struct Game: Codable, Hashable, Identifiable {
             rushingYards: rushingYards, rushingTDs: rushingTDs,
             receivingYards: receivingYards, receivingTDs: receivingTDs,
             receptions: receptions, fumblesLost: fumblesLost
-        )
+        ) + specialPoints
     }
 
     // Single funnel for league scoring: when custom settings are present and
@@ -270,6 +296,47 @@ struct Game: Codable, Hashable, Identifiable {
             return points(settings: settings)
         }
         return points(scoring: scoring)
+    }
+
+    // Kicker + team-defense points. Scoring-preset-independent (PPR doesn't move
+    // K/DST), so it's added on top of every offensive figure above. Each game
+    // row carries stats for exactly one role, so at most one term is non-zero.
+    var specialPoints: Double { kickerPoints + defensePoints }
+
+    // Distance-tiered kicker scoring: 3 pts inside 40, 4 pts 40–49, 5 pts 50+,
+    // 1 per PAT, −1 per missed FG/PAT.
+    var kickerPoints: Double {
+        (fieldGoals0_19 + fieldGoals20_29 + fieldGoals30_39) * 3
+            + fieldGoals40_49 * 4
+            + (fieldGoals50_59 + fieldGoals60Plus) * 5
+            + extraPointsMade * 1
+            - fieldGoalsMissed * 1
+            - extraPointsMissed * 1
+    }
+
+    // Standard team-defense scoring. Only DST rows (non-nil pointsAllowed) score;
+    // sacks +1, takeaways +2, def/ST TDs +6, safeties +2, plus a points-allowed
+    // tier bonus.
+    var defensePoints: Double {
+        guard let pa = pointsAllowed else { return 0 }
+        return defSacks * 1
+            + defInterceptions * 2
+            + defFumbleRecoveries * 2
+            + defTouchdowns * 6
+            + defSafeties * 2
+            + Game.pointsAllowedBonus(pa)
+    }
+
+    static func pointsAllowedBonus(_ pointsAllowed: Double) -> Double {
+        switch pointsAllowed {
+        case ..<1:   return 10   // shutout
+        case ..<7:   return 7
+        case ..<14:  return 4
+        case ..<21:  return 1
+        case ..<28:  return 0
+        case ..<35:  return -1
+        default:     return -4
+        }
     }
 }
 
@@ -419,13 +486,19 @@ struct SeasonTotals: Hashable {
     var fantasyPoints: Double = 0
     var fantasyPointsPPR: Double = 0
     var fantasyPointsHalfPPR: Double = 0
+    // Summed per-game kicker/DST points. Kept as a running sum (not recomputed
+    // from totaled raw stats) because the DST points-allowed tier is per-game,
+    // not additive — summing 30 points allowed across a season ≠ one tier.
+    var specialPoints: Double = 0
 
     func points(scoring: Scoring) -> Double {
+        let base: Double
         switch scoring {
-        case .standard: return fantasyPoints
-        case .ppr:      return fantasyPointsPPR
-        case .half:     return fantasyPointsHalfPPR
+        case .standard: base = fantasyPoints
+        case .ppr:      base = fantasyPointsPPR
+        case .half:     base = fantasyPointsHalfPPR
         }
+        return base + specialPoints
     }
 
     func points(settings: ScoringSettings) -> Double {
@@ -435,7 +508,7 @@ struct SeasonTotals: Hashable {
             rushingYards: rushingYards, rushingTDs: rushingTDs,
             receivingYards: receivingYards, receivingTDs: receivingTDs,
             receptions: receptions, fumblesLost: fumblesLost
-        )
+        ) + specialPoints
     }
 
     func points(scoring: Scoring, settings: ScoringSettings?) -> Double {

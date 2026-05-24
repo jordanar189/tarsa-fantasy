@@ -52,7 +52,34 @@ interface GameRow {
     receiving_yards: number; receiving_tds: number;
     fumbles_lost: number;
     fantasy_points: number; fantasy_points_ppr: number; fantasy_points_half_ppr: number;
+    // Kicking (made FGs bucketed by distance + PATs + misses). Zero for non-kickers.
+    fg_made_0_19: number; fg_made_20_29: number; fg_made_30_39: number;
+    fg_made_40_49: number; fg_made_50_59: number; fg_made_60: number;
+    fg_missed: number; pat_made: number; pat_missed: number;
+    // Team defense, aggregated per team-week onto the DEF_<TEAM> row. Zero/null
+    // on every individual player's row.
+    def_sacks: number; def_interceptions: number; def_fumble_recoveries: number;
+    def_tds: number; def_safeties: number;
+    def_points_allowed: number | null;
 }
+
+// Per team-week defensive accumulator, summed across every player on the team.
+// Turned into one DEF_<TEAM> game row once points allowed is joined from the
+// schedule.
+interface DefenseAgg {
+    team: string; season: number; week: number; opponent: string;
+    sacks: number; interceptions: number; fumble_recoveries: number;
+    tds: number; safeties: number;
+}
+
+// All-zero kicking + defense fields, spread into offensive/kicker game rows so
+// every row carries the full column set for the upsert.
+const ZERO_SPECIAL = {
+    fg_made_0_19: 0, fg_made_20_29: 0, fg_made_30_39: 0, fg_made_40_49: 0,
+    fg_made_50_59: 0, fg_made_60: 0, fg_missed: 0, pat_made: 0, pat_missed: 0,
+    def_sacks: 0, def_interceptions: 0, def_fumble_recoveries: 0,
+    def_tds: 0, def_safeties: 0, def_points_allowed: null as number | null,
+};
 
 Deno.serve(async (req: Request) => {
     try {
@@ -106,8 +133,42 @@ async function syncSeason(year: number): Promise<unknown> {
         return { error: `stats HTTP ${resp.status}` };
     }
     const csv = await resp.text();
-    const { players, games } = parseStatsCsv(csv);
+    const { players, games, defense } = parseStatsCsv(csv);
     if (players.size === 0) return { error: "empty parse" };
+
+    // Build one team-defense (DST) game row per team-week. Points allowed is the
+    // opponent's final score, joined from the already-synced schedule; rows whose
+    // score isn't known yet (game not final) keep a null tier input. Only teams
+    // with a seeded DEF_<TEAM> player get a row, so historical relocated-team
+    // codes (OAK/SD/STL) don't trip the player_games foreign key.
+    const pointsAllowed = await fetchPointsAllowed(year);
+    const validDefenseIDs = await fetchDefensePlayerIDs();
+    const defenseRows: GameRow[] = [];
+    for (const agg of defense.values()) {
+        const defID = `DEF_${agg.team}`;
+        if (!validDefenseIDs.has(defID)) continue;
+        const pa = pointsAllowed.get(`${agg.team}|${agg.week}`);
+        defenseRows.push({
+            ...ZERO_SPECIAL,
+            player_id: defID,
+            season: agg.season, week: agg.week,
+            team: agg.team, opponent: agg.opponent,
+            completions: 0, attempts: 0,
+            passing_yards: 0, passing_tds: 0, passing_interceptions: 0,
+            carries: 0, rushing_yards: 0, rushing_tds: 0,
+            receptions: 0, targets: 0, receiving_yards: 0, receiving_tds: 0,
+            fumbles_lost: 0,
+            // K/DST points are computed app-side from the raw stats below, so the
+            // precomputed fantasy fields stay 0 (the app adds the special points).
+            fantasy_points: 0, fantasy_points_ppr: 0, fantasy_points_half_ppr: 0,
+            def_sacks: round2(agg.sacks),
+            def_interceptions: agg.interceptions,
+            def_fumble_recoveries: agg.fumble_recoveries,
+            def_tds: agg.tds,
+            def_safeties: agg.safeties,
+            def_points_allowed: pa ?? null,
+        });
+    }
 
     // Augment with rosters data: ESPN IDs (for live-score xref) + bio columns.
     // Optional — sync still works if the rosters CSV 404s.
@@ -130,7 +191,7 @@ async function syncSeason(year: number): Promise<unknown> {
 
     // Upsert in chunks to stay within PostgREST payload limits.
     const playerRows = [...players.values()];
-    const gameRows   = games;
+    const gameRows   = [...games, ...defenseRows];
 
     await upsertChunks("players_cache", playerRows, 500, "id");
     await upsertChunks("player_games",  gameRows,  500, "player_id,season,week");
@@ -141,7 +202,7 @@ async function syncSeason(year: number): Promise<unknown> {
         last_synced_at: new Date().toISOString()
     });
 
-    return { players: playerRows.length, games: gameRows.length };
+    return { players: playerRows.length, games: gameRows.length, defenses: defenseRows.length };
 }
 
 // Off-season fallback: no weekly stats CSV yet, so refresh players_cache from
@@ -155,6 +216,38 @@ async function syncRostersOnly(year: number): Promise<unknown> {
     if (players.length === 0) return { skipped: "not_published_yet" };
     await upsertChunks("players_cache", players, 500, "id");
     return { rosters_only: players.length };
+}
+
+// [`${team}|${week}`: points allowed] for a season, derived from the synced
+// schedule's final scores (a team's points allowed = its opponent's score).
+// Games without a final score yet are omitted. Empty if schedules aren't synced.
+async function fetchPointsAllowed(year: number): Promise<Map<string, number>> {
+    interface SchedRow {
+        week: number; home_team: string; away_team: string;
+        home_score: number | null; away_score: number | null;
+    }
+    const { data, error } = await supa.from("nfl_schedules")
+        .select("week, home_team, away_team, home_score, away_score")
+        .eq("season", year);
+    const out = new Map<string, number>();
+    if (error || !data) return out;
+    for (const r of data as SchedRow[]) {
+        if (r.home_score == null || r.away_score == null) continue;
+        out.set(`${r.home_team}|${r.week}`, r.away_score);
+        out.set(`${r.away_team}|${r.week}`, r.home_score);
+    }
+    return out;
+}
+
+// The set of seeded team-defense player ids ("DEF_KC", …). DST game rows are
+// only written for these so the player_games FK to players_cache always holds.
+async function fetchDefensePlayerIDs(): Promise<Set<string>> {
+    const { data, error } = await supa.from("players_cache")
+        .select("id").eq("position", "DEF");
+    const out = new Set<string>();
+    if (error || !data) return out;
+    for (const r of data as { id: string }[]) out.add(r.id);
+    return out;
 }
 
 async function fetchRosterPlayers(year: number): Promise<PlayerRow[]> {
@@ -313,10 +406,12 @@ async function upsertChunks<T>(table: string, rows: T[], chunk: number, onConfli
     }
 }
 
-function parseStatsCsv(csv: string): { players: Map<string, PlayerRow>; games: GameRow[] } {
+function parseStatsCsv(csv: string): {
+    players: Map<string, PlayerRow>; games: GameRow[]; defense: Map<string, DefenseAgg>;
+} {
     const rows = parseCsv(csv);
     const header = rows.shift();
-    if (!header) return { players: new Map(), games: [] };
+    if (!header) return { players: new Map(), games: [], defense: new Map() };
     const col = (k: string) => header.indexOf(k);
     const ix = {
         season: col("season"), week: col("week"),
@@ -332,11 +427,22 @@ function parseStatsCsv(csv: string): { players: Map<string, PlayerRow>; games: G
         rec: col("receptions"), targets: col("targets"),
         recYds: col("receiving_yards"), recTds: col("receiving_tds"),
         fumSack: col("sack_fumbles_lost"), fumRush: col("rushing_fumbles_lost"), fumRec: col("receiving_fumbles_lost"),
-        fp: col("fantasy_points"), fpPpr: col("fantasy_points_ppr")
+        fp: col("fantasy_points"), fpPpr: col("fantasy_points_ppr"),
+        // Kicking
+        fgMade0_19: col("fg_made_0_19"), fgMade20_29: col("fg_made_20_29"),
+        fgMade30_39: col("fg_made_30_39"), fgMade40_49: col("fg_made_40_49"),
+        fgMade50_59: col("fg_made_50_59"), fgMade60: col("fg_made_60_"),
+        fgMissed: col("fg_missed"), patMade: col("pat_made"), patMissed: col("pat_missed"),
+        // Defense / special teams (per-player; aggregated to the team below)
+        defSacks: col("def_sacks"), defInt: col("def_interceptions"),
+        fumRecOpp: col("fumble_recovery_opp"),
+        defTds: col("def_tds"), stTds: col("special_teams_tds"),
+        defSafeties: col("def_safeties"),
     };
 
     const players = new Map<string, PlayerRow>();
     const games: GameRow[] = [];
+    const defense = new Map<string, DefenseAgg>();
     for (const r of rows) {
         if (ix.season_type >= 0 && (r[ix.season_type] ?? "").toUpperCase() !== "REG") continue;
         const pid = r[ix.pid]?.trim();
@@ -357,14 +463,35 @@ function parseStatsCsv(csv: string): { players: Map<string, PlayerRow>; games: G
             if (r[ix.team]) p.team = r[ix.team]!;
         }
 
+        const season = Math.trunc(num(r[ix.season]));
+        const week   = Math.trunc(num(r[ix.week]));
+        const team   = r[ix.team] ?? "";
+        const opp    = r[ix.opp] ?? "";
+
+        // Accumulate this player's defensive + return-TD contribution onto the
+        // team's DST line for the week. Done for every row (a return TD can sit
+        // on an offensive player's line), keyed by team-week.
+        if (team) {
+            const key = `${team}|${week}`;
+            const agg = defense.get(key) ?? {
+                team, season, week, opponent: opp,
+                sacks: 0, interceptions: 0, fumble_recoveries: 0, tds: 0, safeties: 0,
+            };
+            agg.sacks            += num(r[ix.defSacks]);
+            agg.interceptions    += num(r[ix.defInt]);
+            agg.fumble_recoveries += num(r[ix.fumRecOpp]);
+            agg.tds              += num(r[ix.defTds]) + num(r[ix.stTds]);
+            agg.safeties         += num(r[ix.defSafeties]);
+            if (!agg.opponent && opp) agg.opponent = opp;
+            defense.set(key, agg);
+        }
+
         const recs = num(r[ix.rec]);
         const fp = num(r[ix.fp]);
         games.push({
+            ...ZERO_SPECIAL,
             player_id: pid,
-            season: Math.trunc(num(r[ix.season])),
-            week: Math.trunc(num(r[ix.week])),
-            team: r[ix.team] ?? "",
-            opponent: r[ix.opp] ?? "",
+            season, week, team, opponent: opp,
             completions: num(r[ix.completions]),
             attempts: num(r[ix.attempts]),
             passing_yards: num(r[ix.passYds]),
@@ -380,10 +507,20 @@ function parseStatsCsv(csv: string): { players: Map<string, PlayerRow>; games: G
             fumbles_lost: num(r[ix.fumSack]) + num(r[ix.fumRush]) + num(r[ix.fumRec]),
             fantasy_points: fp,
             fantasy_points_ppr: num(r[ix.fpPpr]),
-            fantasy_points_half_ppr: round2(fp + 0.5 * recs)
+            fantasy_points_half_ppr: round2(fp + 0.5 * recs),
+            // Kicking inputs (zero for non-kickers).
+            fg_made_0_19: num(r[ix.fgMade0_19]),
+            fg_made_20_29: num(r[ix.fgMade20_29]),
+            fg_made_30_39: num(r[ix.fgMade30_39]),
+            fg_made_40_49: num(r[ix.fgMade40_49]),
+            fg_made_50_59: num(r[ix.fgMade50_59]),
+            fg_made_60: num(r[ix.fgMade60]),
+            fg_missed: num(r[ix.fgMissed]),
+            pat_made: num(r[ix.patMade]),
+            pat_missed: num(r[ix.patMissed]),
         });
     }
-    return { players, games };
+    return { players, games, defense };
 }
 
 function num(v: string | undefined): number {
