@@ -71,6 +71,7 @@ struct SimulationDraftReviewView: View {
         let name: String
         let position: String
         let team: String
+        let headshotURL: String
         let adpRank: Double?
         let positionRank: Int?
         let totalAtPosition: Int
@@ -89,6 +90,7 @@ struct SimulationDraftReviewView: View {
                 name: p.name,
                 position: p.position.uppercased(),
                 team: p.team,
+                headshotURL: p.headshotURL,
                 adpRank: adpRankings[p.id],
                 positionRank: pr?.rank,
                 totalAtPosition: pr?.totalAtPosition ?? (posTotals[p.position.uppercased()] ?? 0),
@@ -108,6 +110,7 @@ struct SimulationDraftReviewView: View {
 
     private func rosterRow(_ r: ReviewRow) -> some View {
         HStack(spacing: FFSpace.m) {
+            PlayerAvatar(url: r.headshotURL, fallback: r.name.initialsFromName, size: 36)
             VStack(alignment: .leading, spacing: 2) {
                 Text(r.name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                 HStack(spacing: 6) {

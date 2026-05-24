@@ -86,17 +86,20 @@ struct TradeBalanceView: View {
     private func breakdown(ids: [String], align: HorizontalAlignment) -> some View {
         VStack(alignment: align, spacing: 4) {
             ForEach(ids, id: \.self) { id in
-                let name = players[id]?.name ?? id
+                let p = players[id]
+                let name = p?.name ?? id
                 let v = (values[id] ?? 0).fpString
                 if align == .leading {
                     HStack(spacing: 6) {
                         Text(v).font(.ffMicro.bold()).foregroundStyle(FFColor.accent)
                             .frame(width: 34, alignment: .leading)
+                        PlayerAvatar(url: p?.headshotURL ?? "", fallback: name.initialsFromName, size: 20)
                         Text(name).font(.ffMicro).foregroundStyle(FFColor.textSecondary).lineLimit(1)
                     }
                 } else {
                     HStack(spacing: 6) {
                         Text(name).font(.ffMicro).foregroundStyle(FFColor.textSecondary).lineLimit(1)
+                        PlayerAvatar(url: p?.headshotURL ?? "", fallback: name.initialsFromName, size: 20)
                         Text(v).font(.ffMicro.bold()).foregroundStyle(FFColor.accent)
                             .frame(width: 34, alignment: .trailing)
                     }

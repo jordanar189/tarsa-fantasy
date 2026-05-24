@@ -300,18 +300,26 @@ struct MatchupTabView: View {
             Button {
                 if expanded.contains(e.playerID) { expanded.remove(e.playerID) } else { expanded.insert(e.playerID) }
             } label: {
-                VStack(alignment: alignment, spacing: 3) {
-                    Text(displayName(e)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
-                    statusAndContext(e, alignment: alignment)
-                    HStack(spacing: 4) {
-                        if context.actualPoints(e.playerID) != nil {
-                            Text(e.points.fpString).font(.ffStatMedium)
-                                .foregroundStyle(winning ? FFColor.accent : FFColor.textPrimary)
-                        } else {
-                            Text(context.projectedPoints(e.playerID).map { $0.fpString } ?? "—")
-                                .font(.ffStatMedium).foregroundStyle(FFColor.accent)
-                            Text("proj").font(.ffMicro).foregroundStyle(FFColor.textTertiary)
+                HStack(spacing: FFSpace.s) {
+                    if alignment == .leading {
+                        PlayerAvatar(url: e.headshotURL, fallback: e.name.initialsFromName, size: 30)
+                    }
+                    VStack(alignment: alignment, spacing: 3) {
+                        Text(displayName(e)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                        statusAndContext(e, alignment: alignment)
+                        HStack(spacing: 4) {
+                            if context.actualPoints(e.playerID) != nil {
+                                Text(e.points.fpString).font(.ffStatMedium)
+                                    .foregroundStyle(winning ? FFColor.accent : FFColor.textPrimary)
+                            } else {
+                                Text(context.projectedPoints(e.playerID).map { $0.fpString } ?? "—")
+                                    .font(.ffStatMedium).foregroundStyle(FFColor.accent)
+                                Text("proj").font(.ffMicro).foregroundStyle(FFColor.textTertiary)
+                            }
                         }
+                    }
+                    if alignment == .trailing {
+                        PlayerAvatar(url: e.headshotURL, fallback: e.name.initialsFromName, size: 30)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: frameAlign)
@@ -466,6 +474,9 @@ struct MatchupTabView: View {
                 HStack(spacing: FFSpace.s) {
                     Text(e.slot.label).font(.ffMicro.bold())
                         .foregroundStyle(FFColor.positionTint(e.slot.label)).frame(width: 40, alignment: .leading)
+                    if !e.playerID.isEmpty {
+                        PlayerAvatar(url: e.headshotURL, fallback: e.name.initialsFromName, size: 30)
+                    }
                     Text(e.playerID.isEmpty ? "Empty" : displayName(e))
                         .font(.ffBody).foregroundStyle(e.playerID.isEmpty ? FFColor.textTertiary : FFColor.textPrimary)
                     Spacer()
