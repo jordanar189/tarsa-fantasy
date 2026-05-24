@@ -529,6 +529,7 @@ struct DraftRoomView: View {
                 .foregroundStyle(FFColor.accent)
                 .frame(width: 24, alignment: .leading)
             if let player {
+                PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 36)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(player.name)
                         .font(.ffBody)
@@ -734,6 +735,7 @@ struct DraftRoomView: View {
                 .foregroundStyle(FFColor.textTertiary)
                 .frame(width: 36, alignment: .leading)
             if let player {
+                PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 36)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(player.name)
                         .font(.ffBody)
@@ -776,6 +778,9 @@ struct DraftRoomView: View {
                             Text("#\(p.pickNumber)")
                                 .font(.ffStatSmall).foregroundStyle(FFColor.accent)
                                 .frame(width: 40, alignment: .leading)
+                            if let player {
+                                PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 36)
+                            }
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(player?.name ?? p.playerID)
                                     .font(.ffBody).foregroundStyle(FFColor.textPrimary)

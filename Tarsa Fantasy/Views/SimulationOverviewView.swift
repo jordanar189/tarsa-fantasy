@@ -443,7 +443,8 @@ struct SimulationOverviewView: View {
                 VStack(spacing: 0) {
                     ForEach(top, id: \.playerID) { t in
                         trendRow(t, name: snapshot[t.playerID]?.name ?? t.playerID,
-                                 position: snapshot[t.playerID]?.position)
+                                 position: snapshot[t.playerID]?.position,
+                                 headshotURL: snapshot[t.playerID]?.headshotURL ?? "")
                     }
                 }
             }
@@ -451,8 +452,9 @@ struct SimulationOverviewView: View {
         .ffCard()
     }
 
-    private func trendRow(_ t: TrendingPlayer, name: String, position: String?) -> some View {
+    private func trendRow(_ t: TrendingPlayer, name: String, position: String?, headshotURL: String) -> some View {
         HStack(spacing: FFSpace.s) {
+            PlayerAvatar(url: headshotURL, fallback: name.initialsFromName, size: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                 if let p = position, !p.isEmpty {
@@ -490,7 +492,8 @@ struct SimulationOverviewView: View {
                         ForEach(top, id: \.playerID) { inj in
                             injuryRow(inj, name: snapshot[inj.playerID]?.name ?? inj.playerID,
                                       position: snapshot[inj.playerID]?.position,
-                                      team: snapshot[inj.playerID]?.team)
+                                      team: snapshot[inj.playerID]?.team,
+                                      headshotURL: snapshot[inj.playerID]?.headshotURL ?? "")
                         }
                     }
                 }
@@ -499,8 +502,9 @@ struct SimulationOverviewView: View {
         .ffCard()
     }
 
-    private func injuryRow(_ inj: Injury, name: String, position: String?, team: String?) -> some View {
+    private func injuryRow(_ inj: Injury, name: String, position: String?, team: String?, headshotURL: String) -> some View {
         HStack(spacing: FFSpace.s) {
+            PlayerAvatar(url: headshotURL, fallback: name.initialsFromName, size: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                 HStack(spacing: 4) {
