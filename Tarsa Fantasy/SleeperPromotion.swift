@@ -64,15 +64,19 @@ enum SleeperPromotion {
     // what keeps a promoted team looking like its Sleeper original. Players with
     // no match in the snapshot can't be rostered (the engine has no record of
     // them), so they're dropped.
+    // `nameIndex` is a full scan of the snapshot, so callers promoting a whole
+    // league should build it once (via `nameIndex(for:)`) and pass it in rather
+    // than rebuilding it for every team. Omitting it keeps the single-call API.
     static func resolveRoster(
         for team: ImportedTeam,
         lookup: [String: ImportedPlayer],
-        snapshot: [String: Player]
+        snapshot: [String: Player],
+        nameIndex precomputed: [String: [String]]? = nil
     ) -> [String] {
         // With no local snapshot to resolve against (e.g. season data failed to
         // load), fall back to Sleeper's raw gsis/DEF ids so promotion still
         // produces rosters rather than empty teams.
-        let index = snapshot.isEmpty ? [:] : nameIndex(snapshot)
+        let index = snapshot.isEmpty ? [:] : (precomputed ?? nameIndex(for: snapshot))
         var seen: Set<String> = []
         var out: [String] = []
         var ids = team.players
@@ -114,11 +118,18 @@ enum SleeperPromotion {
                 p?.games.count ?? 0
             )
         }
-        return candidates.max { rank($0) < rank($1) }
+        // Tie-break on the (unique) player id so the choice is stable across runs
+        // and devices when two candidates rank identically — Dictionary iteration
+        // order, which `candidates` inherits, is otherwise unspecified.
+        return candidates.max {
+            let ra = rank($0), rb = rank($1)
+            return ra == rb ? $0 < $1 : ra < rb
+        }
     }
 
-    // normalized name -> local player ids. Built once per roster resolve.
-    private static func nameIndex(_ snapshot: [String: Player]) -> [String: [String]] {
+    // normalized name -> local player ids. A full scan of the snapshot — build it
+    // once per promotion and hand it to `resolveRoster`, not once per team.
+    static func nameIndex(for snapshot: [String: Player]) -> [String: [String]] {
         var index: [String: [String]] = [:]
         for (id, p) in snapshot {
             let key = normalizedName(p.name)
