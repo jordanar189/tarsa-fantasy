@@ -31,7 +31,12 @@ struct FeedbackButton: View {
                 .contentShape(Circle())
                 .onTapGesture { showingSheet = true }
                 .gesture(
-                    DragGesture(minimumDistance: 8)
+                    // Global space, not local: the icon is moved by .offset
+                    // driven by this gesture, so a local-space translation would
+                    // shift with the icon and feed back into itself, making the
+                    // drag stutter. translation is a frame-independent delta, so
+                    // base + translation stays valid.
+                    DragGesture(minimumDistance: 8, coordinateSpace: .global)
                         .updating($dragTranslation) { value, state, _ in
                             state = value.translation
                         }

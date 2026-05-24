@@ -207,12 +207,30 @@ final class AppState {
         }
         let inj = await injuries(for: league)
         let inactive = await inactives(season: league.season, week: week)
-        let ctx = Fantasy.ProjectionContext(
-            season: league.season, week: week, scoring: league.scoring,
-            players: snapshot, schedule: schedule,
-            dvpByPosition: dvp, injuries: inj, inactives: inactive, config: .default
-        )
-        let projections = Fantasy.projectAll(context: ctx)
+
+        // Preseason: the raw snapshot has no games to project from, so a live
+        // projectAll pass comes back empty. Read projections out of the same
+        // prior-season-seeded projected snapshot the browse/draft surfaces use,
+        // so Lineup/Matchup show the same numbers as the Players tab. `players`
+        // stays the raw snapshot so hasPlayed/actualPoints don't mistake a
+        // projection for a finished game.
+        let projections: [String: PlayerProjection]
+        if isPreseason(season: league.season) {
+            await ensureProjectedSnapshot(season: league.season)
+        }
+        if let projected = projectedBySeason[league.season] {
+            projections = Fantasy.projectionsFromSnapshot(
+                projected, season: league.season, week: week, scoring: league.scoring
+            )
+        } else {
+            let ctx = Fantasy.ProjectionContext(
+                season: league.season, week: week, scoring: league.scoring,
+                players: snapshot, schedule: schedule,
+                dvpByPosition: dvp, injuries: inj, inactives: inactive, config: .default
+            )
+            projections = Fantasy.projectAll(context: ctx)
+        }
+
         return WeekContext(
             week: week, scoring: league.scoring, players: snapshot,
             schedule: schedule, dvpByPosition: dvp, injuries: inj,
