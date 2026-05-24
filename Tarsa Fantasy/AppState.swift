@@ -728,7 +728,12 @@ final class AppState {
     func importSleeperLeague(rootLeagueID: String) async throws -> ImportedLeague {
         let league = try await sleeper.importLeague(rootLeagueID: rootLeagueID)
         if let idx = importedSleeperLeagues.firstIndex(where: { $0.id == league.id }) {
-            importedSleeperLeagues[idx] = league
+            // Preserve the local-only activation link across a re-import — the
+            // Sleeper API never returns it, so a fresh fetch would drop it and
+            // the league would look un-promoted again.
+            var merged = league
+            merged.activatedLeagueID = importedSleeperLeagues[idx].activatedLeagueID
+            importedSleeperLeagues[idx] = merged
         } else {
             importedSleeperLeagues.insert(league, at: 0)
         }
@@ -768,8 +773,12 @@ final class AppState {
         let scoring = SleeperPromotion.scoring(fromLabel: latest.scoringLabel)
         let rosterConfig = SleeperPromotion.rosterConfig(from: latest.rosterPositions)
         let regularSeasonWeeks = SleeperPromotion.regularSeasonWeeks(from: latest)
-        let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let leagueName = (trimmedName?.isEmpty == false ? trimmedName! : imported.name)
+        let leagueName: String
+        if let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+            leagueName = trimmed
+        } else {
+            leagueName = imported.name
+        }
         let seasonYear = latest.seasonYear
 
         // Order teams so the user's team is first — createLeague claims index 0
@@ -795,10 +804,15 @@ final class AppState {
             regularSeasonWeeks: regularSeasonWeeks
         )
 
-        // Populate current rosters. Created teams come back sorted by the
-        // [myTeam] + others order we inserted them in.
+        // Populating rosters and backfilling history are both part of the
+        // promise of a "playable, imported" league, so treat them as one atomic
+        // unit: collect every write failure, and if anything fails roll the new
+        // league back and surface it rather than dropping the user into a
+        // half-populated league that looks like it succeeded. Created teams come
+        // back sorted by the [myTeam] + others order we inserted them in.
         let snapshot = await loadSeason(seasonYear) ?? players(season: seasonYear)
         let lookup = latest.playerLookup
+        var failures: [String] = []
         for (created, source) in zip(league.teams, orderedSources) {
             let roster = SleeperPromotion.appRosterIDs(for: source, lookup: lookup)
             guard !roster.isEmpty else { continue }
@@ -806,7 +820,11 @@ final class AppState {
                 roster: roster, players: snapshot,
                 config: rosterConfig, scoring: scoring
             )
-            _ = try? await remote.setRoster(teamID: created.id, roster: roster, starters: starters)
+            do {
+                _ = try await remote.setRoster(teamID: created.id, roster: roster, starters: starters)
+            } catch {
+                failures.append("roster for \(created.name)")
+            }
         }
 
         // Backfill prior seasons' final standings into history. Any season
@@ -816,13 +834,25 @@ final class AppState {
             guard !standings.isEmpty else { continue }
             let leaderName = season.standings.max(by: { $0.pointsFor < $1.pointsFor })?.teamName
             let champName = season.championRosterID.flatMap { season.teamsByRoster[$0]?.teamName }
-            try? await remote.archiveImportedSeason(
-                leagueID: league.id,
-                season: season.seasonYear,
-                standings: standings,
-                scoringLeaderTeamName: leaderName,
-                championTeamName: champName
-            )
+            do {
+                try await remote.archiveImportedSeason(
+                    leagueID: league.id,
+                    season: season.seasonYear,
+                    standings: standings,
+                    scoringLeaderTeamName: leaderName,
+                    championTeamName: champName
+                )
+            } catch {
+                failures.append("\(season.seasonYear) history")
+            }
+        }
+
+        guard failures.isEmpty else {
+            // Roll back so the user gets a clean retry instead of a partial
+            // league (and so retrying doesn't create a duplicate). Best-effort —
+            // if the delete itself fails we still report the original problem.
+            try? await remote.deleteLeague(league.id)
+            throw AppError.promotionFailed(failures.joined(separator: ", "))
         }
 
         // Tag the local import as activated so the UI routes to the live league.
@@ -1772,10 +1802,13 @@ final class AppState {
 
     enum AppError: LocalizedError {
         case notSignedIn, leagueNotFound
+        case promotionFailed(String)
         var errorDescription: String? {
             switch self {
             case .notSignedIn:    return "You're not signed in."
             case .leagueNotFound: return "League not found."
+            case .promotionFailed(let what):
+                return "Couldn't finish setting up the league (\(what) failed). Nothing was kept — please try again."
             }
         }
     }

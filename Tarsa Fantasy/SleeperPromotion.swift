@@ -29,7 +29,7 @@ enum SleeperPromotion {
         if qb + rb + wr + te + flex + k + def == 0 { return .default }
         return RosterConfig(
             qb: qb, rb: rb, wr: wr, te: te,
-            flex: flex, k: k, def: def, bench: max(bench, 0), ir: ir
+            flex: flex, k: k, def: def, bench: bench, ir: ir
         )
     }
 

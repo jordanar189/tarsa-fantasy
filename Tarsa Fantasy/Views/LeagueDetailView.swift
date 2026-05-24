@@ -217,10 +217,14 @@ struct LeagueDetailView: View {
         await app.loadSeason(league?.season ?? app.selectedSeason)
         await app.loadLeagueNicknames(leagueID: leagueID)
         draft = await app.draft(leagueID: leagueID)
-        // Surface History when archives exist even before a season is completed
-        // here (e.g. a Sleeper import backfilled prior seasons).
-        if let lg = league, !lg.isTest, !lg.seasonCompleted, lg.parentLeagueID == nil {
-            hasHistory = !(await app.leagueHistory(leagueID: leagueID)).isEmpty
+        // A Sleeper-promoted league has prior seasons backfilled into history
+        // before any season is completed here. Detect that from the local
+        // import (no extra round-trip) so the History section only appears for
+        // promoted leagues that actually carried over past seasons — the
+        // seasonCompleted / parentLeagueID checks in visibleSections cover the
+        // normal cases.
+        if let imp = app.importedSleeperLeagues.first(where: { $0.activatedLeagueID == leagueID }) {
+            hasHistory = imp.seasons.contains { $0.seasonYear < imp.seasonYear }
         }
     }
 
