@@ -162,10 +162,10 @@ async function syncSeason(year: number): Promise<unknown> {
             // precomputed fantasy fields stay 0 (the app adds the special points).
             fantasy_points: 0, fantasy_points_ppr: 0, fantasy_points_half_ppr: 0,
             def_sacks: round2(agg.sacks),
-            def_interceptions: agg.interceptions,
-            def_fumble_recoveries: agg.fumble_recoveries,
-            def_tds: agg.tds,
-            def_safeties: agg.safeties,
+            def_interceptions: round2(agg.interceptions),
+            def_fumble_recoveries: round2(agg.fumble_recoveries),
+            def_tds: round2(agg.tds),
+            def_safeties: round2(agg.safeties),
             def_points_allowed: pa ?? null,
         });
     }

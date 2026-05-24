@@ -196,8 +196,8 @@ enum Fantasy {
     // cannot be picked again that loop — even if the per-round template
     // still permits it.
     //
-    // Final two rounds (rounds totalRounds-1 and totalRounds) prefer K
-    // (we don't model DEF as a roster position in this app).
+    // Final two rounds (rounds totalRounds-1 and totalRounds) are the K/DEF
+    // phase.
     //
     // If no allowed-pool candidate is available we fall back to the
     // highest-ADP player overall.
@@ -771,7 +771,7 @@ enum Fantasy {
         // Team defense (only DST rows carry a points-allowed figure).
         if let pa = g.pointsAllowed {
             eventLine("Sacks", count: g.defSacks, weight: 1)
-            eventLine("Interceptions", count: g.defInterceptions, weight: 2)
+            eventLine("DEF Interceptions", count: g.defInterceptions, weight: 2)
             eventLine("Fumble Recoveries", count: g.defFumbleRecoveries, weight: 2)
             eventLine("Defensive TDs", count: g.defTouchdowns, weight: 6)
             eventLine("Safeties", count: g.defSafeties, weight: 2)
@@ -919,7 +919,7 @@ enum Fantasy {
     // at that position — starters × teams, with FLEX split across RB/WR/TE — so
     // positional scarcity is baked in (an elite RB outranks an equal-scoring QB
     // in a 1-QB league). Scaled so the league's most valuable player ≈ 100.
-    // Pure: K is valued; team DEF isn't in the player data so it scores 0.
+    // Pure: K and team DEF are valued alongside the offensive positions.
     static func tradeValues(
         players: [String: Player],
         scoring: Scoring,
