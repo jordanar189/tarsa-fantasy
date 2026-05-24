@@ -536,6 +536,13 @@ struct SeasonTotals: Hashable {
     // Summed per-game kicker/DST points. Kept as a running sum (not recomputed
     // from totaled raw stats) because the DST points-allowed tier is per-game,
     // not additive — summing 30 points allowed across a season ≠ one tier.
+    //
+    // Note: this sum always uses *standard* K/DST weights (it's accumulated from
+    // Game's no-arg `specialPoints`, i.e. `specialPoints(.standard)`). Season
+    // totals feed the league-agnostic surfaces (Players/Rankings tabs, trade
+    // value, WAR), so custom league K/DST weights deliberately don't apply
+    // there. The per-game league paths (teamWeekScore/scoreboard/standings) call
+    // `Game.points(scoring:settings:)` and DO honor custom K/DST weights.
     var specialPoints: Double = 0
 
     func points(scoring: Scoring) -> Double {

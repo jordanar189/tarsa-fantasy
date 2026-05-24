@@ -26,6 +26,8 @@ jobs:
 
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      # Consumed by `supabase link` (non-interactive DB connection check); the
+      # deploy step itself doesn't touch the database.
       SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
 
     steps:
