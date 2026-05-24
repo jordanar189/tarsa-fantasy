@@ -811,9 +811,12 @@ final class AppState {
         // [myTeam] + others order we inserted them in.
         let snapshot = await loadSeason(seasonYear) ?? players(season: seasonYear)
         let lookup = latest.playerLookup
+        let nameIndex = SleeperPromotion.nameIndex(for: snapshot)
         var rosterFailures = 0
         for (created, source) in zip(league.teams, orderedSources) {
-            let roster = SleeperPromotion.appRosterIDs(for: source, lookup: lookup)
+            let roster = SleeperPromotion.resolveRoster(
+                for: source, lookup: lookup, snapshot: snapshot, nameIndex: nameIndex
+            )
             guard !roster.isEmpty else { continue }
             let starters = Fantasy.autoFillLineup(
                 roster: roster, players: snapshot,
