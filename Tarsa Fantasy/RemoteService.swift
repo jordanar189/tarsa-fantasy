@@ -1547,6 +1547,35 @@ actor RemoteService {
         return out
     }
 
+    // Full injury history for one player across every season we have on file.
+    // Raw weekly rows (one per weekly report) — collapse into events client-side
+    // via Fantasy.injuryEvents. Powers the player injury-history tracker.
+    func injuryHistory(playerID: String) async -> [InjuryHistoryRow] {
+        struct Row: Decodable {
+            let season: Int
+            let week: Int
+            let status: String
+            let details: String?
+            let practiceStatus: String?
+            enum CodingKeys: String, CodingKey {
+                case season, week, status, details
+                case practiceStatus = "practice_status"
+            }
+        }
+        let rows: [Row] = (try? await client.from("injury_history")
+            .select("season, week, status, details, practice_status")
+            .eq("player_id", value: playerID)
+            .order("season", ascending: true)
+            .order("week", ascending: true)
+            .execute().value) ?? []
+        return rows.map {
+            InjuryHistoryRow(
+                season: $0.season, week: $0.week, status: $0.status,
+                details: $0.details, practiceStatus: $0.practiceStatus
+            )
+        }
+    }
+
     private static let plainDate: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"

@@ -1336,6 +1336,13 @@ final class AppState {
         await remote.playerNicknameHistory(playerID: playerID)
     }
 
+    // Full career injury history for one player, collapsed into distinct events
+    // (newest first). Season-independent — covers every season on file.
+    func injuryHistory(playerID: String) async -> [InjuryEvent] {
+        let rows = await remote.injuryHistory(playerID: playerID)
+        return Fantasy.injuryEvents(from: rows)
+    }
+
     @discardableResult
     func setTeamDivision(teamID: String, division: Int?) async throws -> League? {
         try await remote.setTeamDivision(teamID: teamID, division: division)
