@@ -361,9 +361,10 @@ struct DraftRoomView: View {
 
     @ViewBuilder
     private func playersList(draft: Draft, league: League) -> some View {
-        // Display snapshot — projected points in preseason. Pick/auto-pick logic
-        // below still runs on the real snapshot (app.players), so projections
-        // never affect what gets drafted or scored.
+        // Display snapshot — projected points in preseason; also feeds
+        // starterNeeds for the late-draft position restriction. The actual
+        // pick/auto-pick RPCs run on the real snapshot, so projections never
+        // affect what gets drafted or scored.
         let players = Fantasy.playersFor(league: league, snapshot: app.displayPlayers(season: league.season))
         let pickedIDs = Set(picks.map(\.playerID))
         let myTeam = league.teams.first(where: { $0.ownerID == app.session?.userID })

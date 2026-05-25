@@ -487,8 +487,11 @@ enum Fantasy {
         week: Int? = nil
     ) -> (starters: [String], bench: [String]) {
         // Reserves (IR + taxi) sit outside the active lineup: never start, never
+        // count. Taxi membership is only honored while the league has taxi slots
+        // configured, so disabling taxi returns stashed players to the active
+        // roster instead of leaving them as unscorable ghosts.
         // appear on the bench, never score.
-        let reservedSet = Set(team.ir).union(team.taxi)
+        let reservedSet = Set(team.ir).union(config.taxi > 0 ? Set(team.taxi) : Set<String>())
         // Prefer the frozen lineup for the requested week, then the live
         // lineup, then an auto-fill.
         let chosen: [String]? = {
@@ -1283,7 +1286,8 @@ enum Fantasy {
         settings: ScoringSettings? = nil
     ) -> Double {
         let frozen = Set((team.weeklyLineups[week] ?? []).filter { !$0.isEmpty })
-        let reserves = Set(team.ir).union(team.taxi).subtracting(frozen)
+        let taxiReserved = config.taxi > 0 ? Set(team.taxi) : Set<String>()
+        let reserves = Set(team.ir).union(taxiReserved).subtracting(frozen)
         let pool = Set(team.roster).union(frozen)
         let ranked = pool
             .filter { !reserves.contains($0) }

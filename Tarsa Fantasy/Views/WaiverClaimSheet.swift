@@ -24,7 +24,8 @@ struct WaiverClaimSheet: View {
     // IR players occupy extra capacity, so only active (non-IR) players count
     // against the roster limit.
     private var activeRosterCount: Int {
-        let reserved = Set(team.ir).union(team.taxi)
+        let taxiReserved = league.rosterConfig.taxi > 0 ? Set(team.taxi) : Set<String>()
+        let reserved = Set(team.ir).union(taxiReserved)
         return team.roster.filter { !reserved.contains($0) }.count
     }
 

@@ -16,6 +16,9 @@ struct SimulationOverviewView: View {
     @State private var inactivesAtWeek: Set<String> = []
     @State private var loaded: Bool = false
     @State private var scoreboardWeek: Int? = nil
+    // Cached so the (heavy) optimal-lineup math runs once per appearance/week
+    // change rather than on every SwiftUI render of the team-stats card.
+    @State private var teamStats: [TeamSeasonStats] = []
 
     private var currentWeek: Int { league.simulatedWeek ?? 0 }
     private var scheduleLen: Int { league.schedule.count }
@@ -362,9 +365,7 @@ struct SimulationOverviewView: View {
     // Max PF % (efficiency), PPG, best/worst week, and a schedule-independent
     // all-play record. Scrolls horizontally so the full column set fits on phone.
     private var teamStatsCard: some View {
-        let players = Fantasy.playersFor(league: league,
-                                         snapshot: app.players(season: league.season))
-        let stats = Fantasy.teamSeasonStats(league: league, players: players)
+        let stats = teamStats
         let uid = app.session?.userID
         return VStack(alignment: .leading, spacing: FFSpace.s) {
             Text("TEAM STATS").ffEyebrow()
@@ -633,6 +634,10 @@ struct SimulationOverviewView: View {
     private func refreshContext() async {
         loaded = false
         defer { loaded = true }
+        // Compute the team-stats table once here (it runs optimalWeekPoints over
+        // every team-week) instead of inline in the card's body on each render.
+        let statsPlayers = Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
+        self.teamStats = Fantasy.teamSeasonStats(league: league, players: statsPlayers)
         if league.isTest && currentWeek == 0 {
             trending = []
             injuriesAtWeek = [:]

@@ -670,6 +670,10 @@ actor RemoteService {
         if let options = p.options   { obj["options"] = .array(options.map { .string($0) }) }
         if let players = p.players   { obj["players"] = .array(players.map { .string($0) }) }
         if let seeking = p.seeking   { obj["seeking"] = .array(seeking.map { .string($0) }) }
+        // Parallel player-id arrays so trade-block chips stay tappable after a
+        // reload/fetch (nil/empty entries render as plain, non-linked chips).
+        if let ids = p.playerIDs     { obj["playerIDs"] = .array(ids.map { .string($0) }) }
+        if let ids = p.seekingIDs    { obj["seekingIDs"] = .array(ids.map { .string($0) }) }
         if let note = p.note         { obj["note"] = .string(note) }
         if let teamName = p.teamName { obj["teamName"] = .string(teamName) }
         if let allow = p.allowMultiple   { obj["allowMultiple"] = .bool(allow) }
@@ -805,8 +809,10 @@ actor RemoteService {
         }
         if !roster.contains(addPlayerID) { roster.append(addPlayerID) }
         // Reserves (IR + taxi) sit outside the active roster, so they don't
-        // count toward the size limit — only active players do.
-        let reserved = Set(team.ir).union(team.taxi)
+        // count toward the size limit — only active players do. Taxi only counts
+        // as reserved while the league has taxi slots configured.
+        let taxiReserved = league.rosterConfig.taxi > 0 ? Set(team.taxi) : Set<String>()
+        let reserved = Set(team.ir).union(taxiReserved)
         let activeCount = roster.filter { !reserved.contains($0) }.count
         guard activeCount <= league.rosterConfig.totalSize else {
             throw RemoteError.rosterFull
