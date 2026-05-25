@@ -1608,6 +1608,95 @@ struct Injury: Hashable {
     }
 }
 
+// MARK: - Injury history (player injury tracker)
+
+// One raw weekly row from the injury_history table (sourced from nflverse
+// injury reports). The same injury spans multiple weekly reports; a run of
+// these collapses into an InjuryEvent for display (see Fantasy.injuryEvents).
+struct InjuryHistoryRow: Hashable, Sendable {
+    let season: Int
+    let week: Int               // 0 = preseason / training-camp report
+    let status: String?         // 'Out','Questionable','Doubtful'; nullable in source
+    let details: String?        // body part, e.g. 'Knee', 'Hamstring'
+    let practiceStatus: String? // 'DNP','LP','FP'
+}
+
+// Coarse body-part grouping for the heat map. Paired groups expose two
+// drawable regions (left + right). The source data carries no laterality, so
+// both sides are lit equally ("mirror both sides").
+enum BodyPartGroup: String, CaseIterable, Hashable, Sendable {
+    case head
+    case shoulder
+    case arm
+    case hand
+    case upperBody
+    case lowerBody
+    case upperLeg
+    case knee
+    case lowerLeg
+    case foot
+
+    var displayName: String {
+        switch self {
+        case .head:      return "Head"
+        case .shoulder:  return "Shoulder"
+        case .arm:       return "Arm"
+        case .hand:      return "Hand"
+        case .upperBody: return "Upper Body"
+        case .lowerBody: return "Lower Body"
+        case .upperLeg:  return "Upper Leg"
+        case .knee:      return "Knee"
+        case .lowerLeg:  return "Lower Leg"
+        case .foot:      return "Foot"
+        }
+    }
+
+    // Drawable regions this group occupies — one for central parts, both
+    // sides for paired limbs.
+    var regions: [BodyRegion] {
+        switch self {
+        case .head:      return [.head]
+        case .upperBody: return [.upperBody]
+        case .lowerBody: return [.lowerBody]
+        case .shoulder:  return [.leftShoulder, .rightShoulder]
+        case .arm:       return [.leftArm, .rightArm]
+        case .hand:      return [.leftHand, .rightHand]
+        case .upperLeg:  return [.leftUpperLeg, .rightUpperLeg]
+        case .knee:      return [.leftKnee, .rightKnee]
+        case .lowerLeg:  return [.leftLowerLeg, .rightLowerLeg]
+        case .foot:      return [.leftFoot, .rightFoot]
+        }
+    }
+}
+
+// A single drawable region on the body silhouette.
+enum BodyRegion: String, CaseIterable, Hashable, Sendable {
+    case head
+    case leftShoulder, rightShoulder
+    case leftArm, rightArm
+    case leftHand, rightHand
+    case upperBody, lowerBody
+    case leftUpperLeg, rightUpperLeg
+    case leftKnee, rightKnee
+    case leftLowerLeg, rightLowerLeg
+    case leftFoot, rightFoot
+}
+
+// A distinct injury: consecutive weekly reports of the same body part
+// collapsed into one event, tagged with the worst status seen across the run.
+struct InjuryEvent: Identifiable, Hashable, Sendable {
+    let group: BodyPartGroup?   // nil when the report couldn't be localized
+    let rawDetail: String       // original report text ("Knee", "Illness", …)
+    let season: Int
+    let startWeek: Int
+    let endWeek: Int
+    let worstStatus: String
+    let severity: Int           // 1 (mild) … 4 (severe); drives the gradient
+
+    var id: String { "\(season)-\(startWeek)-\(endWeek)-\(rawDetail)" }
+    var weeksOut: Int { max(1, endWeek - startWeek + 1) }
+}
+
 // Depth chart entry at a specific (season, week, team). depth = 1 is the
 // starter, 2 is the immediate backup, etc.
 struct DepthChartEntry: Hashable {
