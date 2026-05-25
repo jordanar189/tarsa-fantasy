@@ -1554,7 +1554,7 @@ actor RemoteService {
         struct Row: Decodable {
             let season: Int
             let week: Int
-            let status: String
+            let status: String?     // nflverse report_status is nullable
             let details: String?
             let practiceStatus: String?
             enum CodingKeys: String, CodingKey {

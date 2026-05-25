@@ -80,7 +80,7 @@ struct PlayerDetailView: View {
                             case .splits:   splitsSection(for: player)
                             case .advanced: advancedSection(for: player)
                             case .matchups: matchupsSection(for: player)
-                            case .injuries: injurySection(for: player)
+                            case .injuries: injurySection()
                             }
                         }
                         .padding(.horizontal, FFSpace.l)
@@ -190,14 +190,18 @@ struct PlayerDetailView: View {
         injuryLoadToken &+= 1
         let token = injuryLoadToken
         injuryLoading = true
+        // Clear stale data up front so a player switch never renders the
+        // previous player's injuries during the fetch window — with no events
+        // the section falls back to its loading state.
+        injuryEvents = []
+        // Reset to the default all-time view whenever a new player loads.
+        injuryStartSeason = nil
+        injuryEndSeason = nil
         let result = await app.injuryHistory(playerID: p.id)
         guard token == injuryLoadToken else { return }
         injuryEvents = result
         injuryLoadedPlayerID = p.id
         injuryLoading = false
-        // Reset to the default all-time view whenever a new player loads.
-        injuryStartSeason = nil
-        injuryEndSeason = nil
     }
 
     // Recompute the scoring-dependent derived state after the active scoring
@@ -1097,7 +1101,7 @@ struct PlayerDetailView: View {
     // MARK: - Injuries (history tracker)
 
     @ViewBuilder
-    private func injurySection(for p: Player) -> some View {
+    private func injurySection() -> some View {
         if injuryLoading && injuryEvents.isEmpty {
             injuryMessageCard {
                 HStack(spacing: FFSpace.s) {
@@ -1116,11 +1120,11 @@ struct PlayerDetailView: View {
                 }
             }
         } else {
-            injuryContent(for: p)
+            injuryContent()
         }
     }
 
-    private func injuryContent(for p: Player) -> some View {
+    private func injuryContent() -> some View {
         let allSeasons = injuryEvents.map(\.season)
         let minS = allSeasons.min() ?? 0
         let maxS = allSeasons.max() ?? 0

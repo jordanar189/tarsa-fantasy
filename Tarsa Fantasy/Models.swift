@@ -1616,7 +1616,7 @@ struct Injury: Hashable {
 struct InjuryHistoryRow: Hashable, Sendable {
     let season: Int
     let week: Int               // 0 = preseason / training-camp report
-    let status: String          // 'Out','Questionable','Doubtful', sometimes ''
+    let status: String?         // 'Out','Questionable','Doubtful'; nullable in source
     let details: String?        // body part, e.g. 'Knee', 'Hamstring'
     let practiceStatus: String? // 'DNP','LP','FP'
 }

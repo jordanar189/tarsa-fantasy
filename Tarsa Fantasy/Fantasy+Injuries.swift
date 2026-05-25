@@ -69,9 +69,9 @@ extension Fantasy {
                     runEnd += 1
                 }
                 let run = Array(sorted[runStart...runEnd])
-                let worst = run.max {
-                    injurySeverity(forStatus: $0.status) < injurySeverity(forStatus: $1.status)
-                }!
+                guard let worst = run.max(by: {
+                    injurySeverity(forStatus: $0.status ?? "") < injurySeverity(forStatus: $1.status ?? "")
+                }) else { runStart = runEnd + 1; continue }
                 let display = run
                     .compactMap { row -> String? in
                         let d = (row.details ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -84,8 +84,8 @@ extension Fantasy {
                     season: run.first!.season,
                     startWeek: run.first!.week,
                     endWeek: run.last!.week,
-                    worstStatus: worst.status,
-                    severity: injurySeverity(forStatus: worst.status)
+                    worstStatus: worst.status ?? "",
+                    severity: injurySeverity(forStatus: worst.status ?? "")
                 ))
                 runStart = runEnd + 1
             }
