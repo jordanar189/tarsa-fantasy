@@ -165,7 +165,8 @@ actor RemoteService {
                 createdAt: row.createdAt,
                 joinCode: row.joinCode,
                 creatorID: row.creatorId.uuidString,
-                isTest: row.isTest
+                isTest: row.isTest,
+                isDynasty: row.isDynasty
             )
         }
     }
@@ -233,7 +234,8 @@ actor RemoteService {
         playoffTeams: Int = 6,
         playoffReseed: Bool = true,
         divisionNames: [String] = [],
-        scoringSettings: ScoringSettings? = nil
+        scoringSettings: ScoringSettings? = nil,
+        isDynasty: Bool = false
     ) async throws -> League {
         guard let creatorUUID = UUID(uuidString: creatorID) else {
             throw RemoteError.invalidUserID
@@ -282,6 +284,7 @@ actor RemoteService {
             let playoff_reseed: Bool
             let division_names: AnyJSON
             let scoring_settings: AnyJSON?
+            let is_dynasty: Bool
         }
         let leagueID = UUID()
         // Initial priority: reverse-order of team creation (last team picks
@@ -302,7 +305,8 @@ actor RemoteService {
             playoff_teams: cappedPlayoffTeams,
             playoff_reseed: playoffReseed,
             division_names: stringsAsAnyJSON(cleanedDivisions),
-            scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON)
+            scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON),
+            is_dynasty: isDynasty
         )
         let insertedLeague: LeagueRow = try await client.from("leagues")
             .insert(leagueInsert)
@@ -602,6 +606,7 @@ actor RemoteService {
             ),
             isTest: row.isTest,
             simulatedWeek: row.simulatedWeek,
+            isDynasty: row.isDynasty,
             parentLeagueID: row.parentLeagueId?.uuidString,
             seasonCompleted: row.seasonCompleted,
             seasonCompletedAt: row.seasonCompletedAt,
@@ -1849,18 +1854,72 @@ actor RemoteService {
         )).execute()
     }
 
-    // Commish-only. Spawns a new child league for the next season. Returns
-    // the freshly created child League; teams are NOT cloned — callers can
-    // claim teams normally with the new join code.
+    // Commish-only. Spawns a new child league for the next season. For a
+    // standard league teams are NOT cloned — owners re-claim with the new join
+    // code (a fresh redraft). For a dynasty league every team is carried forward
+    // with its owner, branding, and roster intact (so rosters are never
+    // cleared). The whole rollover is atomic: we generate the new team IDs and a
+    // round-robin schedule over them up front and hand both to the RPC, which
+    // writes the league row, schedule, waiver priority, and cloned teams in a
+    // single transaction. That avoids a half-initialized child (and duplicate
+    // children on retry) if anything fails mid-rollover.
     func rolloverLeague(parentID: String, newSeason: Int, newName: String?) async throws -> League? {
         guard let pid = UUID(uuidString: parentID) else { return nil }
+
+        // Dynasty needs the parent's teams + flag before the call so the
+        // schedule can reference the carried-over team IDs. Fail loudly rather
+        // than silently rolling a dynasty league over with an empty payload.
+        guard let parent = try await self.league(id: parentID) else {
+            throw RemoteError.parentLeagueNotFound
+        }
+        var teamsJSON: AnyJSON = .array([])
+        var scheduleJSON: AnyJSON = .array([])
+        var waiverPriority: [String] = []
+        if parent.isDynasty, !parent.teams.isEmpty {
+            let newIDs = parent.teams.map { _ in UUID().uuidString }
+            let schedule = Fantasy.generateSchedule(
+                teamIDs: newIDs, weeks: parent.regularSeasonWeeks
+            )
+            scheduleJSON = scheduleAsAnyJSON(schedule)
+            // Default pre-season priority: reverse team order (last picks first).
+            waiverPriority = Array(newIDs.reversed())
+            teamsJSON = .array(zip(parent.teams, newIDs).enumerated().map { idx, pair in
+                dynastyTeamJSON(newID: pair.1, team: pair.0, sortIndex: idx)
+            })
+        }
+
         struct Args: Encodable {
-            let p_parent_id: UUID; let p_new_season: Int; let p_new_name: String
+            let p_parent_id: UUID
+            let p_new_season: Int
+            let p_new_name: String
+            let p_schedule: AnyJSON
+            let p_waiver_priority: [String]
+            let p_teams: AnyJSON
         }
         let row: LeagueRow = try await client.rpc("rollover_league", params: Args(
-            p_parent_id: pid, p_new_season: newSeason, p_new_name: newName ?? ""
+            p_parent_id: pid, p_new_season: newSeason, p_new_name: newName ?? "",
+            p_schedule: scheduleJSON, p_waiver_priority: waiverPriority, p_teams: teamsJSON
         )).execute().value
         return try await self.league(id: row.id.uuidString)
+    }
+
+    // Serializes a carried-over dynasty team for the rollover RPC. Roster, IR,
+    // owner, division, and branding come forward; the new season's lineups and
+    // weekly snapshots reset (omitted here).
+    private func dynastyTeamJSON(newID: String, team: FantasyTeam, sortIndex: Int) -> AnyJSON {
+        .object([
+            "id":           .string(newID),
+            "name":         .string(team.name),
+            "owner_id":     team.ownerID.map { AnyJSON.string($0) } ?? .null,
+            "sort_index":   .integer(sortIndex),
+            "division":     team.division.map { AnyJSON.integer($0) } ?? .null,
+            "roster":       stringsAsAnyJSON(team.roster),
+            "starters":     stringsAsAnyJSON(team.starters),
+            "ir":           stringsAsAnyJSON(team.ir),
+            "logo_url":     team.logoURL.map { AnyJSON.string($0) } ?? .null,
+            "color_hex":    team.colorHex.map { AnyJSON.string($0) } ?? .null,
+            "abbreviation": team.abbreviation.map { AnyJSON.string($0) } ?? .null
+        ])
     }
 
     // Walks the parent chain from `leagueID` upward and returns every
@@ -3004,7 +3063,7 @@ actor RemoteService {
 
     enum RemoteError: LocalizedError {
         case invalidUserID, tooFewTeams, tooManyTeams, joinCodeCollision,
-             rosterFull, playerLocked, emptyMessage
+             rosterFull, playerLocked, emptyMessage, parentLeagueNotFound
         var errorDescription: String? {
             switch self {
             case .invalidUserID:     return "Invalid user."
@@ -3014,6 +3073,7 @@ actor RemoteService {
             case .rosterFull:        return "Your roster is full — choose a player to drop."
             case .playerLocked:      return "This player's game is in progress and can't be added or dropped."
             case .emptyMessage:      return "Message can't be empty."
+            case .parentLeagueNotFound: return "Couldn't load the league to roll over. Try again."
             }
         }
     }
@@ -3065,6 +3125,7 @@ struct LeagueRow: Codable, Hashable {
     let tradeVoteHours: Int
     let isTest: Bool
     let simulatedWeek: Int?
+    let isDynasty: Bool
     let parentLeagueId: UUID?
     let seasonCompleted: Bool
     let seasonCompletedAt: Date?
@@ -3093,6 +3154,7 @@ struct LeagueRow: Codable, Hashable {
         case tradeVoteHours       = "trade_vote_hours"
         case isTest               = "is_test"
         case simulatedWeek        = "simulated_week"
+        case isDynasty            = "is_dynasty"
         case parentLeagueId       = "parent_league_id"
         case seasonCompleted      = "season_completed"
         case seasonCompletedAt    = "season_completed_at"
@@ -3129,6 +3191,7 @@ struct LeagueRow: Codable, Hashable {
         tradeVoteHours       = try c.decodeIfPresent(Int.self,     forKey: .tradeVoteHours)       ?? 24
         isTest               = try c.decodeIfPresent(Bool.self,    forKey: .isTest)               ?? false
         simulatedWeek        = try c.decodeIfPresent(Int.self,     forKey: .simulatedWeek)
+        isDynasty            = try c.decodeIfPresent(Bool.self,    forKey: .isDynasty)            ?? false
         parentLeagueId       = try c.decodeIfPresent(UUID.self,    forKey: .parentLeagueId)
         seasonCompleted      = try c.decodeIfPresent(Bool.self,    forKey: .seasonCompleted)      ?? false
         seasonCompletedAt    = try c.decodeIfPresent(Date.self,    forKey: .seasonCompletedAt)
