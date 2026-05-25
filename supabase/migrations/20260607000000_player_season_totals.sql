@@ -95,7 +95,10 @@ create or replace function public.player_career(
 )
 returns table (
     season                  int,
-    position                text,
+    -- Quoted: `position` is a keyword that can't be a function/type name, so it
+    -- is illegal as an unquoted column name in a RETURNS TABLE clause. Quoting
+    -- keeps the output column (and the JSON key the client decodes) as `position`.
+    "position"              text,
     teams                   text[],
     games_played            int,
     completions             numeric,
