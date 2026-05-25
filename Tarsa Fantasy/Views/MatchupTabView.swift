@@ -75,8 +75,7 @@ struct MatchupTabView: View {
         guard let league else { return [1] }
         var weeks = league.schedule.map(\.week)
         if league.playoffTeams >= 2 {
-            let rounds = max(1, Int(ceil(log2(Double(league.playoffTeams)))))
-            for r in 0..<rounds { weeks.append(league.playoffStartWeek + r) }
+            weeks.append(contentsOf: league.playoffStartWeek...league.playoffEndWeek)
         }
         return weeks.isEmpty ? [1] : weeks
     }
@@ -115,7 +114,7 @@ struct MatchupTabView: View {
         guard let league, let mine = myTeam else { return nil }
         if week > league.regularSeasonWeeks {
             let bracket = Fantasy.playoffBracket(league: league, players: leaguePlayers)
-            guard let round = bracket.rounds.first(where: { $0.week == week }),
+            guard let round = bracket.rounds.first(where: { week >= $0.week && week <= $0.endWeek }),
                   let game = round.games.first(where: { $0.top.teamID == mine.id || $0.bottom.teamID == mine.id })
             else { return (mine, nil) }
             let oppID = game.top.teamID == mine.id ? game.bottom.teamID : game.top.teamID

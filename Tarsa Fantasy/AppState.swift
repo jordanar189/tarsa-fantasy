@@ -688,6 +688,7 @@ final class AppState {
         regularSeasonWeeks: Int = 14,
         playoffTeams: Int = 6,
         playoffReseed: Bool = true,
+        weeksPerRound: Int = 1,
         divisionNames: [String] = [],
         scoringSettings: ScoringSettings? = nil,
         isDynasty: Bool = false
@@ -701,6 +702,7 @@ final class AppState {
             regularSeasonWeeks: regularSeasonWeeks,
             playoffTeams: playoffTeams,
             playoffReseed: playoffReseed,
+            weeksPerRound: weeksPerRound,
             divisionNames: divisionNames,
             scoringSettings: scoringSettings,
             isDynasty: isDynasty
@@ -1251,12 +1253,15 @@ final class AppState {
     func updateLeague(
         leagueID: String, name: String, scoring: Scoring, rosterConfig: RosterConfig,
         playoffTeams: Int, playoffReseed: Bool,
-        scoringSettings: ScoringSettings?, divisionNames: [String]
+        scoringSettings: ScoringSettings?, divisionNames: [String],
+        regularSeasonWeeks: Int, weeksPerRound: Int, schedule: [ScheduleWeek]
     ) async throws -> League? {
         let updated = try await remote.updateLeague(
             leagueID: leagueID, name: name, scoring: scoring, rosterConfig: rosterConfig,
             playoffTeams: playoffTeams, playoffReseed: playoffReseed,
-            scoringSettings: scoringSettings, divisionNames: divisionNames
+            scoringSettings: scoringSettings, divisionNames: divisionNames,
+            regularSeasonWeeks: regularSeasonWeeks, weeksPerRound: weeksPerRound,
+            schedule: schedule
         )
         await reloadLeagues()
         return updated
@@ -1267,12 +1272,12 @@ final class AppState {
     // updates the live default lineup to match the latest edit.
     @discardableResult
     func setLineup(
-        team: FantasyTeam, week: Int, starters: [String], ir: [String]
+        team: FantasyTeam, week: Int, starters: [String], ir: [String], taxi: [String]
     ) async throws -> League? {
         var weekly = team.weeklyLineups
         weekly[week] = starters
         return try await remote.setLineup(
-            teamID: team.id, starters: starters, ir: ir, weeklyLineups: weekly
+            teamID: team.id, starters: starters, ir: ir, taxi: taxi, weeklyLineups: weekly
         )
     }
 
@@ -1655,7 +1660,8 @@ final class AppState {
         rosterConfig: RosterConfig = .default,
         yourTeamName: String,
         mode: SimulationDraftMode = .preDrafted,
-        botCount: Int
+        botCount: Int,
+        scoringSettings: ScoringSettings? = nil
     ) async throws -> League {
         guard let session else { throw AppError.notSignedIn }
         let bots = max(1, botCount)
@@ -1667,7 +1673,8 @@ final class AppState {
             scoring: scoring,
             rosterConfig: rosterConfig,
             yourTeamName: yourTeamName,
-            otherTeamNames: otherNames
+            otherTeamNames: otherNames,
+            scoringSettings: scoringSettings
         )
         // Flip is_test + clear deadline; the row is otherwise normal.
         try await remote.markAsTestLeague(leagueID: league.id)

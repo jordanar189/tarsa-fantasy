@@ -78,15 +78,21 @@ struct RosterConfig: Codable, Hashable {
     // accepts injured (OUT/IR/PUP/etc.) players. IR players never score and
     // aren't drafted into; membership is tracked on FantasyTeam.ir.
     var ir: Int
+    // Taxi (practice) squad slots. Like IR, extra capacity beyond the active
+    // roster: taxi players never score and don't count against the active size.
+    // Eligibility is by NFL experience — only players with at most
+    // `taxiMaxExperience` years (0 = rookies only) can be stashed. 0 slots = off.
+    var taxi: Int
+    var taxiMaxExperience: Int
 
     static let `default` = RosterConfig(qb: 1, rb: 2, wr: 2, te: 1, flex: 1, k: 1, def: 1, bench: 6, ir: 0)
 
     var starterCount: Int { qb + rb + wr + te + flex + k + def }
     // Active roster size (starters + bench). Drives drafting and roster limits.
-    // IR is deliberately excluded — IR players sit outside the active roster.
+    // IR and taxi are deliberately excluded — they sit outside the active roster.
     var totalSize: Int { starterCount + bench }
-    // Active roster plus IR — the maximum number of players a team can hold.
-    var fullSize: Int { totalSize + ir }
+    // Active roster plus reserves (IR + taxi) — the max players a team can hold.
+    var fullSize: Int { totalSize + ir + taxi }
 
     // Slots in display order, starters first then bench. Index into this array
     // matches the index of the matching entry in FantasyTeam.starters.
@@ -106,12 +112,16 @@ struct RosterConfig: Codable, Hashable {
     var starterSlots: [LineupSlot] { Array(slots.prefix(starterCount)) }
 
     init(qb: Int = 1, rb: Int = 2, wr: Int = 2, te: Int = 1,
-         flex: Int = 1, k: Int = 1, def: Int = 1, bench: Int = 6, ir: Int = 0) {
+         flex: Int = 1, k: Int = 1, def: Int = 1, bench: Int = 6, ir: Int = 0,
+         taxi: Int = 0, taxiMaxExperience: Int = 0) {
         self.qb = qb; self.rb = rb; self.wr = wr; self.te = te
         self.flex = flex; self.k = k; self.def = def; self.bench = bench; self.ir = ir
+        self.taxi = taxi; self.taxiMaxExperience = taxiMaxExperience
     }
 
-    private enum CodingKeys: String, CodingKey { case qb, rb, wr, te, flex, k, def, bench, ir }
+    private enum CodingKeys: String, CodingKey {
+        case qb, rb, wr, te, flex, k, def, bench, ir, taxi, taxiMaxExperience
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -124,6 +134,8 @@ struct RosterConfig: Codable, Hashable {
         def   = try c.decodeIfPresent(Int.self, forKey: .def)   ?? 1
         bench = try c.decodeIfPresent(Int.self, forKey: .bench) ?? 6
         ir    = try c.decodeIfPresent(Int.self, forKey: .ir)    ?? 0
+        taxi  = try c.decodeIfPresent(Int.self, forKey: .taxi)  ?? 0
+        taxiMaxExperience = try c.decodeIfPresent(Int.self, forKey: .taxiMaxExperience) ?? 0
     }
 }
 
@@ -601,6 +613,9 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
     // Player IDs parked on injured reserve. A subset of `roster`; these never
     // score and don't count against the active roster size.
     var ir: [String]
+    // Player IDs on the taxi (practice) squad. Like IR, a subset of `roster`
+    // that never scores and doesn't count against the active roster size.
+    var taxi: [String]
     // Per-week frozen lineups, keyed by fantasy week. When a week has an entry,
     // that week is scored from it (the lineup the manager locked in for that
     // week); weeks without an entry fall back to the live `starters`. This is
@@ -618,19 +633,19 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
 
     init(id: String, name: String, roster: [String] = [],
          starters: [String] = [], ownerID: String? = nil,
-         ir: [String] = [], weeklyLineups: [Int: [String]] = [:],
+         ir: [String] = [], taxi: [String] = [], weeklyLineups: [Int: [String]] = [:],
          division: Int? = nil,
          logoURL: String? = nil, colorHex: String? = nil,
          abbreviation: String? = nil) {
         self.id = id; self.name = name; self.roster = roster
         self.starters = starters; self.ownerID = ownerID
-        self.ir = ir; self.weeklyLineups = weeklyLineups; self.division = division
+        self.ir = ir; self.taxi = taxi; self.weeklyLineups = weeklyLineups; self.division = division
         self.logoURL = logoURL; self.colorHex = colorHex
         self.abbreviation = abbreviation
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ownerID, ir, weeklyLineups, division, logoURL, colorHex, abbreviation
+        case id, name, roster, starters, ownerID, ir, taxi, weeklyLineups, division, logoURL, colorHex, abbreviation
     }
 
     init(from decoder: Decoder) throws {
@@ -641,6 +656,7 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
         starters = try c.decodeIfPresent([String].self, forKey: .starters) ?? []
         ownerID  = try c.decodeIfPresent(String.self, forKey: .ownerID)
         ir       = try c.decodeIfPresent([String].self, forKey: .ir)       ?? []
+        taxi     = try c.decodeIfPresent([String].self, forKey: .taxi)     ?? []
         weeklyLineups = try c.decodeIfPresent([Int: [String]].self, forKey: .weeklyLineups) ?? [:]
         division = try c.decodeIfPresent(Int.self, forKey: .division)
         logoURL  = try c.decodeIfPresent(String.self, forKey: .logoURL)
@@ -733,6 +749,9 @@ struct League: Codable, Identifiable, Hashable {
     // Re-seed each round (higher seed always faces lowest remaining) vs. a
     // fixed bracket.
     var playoffReseed: Bool
+    // Fantasy weeks each playoff round spans (1 or 2). With 2, a round's result
+    // is the two-week combined score. Drives the playoff week math below.
+    var weeksPerRound: Int
     // Custom per-stat scoring. Nil = use the `scoring` preset's precomputed
     // fields. Non-nil overrides scoring league-wide.
     var scoringSettings: ScoringSettings?
@@ -760,6 +779,7 @@ struct League: Codable, Identifiable, Hashable {
          regularSeasonWeeks: Int? = nil,
          playoffTeams: Int = 6,
          playoffReseed: Bool = true,
+         weeksPerRound: Int = 1,
          scoringSettings: ScoringSettings? = nil,
          divisionNames: [String] = [],
          championTeamID: String? = nil,
@@ -783,6 +803,7 @@ struct League: Codable, Identifiable, Hashable {
         self.regularSeasonWeeks = regularSeasonWeeks ?? schedule.count
         self.playoffTeams = playoffTeams
         self.playoffReseed = playoffReseed
+        self.weeksPerRound = min(max(weeksPerRound, 1), 2)
         self.scoringSettings = scoringSettings
         self.divisionNames = divisionNames
         self.championTeamID = championTeamID
@@ -800,6 +821,22 @@ struct League: Codable, Identifiable, Hashable {
     // First postseason week (one past the regular season). Only meaningful
     // when playoffTeams > 0.
     var playoffStartWeek: Int { regularSeasonWeeks + 1 }
+
+    // Single-elimination rounds needed for the field (0 when no postseason).
+    var playoffRounds: Int {
+        guard playoffTeams >= 2 else { return 0 }
+        return max(1, Int(ceil(log2(Double(playoffTeams)))))
+    }
+
+    // Last postseason (championship) week, accounting for weeks-per-round.
+    var playoffEndWeek: Int {
+        guard playoffTeams >= 2 else { return regularSeasonWeeks }
+        return playoffStartWeek + playoffRounds * weeksPerRound - 1
+    }
+
+    // The NFL regular season runs 18 weeks; nflverse REG player stats only exist
+    // through week 18, so the postseason can't extend past it.
+    static let maxSeasonWeek = 18
 }
 
 // One frozen snapshot per (league, season). Created by complete_league_season
@@ -932,6 +969,11 @@ struct ChatPayload: Codable, Hashable, Sendable {
     var options: [String]?
     var players: [String]?
     var seeking: [String]?
+    // Player IDs parallel to `players` / `seeking` (which hold names). Added
+    // later, so messages posted before this decode them as nil and render
+    // their names as plain, non-tappable text.
+    var playerIDs: [String]?
+    var seekingIDs: [String]?
     var note: String?
     var teamName: String?
     var games: [PickGame]?
@@ -943,7 +985,8 @@ struct ChatPayload: Codable, Hashable, Sendable {
          players: [String]? = nil, seeking: [String]? = nil,
          note: String? = nil, teamName: String? = nil,
          games: [PickGame]? = nil, allowMultiple: Bool? = nil,
-         allowAddOptions: Bool? = nil, closesAt: Double? = nil) {
+         allowAddOptions: Bool? = nil, closesAt: Double? = nil,
+         playerIDs: [String]? = nil, seekingIDs: [String]? = nil) {
         self.question = question
         self.options = options
         self.players = players
@@ -954,6 +997,8 @@ struct ChatPayload: Codable, Hashable, Sendable {
         self.allowMultiple = allowMultiple
         self.allowAddOptions = allowAddOptions
         self.closesAt = closesAt
+        self.playerIDs = playerIDs
+        self.seekingIDs = seekingIDs
     }
 }
 
@@ -1757,6 +1802,34 @@ struct StandingsRow: Identifiable, Hashable {
     }
 }
 
+// Richer per-team season stats beyond the W-L standings: actual vs. optimal
+// scoring, scoring distribution, and a schedule-independent "all-play" record.
+// Built by Fantasy.teamSeasonStats over the same regular-season weeks the
+// standings count.
+struct TeamSeasonStats: Identifiable, Hashable {
+    let id: String          // team ID
+    let name: String
+    let games: Int
+    let pointsFor: Double            // PF — actual points scored
+    let pointsAgainst: Double        // PA — points scored against
+    let maxPointsFor: Double         // Max PF — sum of each week's optimal lineup
+    let high: Double                 // best single-week score
+    let low: Double                  // worst single-week score
+    // All-play: this team's record if it had played every other team every
+    // week. A luck-neutral measure of strength.
+    let allPlayWins: Int
+    let allPlayLosses: Int
+    let allPlayTies: Int
+
+    // Max PF % — lineup efficiency. 1.0 = started the optimal lineup every week.
+    var efficiency: Double { maxPointsFor > 0 ? pointsFor / maxPointsFor : 0 }
+    var pointsPerGame: Double { games > 0 ? pointsFor / Double(games) : 0 }
+    var allPlayRecord: String {
+        allPlayTies > 0 ? "\(allPlayWins)-\(allPlayLosses)-\(allPlayTies)"
+                        : "\(allPlayWins)-\(allPlayLosses)"
+    }
+}
+
 // MARK: - Playoffs (postseason bracket)
 
 // One side of a bracket game. Either a known team, a bye, or a
@@ -1785,10 +1858,16 @@ struct PlayoffGame: Identifiable, Hashable {
 
 struct PlayoffRound: Identifiable, Hashable {
     let round: Int
-    let week: Int
+    let week: Int              // first week of the round
+    let endWeek: Int           // last week of the round (== week for 1-week rounds)
     let name: String           // "Wild Card", "Semifinals", "Championship"
     let games: [PlayoffGame]
     var id: Int { round }
+
+    // "Week 15" or "Weeks 15–16" depending on round length.
+    var weekLabel: String {
+        endWeek > week ? "Weeks \(week)–\(endWeek)" : "Week \(week)"
+    }
 }
 
 struct PlayoffBracket: Hashable {

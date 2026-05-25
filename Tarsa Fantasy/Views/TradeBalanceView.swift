@@ -96,6 +96,7 @@ struct TradeBalanceView: View {
                         PlayerAvatar(url: p?.headshotURL ?? "", fallback: name.initialsFromName, size: 20)
                         Text(name).font(.ffMicro).foregroundStyle(FFColor.textSecondary).lineLimit(1)
                     }
+                    .playerLink(id)
                 } else {
                     HStack(spacing: 6) {
                         Text(name).font(.ffMicro).foregroundStyle(FFColor.textSecondary).lineLimit(1)
@@ -103,6 +104,7 @@ struct TradeBalanceView: View {
                         Text(v).font(.ffMicro.bold()).foregroundStyle(FFColor.accent)
                             .frame(width: 34, alignment: .trailing)
                     }
+                    .playerLink(id)
                 }
             }
         }

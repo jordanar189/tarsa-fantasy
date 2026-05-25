@@ -370,15 +370,49 @@ struct DraftRoomView: View {
         let onClock = draft.teamOnClock(forPick: draft.currentPick)
         let isMyTurn = (myTeam?.id == onClock) && draft.status == .live
 
+        // Late-draft starter-need restriction: once your team has only as many
+        // picks left as empty starting slots, the picks must all go toward
+        // startable positions — so limit the list to those (bench/IR excluded).
+        let teamCount = max(draft.pickOrder.count, 1)
+        let totalRounds = draft.totalPicks / teamCount
+        let myRoster = myTeam.map { t in picks.filter { $0.teamID == t.id }.map(\.playerID) } ?? []
+        let remainingPicks = max(0, totalRounds - myRoster.count)
+        let needs = myTeam == nil
+            ? (positions: Set<String>(), unfilledCount: 0)
+            : Fantasy.starterNeeds(
+                roster: myRoster, players: players, config: league.rosterConfig,
+                scoring: league.scoring, settings: league.scoringSettings
+              )
+        let needsActive = needs.unfilledCount > 0
+            && remainingPicks > 0
+            && remainingPicks <= needs.unfilledCount
+        let allowedPositions = needs.positions
+        let allowedLabel = ["QB", "RB", "WR", "TE", "K", "DEF"]
+            .filter { allowedPositions.contains($0) }
+            .joined(separator: ", ")
+        let chipItems: [Position] = needsActive
+            ? [Position.all] + Position.allCases.filter { $0 != .all && allowedPositions.contains($0.rawValue) }
+            : Position.allCases
+        let effectivePosition: Position = chipItems.contains(position) ? position : .all
+
         VStack(spacing: FFSpace.s) {
             searchBar
-            ChipRow(items: Position.allCases, selection: $position) { Text($0.label) }
+            ChipRow(items: chipItems, selection: $position) { Text($0.label) }
 
-            let rows = Fantasy.search(
-                players: players, query: query, position: position,
+            if needsActive {
+                Text("Final picks — only positions you still need to start are draftable: \(allowedLabel).")
+                    .font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            let baseRows = Fantasy.search(
+                players: players, query: query, position: effectivePosition,
                 scoring: league.scoring, limit: 0,
                 adp: adp.isEmpty ? nil : adp
             ).filter { !pickedIDs.contains($0.id) }
+            let rows = needsActive
+                ? baseRows.filter { allowedPositions.contains($0.position.uppercased()) }
+                : baseRows
 
             if rows.isEmpty {
                 Text("No players match.").font(.ffBody).foregroundStyle(FFColor.textSecondary)

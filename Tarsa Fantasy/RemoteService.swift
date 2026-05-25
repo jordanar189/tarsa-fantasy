@@ -233,6 +233,7 @@ actor RemoteService {
         regularSeasonWeeks: Int? = nil,
         playoffTeams: Int = 6,
         playoffReseed: Bool = true,
+        weeksPerRound: Int = 1,
         divisionNames: [String] = [],
         scoringSettings: ScoringSettings? = nil,
         isDynasty: Bool = false
@@ -282,6 +283,7 @@ actor RemoteService {
             let regular_season_weeks: Int
             let playoff_teams: Int
             let playoff_reseed: Bool
+            let weeks_per_round: Int
             let division_names: AnyJSON
             let scoring_settings: AnyJSON?
             let is_dynasty: Bool
@@ -304,6 +306,7 @@ actor RemoteService {
             regular_season_weeks: effectiveSeasonWeeks,
             playoff_teams: cappedPlayoffTeams,
             playoff_reseed: playoffReseed,
+            weeks_per_round: min(max(weeksPerRound, 1), 2),
             division_names: stringsAsAnyJSON(cleanedDivisions),
             scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON),
             is_dynasty: isDynasty
@@ -413,20 +416,21 @@ actor RemoteService {
     // Used by the weekly lineup editor.
     @discardableResult
     func setLineup(
-        teamID: String, starters: [String], ir: [String],
+        teamID: String, starters: [String], ir: [String], taxi: [String],
         weeklyLineups: [Int: [String]]
     ) async throws -> League? {
         guard let teamUUID = UUID(uuidString: teamID) else { return nil }
         struct LineupUpdate: Encodable {
             let starters: [String]
             let ir: [String]
+            let taxi: [String]
             let weekly_lineups: AnyJSON
         }
         let weeklyJSON: AnyJSON = .object(Dictionary(uniqueKeysWithValues:
             weeklyLineups.map { (String($0.key), AnyJSON.array($0.value.map { .string($0) })) }
         ))
         let updated: TeamRow = try await client.from("teams")
-            .update(LineupUpdate(starters: starters, ir: ir, weekly_lineups: weeklyJSON))
+            .update(LineupUpdate(starters: starters, ir: ir, taxi: taxi, weekly_lineups: weeklyJSON))
             .eq("id", value: teamUUID)
             .select()
             .single()
@@ -577,6 +581,7 @@ actor RemoteService {
                     starters: t.starters,
                     ownerID: t.ownerId?.uuidString,
                     ir: t.ir,
+                    taxi: t.taxi,
                     weeklyLineups: Dictionary(uniqueKeysWithValues:
                         t.weeklyLineups.compactMap { key, value in
                             Int(key).map { ($0, value) }
@@ -613,6 +618,7 @@ actor RemoteService {
             regularSeasonWeeks: row.regularSeasonWeeks,
             playoffTeams: row.playoffTeams,
             playoffReseed: row.playoffReseed,
+            weeksPerRound: row.weeksPerRound,
             scoringSettings: row.scoringSettings,
             divisionNames: row.divisionNames,
             championTeamID: row.championTeamId?.uuidString,
@@ -633,6 +639,8 @@ actor RemoteService {
             "def":   .integer(c.def),
             "bench": .integer(c.bench),
             "ir":    .integer(c.ir),
+            "taxi":  .integer(c.taxi),
+            "taxiMaxExperience": .integer(c.taxiMaxExperience),
         ])
     }
 
@@ -796,10 +804,10 @@ actor RemoteService {
             roster.removeAll { $0 == drop }
         }
         if !roster.contains(addPlayerID) { roster.append(addPlayerID) }
-        // IR players sit outside the active roster, so they don't count toward
-        // the size limit — only active (non-IR) players do.
-        let irSet = Set(team.ir)
-        let activeCount = roster.filter { !irSet.contains($0) }.count
+        // Reserves (IR + taxi) sit outside the active roster, so they don't
+        // count toward the size limit — only active players do.
+        let reserved = Set(team.ir).union(team.taxi)
+        let activeCount = roster.filter { !reserved.contains($0) }.count
         guard activeCount <= league.rosterConfig.totalSize else {
             throw RemoteError.rosterFull
         }
@@ -987,7 +995,10 @@ actor RemoteService {
         playoffTeams: Int,
         playoffReseed: Bool,
         scoringSettings: ScoringSettings?,
-        divisionNames: [String]
+        divisionNames: [String],
+        regularSeasonWeeks: Int,
+        weeksPerRound: Int,
+        schedule: [ScheduleWeek]
     ) async throws -> League? {
         guard let uuid = UUID(uuidString: leagueID) else { return nil }
         let cleaned = name.trimmingCharacters(in: .whitespaces)
@@ -1003,6 +1014,12 @@ actor RemoteService {
             // .null clears custom scoring back to the named preset.
             let scoring_settings: AnyJSON
             let division_names: AnyJSON
+            let regular_season_weeks: Int
+            let weeks_per_round: Int
+            // Regenerated to match the regular-season length when the playoff
+            // start week changes. The round-robin is prefix-stable, so already
+            // played weeks keep their matchups.
+            let schedule: AnyJSON
         }
         _ = try await client.from("leagues")
             .update(LeagueUpdate(
@@ -1012,7 +1029,10 @@ actor RemoteService {
                 playoff_teams: max(0, playoffTeams),
                 playoff_reseed: playoffReseed,
                 scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON) ?? .null,
-                division_names: stringsAsAnyJSON(cleanedDivisions)
+                division_names: stringsAsAnyJSON(cleanedDivisions),
+                regular_season_weeks: max(1, regularSeasonWeeks),
+                weeks_per_round: min(max(weeksPerRound, 1), 2),
+                schedule: scheduleAsAnyJSON(schedule)
             ))
             .eq("id", value: uuid)
             .execute()
@@ -1945,6 +1965,7 @@ actor RemoteService {
             "roster":       stringsAsAnyJSON(team.roster),
             "starters":     stringsAsAnyJSON(team.starters),
             "ir":           stringsAsAnyJSON(team.ir),
+            "taxi":         stringsAsAnyJSON(team.taxi),
             "logo_url":     team.logoURL.map { AnyJSON.string($0) } ?? .null,
             "color_hex":    team.colorHex.map { AnyJSON.string($0) } ?? .null,
             "abbreviation": team.abbreviation.map { AnyJSON.string($0) } ?? .null
@@ -2175,10 +2196,16 @@ actor RemoteService {
     // MARK: - League chat
 
     // Fetches the most-recent `limit` messages for a league, oldest-first so
-    // the caller can append directly into a chat transcript. Username comes
-    // from a join on profiles. Reactions are embedded via a join on
-    // league_message_reactions so the chat opens with full state in one
-    // round-trip.
+    // the caller can append directly into a chat transcript. Reactions and poll
+    // responses are embedded via real child FKs to league_messages so the chat
+    // opens with full state in one round-trip.
+    //
+    // Usernames are resolved in a separate batched lookup rather than a
+    // `profiles!user_id` embed. That embed 400s whenever the message↔profiles
+    // relationship isn't in PostgREST's schema cache (e.g. right after any
+    // migration reloads it), and the `try?` below would swallow that into a
+    // permanently empty transcript — i.e. every message vanishing on reload.
+    // Same failure mode and fix as feedbackInbox.
     func messages(leagueID: String, limit: Int = 200) async -> LeagueChatLoad {
         guard let lid = UUID(uuidString: leagueID) else {
             return LeagueChatLoad(messages: [], reactions: [:])
@@ -2192,11 +2219,10 @@ actor RemoteService {
             let createdAt: Date
             let messageType: String?
             let payload: ChatPayload?
-            let profiles: ProfilesJoin?
             let leagueMessageReactions: [ReactionJoin]?
             let messageResponses: [ResponseJoin]?
             enum CodingKeys: String, CodingKey {
-                case id, content, profiles, payload
+                case id, content, payload
                 case leagueId  = "league_id"
                 case userId    = "user_id"
                 case imageUrl  = "image_url"
@@ -2206,7 +2232,6 @@ actor RemoteService {
                 case messageResponses = "message_responses"
             }
         }
-        struct ProfilesJoin: Decodable { let username: String? }
         struct ReactionJoin: Decodable {
             let userId: UUID
             let emoji: String
@@ -2225,11 +2250,15 @@ actor RemoteService {
             }
         }
         let rows: [Row] = (try? await client.from("league_messages")
-            .select("id, league_id, user_id, content, image_url, created_at, message_type, payload, profiles!user_id(username), league_message_reactions(user_id, emoji), message_responses(user_id, choice, slot)")
+            .select("id, league_id, user_id, content, image_url, created_at, message_type, payload, league_message_reactions(user_id, emoji), message_responses(user_id, choice, slot)")
             .eq("league_id", value: lid)
             .order("created_at", ascending: false)
             .limit(limit)
             .execute().value) ?? []
+
+        // Resolve author usernames in one batched lookup; a failure here only
+        // costs display names, never the messages themselves.
+        let names = await usernames(forIDs: Set(rows.map(\.userId)))
 
         var messages: [LeagueMessage] = []
         var reactions: [String: [LeagueMessageReaction]] = [:]
@@ -2240,7 +2269,7 @@ actor RemoteService {
                 id: mid,
                 leagueID: r.leagueId.uuidString,
                 userID: r.userId.uuidString,
-                username: r.profiles?.username,
+                username: names[r.userId],
                 content: r.content,
                 imageURL: r.imageUrl,
                 createdAt: r.createdAt,
@@ -3161,6 +3190,7 @@ struct LeagueRow: Codable, Hashable {
     let regularSeasonWeeks: Int?
     let playoffTeams: Int
     let playoffReseed: Bool
+    let weeksPerRound: Int
     let scoringSettings: ScoringSettings?
     let divisionNames: [String]
     let championTeamId: UUID?
@@ -3190,6 +3220,7 @@ struct LeagueRow: Codable, Hashable {
         case regularSeasonWeeks   = "regular_season_weeks"
         case playoffTeams         = "playoff_teams"
         case playoffReseed        = "playoff_reseed"
+        case weeksPerRound        = "weeks_per_round"
         case scoringSettings      = "scoring_settings"
         case divisionNames        = "division_names"
         case championTeamId       = "champion_team_id"
@@ -3227,6 +3258,7 @@ struct LeagueRow: Codable, Hashable {
         regularSeasonWeeks   = try c.decodeIfPresent(Int.self,     forKey: .regularSeasonWeeks)
         playoffTeams         = try c.decodeIfPresent(Int.self,     forKey: .playoffTeams)         ?? 6
         playoffReseed        = try c.decodeIfPresent(Bool.self,    forKey: .playoffReseed)        ?? true
+        weeksPerRound        = try c.decodeIfPresent(Int.self,     forKey: .weeksPerRound)        ?? 1
         scoringSettings      = try c.decodeIfPresent(ScoringSettings.self, forKey: .scoringSettings)
         divisionNames        = try c.decodeIfPresent([String].self, forKey: .divisionNames)       ?? []
         championTeamId       = try c.decodeIfPresent(UUID.self,    forKey: .championTeamId)
@@ -3243,6 +3275,7 @@ struct TeamRow: Codable, Hashable {
     let starters: [String]
     let sortIndex: Int
     let ir: [String]
+    let taxi: [String]
     let weeklyLineups: [String: [String]]
     let division: Int?
     let logoUrl: String?
@@ -3250,7 +3283,7 @@ struct TeamRow: Codable, Hashable {
     let abbreviation: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ir, division, abbreviation
+        case id, name, roster, starters, ir, taxi, division, abbreviation
         case leagueId      = "league_id"
         case ownerId       = "owner_id"
         case sortIndex     = "sort_index"
@@ -3269,6 +3302,7 @@ struct TeamRow: Codable, Hashable {
         starters  = try c.decodeIfPresent([String].self, forKey: .starters) ?? []
         sortIndex = try c.decodeIfPresent(Int.self, forKey: .sortIndex)     ?? 0
         ir        = try c.decodeIfPresent([String].self, forKey: .ir)       ?? []
+        taxi      = try c.decodeIfPresent([String].self, forKey: .taxi)     ?? []
         weeklyLineups = try c.decodeIfPresent([String: [String]].self, forKey: .weeklyLineups) ?? [:]
         division  = try c.decodeIfPresent(Int.self, forKey: .division)
         logoUrl   = try c.decodeIfPresent(String.self, forKey: .logoUrl)

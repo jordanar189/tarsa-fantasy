@@ -26,6 +26,7 @@ struct ProposeTradeView: View {
     @State private var valuationPlayers: [String: Player] = [:]
 
     init(league: League, fromTeam: FantasyTeam, counterOf: Trade?,
+         requestPlayer: (teamID: String, playerID: String)? = nil,
          onDone: @escaping (Trade?) -> Void) {
         self.league = league
         self.fromTeam = fromTeam
@@ -37,6 +38,11 @@ struct ProposeTradeView: View {
             _recipientID         = State(initialValue: counterOf.proposerTeamID)
             _sendingPlayerIDs    = State(initialValue: Set(counterOf.recipientPlayerIDs))
             _requestingPlayerIDs = State(initialValue: Set(counterOf.proposerPlayerIDs))
+        } else if let requestPlayer {
+            // Started from a player's profile / the Players list: pre-select that
+            // player's team as the partner and put them on the request side.
+            _recipientID         = State(initialValue: requestPlayer.teamID)
+            _requestingPlayerIDs = State(initialValue: [requestPlayer.playerID])
         }
     }
 
@@ -103,6 +109,7 @@ struct ProposeTradeView: View {
                 )
             }
         }
+        .hostsPlayerProfileSheet()
     }
 
     // Live fairness gauge. Each side is valued by what it *receives*: you get the
@@ -198,33 +205,35 @@ struct ProposeTradeView: View {
                            isSelected: Bool, toggle: @escaping () -> Void) -> some View {
         let p = players[pid]
         let summary = p.map { Fantasy.summary($0, scoring: league.scoring) }
-        return Button(action: toggle) {
-            HStack(spacing: FFSpace.m) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 20))
-                    .foregroundStyle(isSelected ? FFColor.accent : FFColor.textTertiary)
-                if let summary {
-                    PlayerAvatar(url: summary.headshotURL, fallback: summary.name.initialsFromName, size: 32)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(summary.name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
-                        HStack(spacing: 6) {
-                            PositionPill(position: summary.position)
-                            Text(summary.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
-                        }
+        // Row tap toggles selection; tapping the name opens the player profile
+        // (descendant tap takes precedence over the row's tap).
+        return HStack(spacing: FFSpace.m) {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 20))
+                .foregroundStyle(isSelected ? FFColor.accent : FFColor.textTertiary)
+            if let summary {
+                PlayerAvatar(url: summary.headshotURL, fallback: summary.name.initialsFromName, size: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(summary.name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                    HStack(spacing: 6) {
+                        PositionPill(position: summary.position)
+                        Text(summary.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
                     }
-                    Spacer()
-                    Text(summary.points.fpString)
-                        .font(.ffStatSmall)
-                        .foregroundStyle(FFColor.textSecondary)
-                } else {
-                    Text(pid).font(.ffBody).foregroundStyle(FFColor.textSecondary)
-                    Spacer()
                 }
+                .playerLink(pid)
+                Spacer()
+                Text(summary.points.fpString)
+                    .font(.ffStatSmall)
+                    .foregroundStyle(FFColor.textSecondary)
+            } else {
+                Text(pid).font(.ffBody).foregroundStyle(FFColor.textSecondary)
+                Spacer()
             }
-            .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.s)
-            .ffHairlineBottom()
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, FFSpace.l).padding(.vertical, FFSpace.s)
+        .ffHairlineBottom()
+        .contentShape(Rectangle())
+        .onTapGesture(perform: toggle)
     }
 
     private var noteField: some View {

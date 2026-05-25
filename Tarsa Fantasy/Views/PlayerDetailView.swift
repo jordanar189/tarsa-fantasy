@@ -15,7 +15,8 @@ struct PlayerDetailView: View {
     let playerID: String
 
     enum Section: String, CaseIterable, Identifiable, Hashable {
-        case overview = "Overview"
+        case overview = "Overview"   // at-a-glance season + acquire actions
+        case details  = "Details"    // the full stat breakdown (formerly Overview)
         case career   = "Career"
         case gameLog  = "Game Log"
         case splits   = "Splits"
@@ -57,6 +58,11 @@ struct PlayerDetailView: View {
     // Season-range filter; nil = all time (the default).
     @State private var injuryStartSeason: Int? = nil
     @State private var injuryEndSeason: Int? = nil
+    // Acquisition (Overview tab): waiver/free-agent claim + trade entry for the
+    // selected league. `dropped` distinguishes instant adds from waiver claims.
+    @State private var dropped: [DroppedPlayer] = []
+    @State private var claimTarget: AddClaimTarget? = nil
+    @State private var tradeTarget: AcquireTradeTarget? = nil
 
     private var player: Player? { app.displaySelectedPlayers()[playerID] }
     private var isProjected: Bool { app.isProjectedSeason(app.selectedSeason) }
@@ -75,6 +81,7 @@ struct PlayerDetailView: View {
                             sectionPicker
                             switch section {
                             case .overview: overviewSection(for: player)
+                            case .details:  detailsSection(for: player)
                             case .career:   careerSection(for: player)
                             case .gameLog:  gameLogSection(for: player)
                             case .splits:   splitsSection(for: player)
@@ -170,6 +177,28 @@ struct PlayerDetailView: View {
                     settings: scoringSettings
                 )
             }
+            .sheet(item: $claimTarget) { ctx in
+                if let lg = app.selectedLeague {
+                    WaiverClaimSheet(
+                        league: lg, team: ctx.team,
+                        addPlayer: ctx.addPlayer,
+                        isOnWaivers: ctx.isOnWaivers,
+                        waiverUntil: ctx.waiverUntil
+                    ) { updated in
+                        if let updated { app.selectedLeague = updated }
+                        Task { await reloadDropped() }
+                    }
+                }
+            }
+            .sheet(item: $tradeTarget) { t in
+                if let lg = app.selectedLeague {
+                    ProposeTradeView(
+                        league: lg, fromTeam: t.fromTeam, counterOf: nil,
+                        requestPlayer: (teamID: t.toTeamID, playerID: t.playerID)
+                    ) { _ in }
+                }
+            }
+            .task(id: app.selectedLeagueID) { await reloadDropped() }
         }
     }
 
@@ -510,9 +539,138 @@ struct PlayerDetailView: View {
         }
     }
 
-    // MARK: - Overview
+    // MARK: - Overview (at-a-glance + acquire actions)
 
     private func overviewSection(for p: Player) -> some View {
+        let games = p.games
+        let total = Fantasy.seasonTotals(games).points(scoring: scoring, settings: scoringSettings)
+        let gp = games.count
+        let ppg = gp > 0 ? total / Double(gp) : 0
+        let weekly = games.map { $0.points(scoring: scoring, settings: scoringSettings) }
+        return VStack(alignment: .leading, spacing: FFSpace.l) {
+            if let acq = acquisition(for: p) {
+                acquisitionCard(acq, player: p)
+            }
+            glanceCard(
+                total: total, ppg: ppg, gp: gp,
+                best: weekly.max() ?? 0, worst: weekly.min() ?? 0,
+                trend: Fantasy.trendDirection(games: games, scoring: scoring, settings: scoringSettings)
+            )
+            if !games.isEmpty {
+                VStack(alignment: .leading, spacing: FFSpace.s) {
+                    Text("WEEKLY POINTS").ffEyebrow().padding(.leading, FFSpace.s)
+                    WeeklyTrendChart(games: games, scoring: scoring, settings: scoringSettings)
+                        .padding(FFSpace.m)
+                        .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: FFRadius.m)
+                                .strokeBorder(FFColor.border, lineWidth: 1)
+                        )
+                }
+            }
+        }
+    }
+
+    private func acquisitionCard(_ acq: PlayerAcquisition, player p: Player) -> some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            Text(acquisitionEyebrow(acq)).ffEyebrow()
+            AcquisitionButton(acquisition: acq, enabled: myLeagueTeam != nil) {
+                handleAcquisition(acq, player: p)
+            }
+        }
+        .ffCard()
+    }
+
+    private func glanceCard(total: Double, ppg: Double, gp: Int,
+                            best: Double, worst: Double, trend: Trend) -> some View {
+        VStack(spacing: FFSpace.m) {
+            HStack(spacing: FFSpace.m) {
+                glanceStat("PTS", total.fpString)
+                glanceStat("PPG", ppg.fpString)
+                glanceStat("GP", "\(gp)")
+            }
+            HStack(spacing: FFSpace.m) {
+                glanceStat("BEST", best.fpString)
+                glanceStat("WORST", worst.fpString)
+                glanceStat("TREND", trendGlyph(trend), color: trendTint(trend))
+            }
+        }
+        .ffCard()
+    }
+
+    private func glanceStat(_ label: String, _ value: String, color: Color = FFColor.textPrimary) -> some View {
+        VStack(spacing: 4) {
+            Text(value).font(.ffStatMedium).foregroundStyle(color)
+            Text(label).ffEyebrow(color: FFColor.textTertiary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func trendGlyph(_ t: Trend) -> String {
+        switch t { case .up: return "↑"; case .flat: return "→"; case .down: return "↓" }
+    }
+    private func trendTint(_ t: Trend) -> Color {
+        switch t {
+        case .up:   return FFColor.positive
+        case .flat: return FFColor.textTertiary
+        case .down: return FFColor.negative
+        }
+    }
+
+    private func acquisitionEyebrow(_ acq: PlayerAcquisition) -> String {
+        switch acq {
+        case .addable:           return "FREE AGENT"
+        case .claimable:         return "ON WAIVERS"
+        case .trade(_, let name): return "ROSTERED BY \(name.uppercased())"
+        case .onMyRoster:        return "ON YOUR ROSTER"
+        case .unavailable:       return "AVAILABILITY"
+        }
+    }
+
+    // The team the signed-in user controls in the selected league.
+    private var myLeagueTeam: FantasyTeam? {
+        guard let lg = app.selectedLeague else { return nil }
+        if lg.isTest, let id = AppState.primaryTeamID(in: lg) {
+            return lg.teams.first(where: { $0.id == id })
+        }
+        guard let uid = app.session?.userID else { return nil }
+        return lg.teams.first(where: { $0.ownerID == uid })
+    }
+
+    private func acquisition(for p: Player) -> PlayerAcquisition? {
+        guard let lg = app.selectedLeague else { return nil }
+        let droppedByID = Dictionary(dropped.map { ($0.playerID, $0) }, uniquingKeysWith: { a, _ in a })
+        let week = Fantasy.currentWeek(players: app.displaySelectedPlayers())
+        return PlayerAcquisition.resolve(
+            playerID: p.id, league: lg, myTeam: myLeagueTeam,
+            players: app.displaySelectedPlayers(),
+            droppedByID: droppedByID, week: week
+        )
+    }
+
+    private func handleAcquisition(_ acq: PlayerAcquisition, player p: Player) {
+        guard let team = myLeagueTeam else { return }
+        let summary = Fantasy.summary(p, scoring: scoring)
+        switch acq {
+        case .addable:
+            claimTarget = AddClaimTarget(team: team, addPlayer: summary, isOnWaivers: false, waiverUntil: nil)
+        case .claimable(let until):
+            claimTarget = AddClaimTarget(team: team, addPlayer: summary, isOnWaivers: true, waiverUntil: until)
+        case .trade(let teamID, _):
+            tradeTarget = AcquireTradeTarget(fromTeam: team, toTeamID: teamID, playerID: p.id)
+        case .onMyRoster, .unavailable:
+            break
+        }
+    }
+
+    private func reloadDropped() async {
+        guard let id = app.selectedLeagueID else { dropped = []; return }
+        dropped = await app.droppedPlayers(leagueID: id)
+    }
+
+    // MARK: - Details (full stat breakdown)
+
+    private func detailsSection(for p: Player) -> some View {
         VStack(alignment: .leading, spacing: FFSpace.l) {
             totalsCard(for: p)
             if warByID[p.id] != nil { warCard(for: p) }

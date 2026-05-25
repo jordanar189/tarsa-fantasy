@@ -19,6 +19,8 @@ struct CreateLeagueView: View {
     @State private var leagueType: LeagueType = .standard
     @State private var name: String = ""
     @State private var scoring: Scoring = .ppr
+    @State private var useCustomScoring: Bool = false
+    @State private var scoringSettings: ScoringSettings = .ppr
     @State private var season: Int = Calendar.current.component(.year, from: Date())
     @State private var yourTeamName: String = "Your Team"
     @State private var otherCount: Int = 7
@@ -28,6 +30,7 @@ struct CreateLeagueView: View {
     @State private var simBotCount: Int = 7
     @State private var regularSeasonWeeks: Int = 14
     @State private var playoffTeams: Int = 6
+    @State private var weeksPerRound: Int = 1
     @State private var divisionsEnabled: Bool = false
     @State private var divisionCount: Int = 2
     @State private var error: String? = nil
@@ -64,6 +67,8 @@ struct CreateLeagueView: View {
                             picker("Season", selection: $season, choices: seasonChoices) { String($0) }
                             picker("Scoring", selection: $scoring, choices: Scoring.allCases) { $0.label }
                         }
+
+                        scoringSection
 
                         section("Your team",
                                 footer: leagueType == .simulation
@@ -127,13 +132,20 @@ struct CreateLeagueView: View {
                         if leagueType != .simulation {
                             section("Season format",
                                     footer: playoffSummaryFooter) {
-                                stepperRow("Regular season", value: $regularSeasonWeeks, range: 6...15) {
+                                stepperRow("Regular season", value: $regularSeasonWeeks, range: 6...maxRegularSeasonWeeks) {
                                     "\($0) weeks"
                                 }
                                 stepperRow("Playoff teams", value: $playoffTeams, range: 0...teamCount) {
                                     $0 == 0 ? "Off" : "\($0) teams"
                                 }
+                                if playoffTeams >= 2 {
+                                    picker("Weeks per round", selection: $weeksPerRound, choices: [1, 2]) {
+                                        $0 == 1 ? "1 week" : "2 weeks"
+                                    }
+                                }
                             }
+                            .onChange(of: weeksPerRound) { _, _ in clampRegularSeason() }
+                            .onChange(of: playoffTeams) { _, _ in clampRegularSeason() }
 
                             section("Divisions",
                                     footer: "Division winners are seeded ahead of wildcards in the playoffs. You can rename divisions and reassign teams later in settings.") {
@@ -198,15 +210,30 @@ struct CreateLeagueView: View {
         }
     }
 
+    // Rounds × weeks-per-round = total playoff weeks for the current field.
+    private var playoffSpan: Int {
+        let teams = min(playoffTeams, teamCount)
+        guard teams >= 2 else { return 0 }
+        let rounds = max(1, Int(ceil(log2(Double(teams)))))
+        return rounds * max(1, weeksPerRound)
+    }
+    // Cap the regular season so the championship still ends by Week 18.
+    private var maxRegularSeasonWeeks: Int {
+        playoffTeams >= 2 ? max(6, League.maxSeasonWeek - playoffSpan) : 17
+    }
+    private func clampRegularSeason() {
+        regularSeasonWeeks = min(regularSeasonWeeks, maxRegularSeasonWeeks)
+    }
+
     private var playoffSummaryFooter: String {
         let teams = min(playoffTeams, teamCount)
         guard teams >= 2 else {
             return "No postseason — final standings after \(regularSeasonWeeks) weeks decide it."
         }
-        let rounds = max(1, Int(ceil(log2(Double(teams)))))
         let start = regularSeasonWeeks + 1
-        let end = regularSeasonWeeks + rounds
-        return "Top \(teams) make the playoffs (weeks \(start)–\(end)). Higher seeds get first-round byes when needed."
+        let end = regularSeasonWeeks + playoffSpan
+        let perRound = weeksPerRound == 2 ? "two-week rounds" : "one-week rounds"
+        return "Top \(teams) make the playoffs in \(perRound): Weeks \(start)–\(end) (championship Week \(end)). Latest start that fits by Week \(League.maxSeasonWeek): Week \(maxRegularSeasonWeeks + 1)."
     }
 
     private var seasonChoices: [Int] {
@@ -319,6 +346,78 @@ struct CreateLeagueView: View {
         .ffHairlineBottom()
     }
 
+    // MARK: - Custom scoring
+
+    @ViewBuilder
+    private var scoringSection: some View {
+        section("Custom scoring",
+                footer: useCustomScoring
+                    ? "Points are computed from each player's raw stat line using these weights. Defense points-allowed tiers use standard scoring."
+                    : "Off — using the \(scoring.label) preset. Turn on to set per-stat values.") {
+            Toggle(isOn: $useCustomScoring) {
+                Text("Custom scoring").font(.ffBody).foregroundStyle(FFColor.textSecondary)
+            }
+            .tint(FFColor.accent)
+            .padding(.horizontal, FFSpace.l).padding(.vertical, 10)
+            .ffHairlineBottom()
+            .onChange(of: useCustomScoring) { _, on in
+                if on { scoringSettings = ScoringSettings.preset(scoring) }
+            }
+            if useCustomScoring {
+                scoringStepper("Pass yds / point", value: $scoringSettings.passingYardsPerPoint, range: 5...50, step: 5)
+                scoringStepper("Pass TD",          value: $scoringSettings.passingTD,            range: 0...10, step: 1)
+                scoringStepper("Interception",     value: $scoringSettings.interception,         range: -5...0, step: 1)
+                scoringStepper("Rush yds / point", value: $scoringSettings.rushingYardsPerPoint, range: 5...20, step: 1)
+                scoringStepper("Rush TD",          value: $scoringSettings.rushingTD,            range: 0...10, step: 1)
+                scoringStepper("Rec yds / point",  value: $scoringSettings.receivingYardsPerPoint, range: 5...20, step: 1)
+                scoringStepper("Rec TD",           value: $scoringSettings.receivingTD,          range: 0...10, step: 1)
+                scoringStepper("Per reception",    value: $scoringSettings.reception,            range: 0...2, step: 0.5)
+                scoringStepper("Fumble lost",      value: $scoringSettings.fumbleLost,           range: -5...0, step: 1)
+
+                scoringSubheader("Kicking")
+                scoringStepper("FG 0–39",          value: $scoringSettings.fgUnder40,            range: 0...10, step: 1)
+                scoringStepper("FG 40–49",         value: $scoringSettings.fg40to49,             range: 0...10, step: 1)
+                scoringStepper("FG 50+",           value: $scoringSettings.fg50plus,             range: 0...10, step: 1)
+                scoringStepper("Extra point",      value: $scoringSettings.patMade,              range: 0...5, step: 1)
+                scoringStepper("Missed FG",        value: $scoringSettings.fgMissed,             range: -5...0, step: 1)
+                scoringStepper("Missed PAT",       value: $scoringSettings.patMissed,            range: -5...0, step: 1)
+
+                scoringSubheader("Defense (DST)")
+                scoringStepper("Sack",             value: $scoringSettings.defSack,              range: 0...5, step: 0.5)
+                scoringStepper("Interception",     value: $scoringSettings.defInterception,      range: 0...10, step: 1)
+                scoringStepper("Fumble recovery",  value: $scoringSettings.defFumbleRecovery,    range: 0...10, step: 1)
+                scoringStepper("Defensive TD",     value: $scoringSettings.defTouchdown,         range: 0...10, step: 1)
+                scoringStepper("Safety",           value: $scoringSettings.defSafety,            range: 0...10, step: 1)
+            }
+        }
+    }
+
+    private func scoringSubheader(_ text: String) -> some View {
+        Text(text)
+            .ffEyebrow(color: FFColor.textTertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, FFSpace.l)
+            .padding(.top, 14)
+            .padding(.bottom, 6)
+            .ffHairlineBottom()
+    }
+
+    private func scoringStepper(_ label: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double) -> some View {
+        Stepper(value: value, in: range, step: step) {
+            HStack {
+                Text(label).font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                Spacer()
+                Text(value.wrappedValue.statString)
+                    .font(.ffStatSmall)
+                    .foregroundStyle(FFColor.accent)
+            }
+        }
+        .tint(FFColor.accent)
+        .padding(.horizontal, FFSpace.l)
+        .padding(.vertical, 10)
+        .ffHairlineBottom()
+    }
+
     private func create() async {
         saving = true
         defer { saving = false }
@@ -326,6 +425,7 @@ struct CreateLeagueView: View {
             let resolvedName = name.trimmingCharacters(in: .whitespaces).isEmpty
                 ? (leagueType == .simulation ? "My Simulation" : "My League")
                 : name
+            let customScoring = useCustomScoring ? scoringSettings : nil
             switch leagueType {
             case .standard, .dynasty:
                 let divisions = divisionsEnabled
@@ -338,7 +438,9 @@ struct CreateLeagueView: View {
                     regularSeasonWeeks: regularSeasonWeeks,
                     playoffTeams: min(playoffTeams, teamCount),
                     playoffReseed: true,
+                    weeksPerRound: playoffTeams >= 2 ? weeksPerRound : 1,
                     divisionNames: divisions,
+                    scoringSettings: customScoring,
                     isDynasty: leagueType == .dynasty
                 )
             case .simulation:
@@ -347,7 +449,8 @@ struct CreateLeagueView: View {
                     rosterConfig: rosterConfig,
                     yourTeamName: yourTeamName,
                     mode: simDraftMode,
-                    botCount: simBotCount
+                    botCount: simBotCount,
+                    scoringSettings: customScoring
                 )
             }
             dismiss()

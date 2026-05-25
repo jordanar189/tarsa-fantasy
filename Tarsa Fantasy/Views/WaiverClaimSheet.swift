@@ -24,8 +24,8 @@ struct WaiverClaimSheet: View {
     // IR players occupy extra capacity, so only active (non-IR) players count
     // against the roster limit.
     private var activeRosterCount: Int {
-        let irSet = Set(team.ir)
-        return team.roster.filter { !irSet.contains($0) }.count
+        let reserved = Set(team.ir).union(team.taxi)
+        return team.roster.filter { !reserved.contains($0) }.count
     }
 
     private var rosterFull: Bool {
@@ -84,6 +84,7 @@ struct WaiverClaimSheet: View {
                 }
             }
         }
+        .hostsPlayerProfileSheet()
     }
 
     private var submitLabel: String { isOnWaivers ? "Claim" : "Add" }
@@ -105,6 +106,7 @@ struct WaiverClaimSheet: View {
                         Text(addPlayer.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
                     }
                 }
+                .playerLink(addPlayer.id)
                 Spacer()
                 VStack(alignment: .trailing) {
                     Text("\(addPlayer.points.fpString)").font(.ffStatMedium).foregroundStyle(FFColor.accent)
@@ -159,43 +161,44 @@ struct WaiverClaimSheet: View {
         let summary = p.map { Fantasy.summary($0, scoring: league.scoring) }
         let locked = Fantasy.isPlayerLocked(playerID: pid, week: week, players: players)
         let isSelected = dropPlayerID == pid
-        return Button {
-            if locked { return }
-            dropPlayerID = (isSelected ? nil : pid)
-        } label: {
-            HStack(spacing: FFSpace.m) {
-                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(isSelected ? FFColor.accent : FFColor.textTertiary)
-                if let summary {
-                    PlayerAvatar(url: summary.headshotURL, fallback: summary.name.initialsFromName, size: 32)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(summary.name)
-                            .font(.ffBody)
-                            .foregroundStyle(locked ? FFColor.textTertiary : FFColor.textPrimary)
-                            .lineLimit(1)
-                        HStack(spacing: 6) {
-                            PositionPill(position: summary.position)
-                            Text(summary.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
-                            if locked {
-                                Text("• locked").font(.ffCaption).foregroundStyle(FFColor.warning)
-                            }
+        // Row tap selects the drop (no-op when locked); tapping the name opens
+        // the player profile (descendant tap takes precedence over the row).
+        return HStack(spacing: FFSpace.m) {
+            Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                .foregroundStyle(isSelected ? FFColor.accent : FFColor.textTertiary)
+            if let summary {
+                PlayerAvatar(url: summary.headshotURL, fallback: summary.name.initialsFromName, size: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(summary.name)
+                        .font(.ffBody)
+                        .foregroundStyle(locked ? FFColor.textTertiary : FFColor.textPrimary)
+                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        PositionPill(position: summary.position)
+                        Text(summary.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                        if locked {
+                            Text("• locked").font(.ffCaption).foregroundStyle(FFColor.warning)
                         }
                     }
-                    Spacer()
-                    Text(summary.points.fpString)
-                        .font(.ffStatSmall)
-                        .foregroundStyle(FFColor.textSecondary)
-                } else {
-                    Text(pid).font(.ffBody).foregroundStyle(FFColor.textSecondary)
-                    Spacer()
                 }
+                .playerLink(pid)
+                Spacer()
+                Text(summary.points.fpString)
+                    .font(.ffStatSmall)
+                    .foregroundStyle(FFColor.textSecondary)
+            } else {
+                Text(pid).font(.ffBody).foregroundStyle(FFColor.textSecondary)
+                Spacer()
             }
-            .padding(.horizontal, FFSpace.l)
-            .padding(.vertical, FFSpace.s)
-            .ffHairlineBottom()
         }
-        .buttonStyle(.plain)
-        .disabled(locked)
+        .padding(.horizontal, FFSpace.l)
+        .padding(.vertical, FFSpace.s)
+        .ffHairlineBottom()
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if locked { return }
+            dropPlayerID = (isSelected ? nil : pid)
+        }
     }
 
     private func infoBanner(_ text: String) -> some View {

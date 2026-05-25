@@ -12,6 +12,7 @@ struct LineupTabView: View {
     @State private var didInit = false
     @State private var starters: [String] = []
     @State private var ir: [String] = []
+    @State private var taxi: [String] = []
     @State private var context: WeekContext = .empty
     @State private var loadingContext = false
     @State private var pickingSlot: Int? = nil
@@ -31,8 +32,8 @@ struct LineupTabView: View {
     private var bench: [String] {
         guard let team else { return [] }
         let starting = Set(starters.filter { !$0.isEmpty })
-        let irSet = Set(ir)
-        return team.roster.filter { !starting.contains($0) && !irSet.contains($0) }
+        let reserved = Set(ir).union(taxi)
+        return team.roster.filter { !starting.contains($0) && !reserved.contains($0) }
     }
 
     var body: some View {
@@ -79,6 +80,7 @@ struct LineupTabView: View {
                     startersCard
                     benchCard
                     if config.ir > 0 { irCard }
+                    if config.taxi > 0 { taxiCard }
                 }
                 .padding(.horizontal, FFSpace.l)
                 .padding(.top, FFSpace.s)
@@ -108,8 +110,7 @@ struct LineupTabView: View {
         guard let league else { return [1] }
         var weeks = league.schedule.map(\.week)
         if league.playoffTeams >= 2 {
-            let rounds = max(1, Int(ceil(log2(Double(league.playoffTeams)))))
-            for r in 0..<rounds { weeks.append(league.playoffStartWeek + r) }
+            weeks.append(contentsOf: league.playoffStartWeek...league.playoffEndWeek)
         }
         return weeks.isEmpty ? [1] : weeks
     }
@@ -327,6 +328,10 @@ struct LineupTabView: View {
                 if config.ir > 0 && ir.count < config.ir && (context.injury(pid) != nil || context.isInactive(pid)) {
                     smallButton("IR", filled: false) { toIR(pid) }
                 }
+                if config.taxi > 0 && taxi.count < config.taxi
+                    && Fantasy.taxiEligible(player, maxExperience: config.taxiMaxExperience) {
+                    smallButton("Taxi", filled: false) { toTaxi(pid) }
+                }
                 smallButton("Start", filled: canStart) {
                     if let slot = firstOpenSlot(for: pid) { setStarter(slot: slot, pid: pid) }
                 }
@@ -378,6 +383,56 @@ struct LineupTabView: View {
             }
             Spacer()
             if canEdit { smallButton("Activate", filled: false) { activate(pid) } }
+        }
+        .padding(.horizontal, FFSpace.m).padding(.vertical, FFSpace.s)
+        .ffHairlineBottom()
+    }
+
+    // MARK: - Taxi
+
+    private var taxiCard: some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            HStack {
+                Text("TAXI SQUAD").ffEyebrow()
+                Spacer()
+                Text("\(taxi.count)/\(config.taxi)").font(.ffStatSmall).foregroundStyle(FFColor.textTertiary)
+            }
+            if taxi.isEmpty {
+                emptyHint(config.taxiMaxExperience == 0
+                          ? "Stash rookies here to free a roster spot."
+                          : "Stash players with ≤ \(config.taxiMaxExperience) year\(config.taxiMaxExperience == 1 ? "" : "s") of experience to free a roster spot.")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(taxi, id: \.self) { pid in taxiRow(pid) }
+                }
+                .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+                .overlay(RoundedRectangle(cornerRadius: FFRadius.m).strokeBorder(FFColor.border, lineWidth: 1))
+            }
+        }
+    }
+
+    private func taxiRow(_ pid: String) -> some View {
+        let player = leaguePlayers[pid]
+        return HStack(spacing: FFSpace.m) {
+            if let player {
+                PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 34)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(name(pid, player)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                    HStack(spacing: 6) {
+                        PositionPill(position: player.position)
+                        Text(player.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                        if let exp = player.profile?.experienceDisplay {
+                            Text(exp).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                        }
+                    }
+                }
+                .playerLink(pid)
+            } else {
+                emptyDot
+                Text(pid).font(.ffBody).foregroundStyle(FFColor.textTertiary)
+            }
+            Spacer()
+            if canEdit { smallButton("Activate", filled: false) { activateFromTaxi(pid) } }
         }
         .padding(.horizontal, FFSpace.m).padding(.vertical, FFSpace.s)
         .ffHairlineBottom()
@@ -558,6 +613,7 @@ struct LineupTabView: View {
         guard slot < starters.count, !context.isLocked(starters[slot]) else { return }
         if !pid.isEmpty {
             ir.removeAll { $0 == pid }
+            taxi.removeAll { $0 == pid }
             if let existing = starters.firstIndex(of: pid) { starters[existing] = "" }
         }
         starters[slot] = pid
@@ -567,6 +623,7 @@ struct LineupTabView: View {
     private func toIR(_ pid: String) {
         guard ir.count < config.ir else { return }
         if let i = starters.firstIndex(of: pid) { starters[i] = "" }
+        taxi.removeAll { $0 == pid }
         if !ir.contains(pid) { ir.append(pid) }
         persist()
     }
@@ -576,11 +633,24 @@ struct LineupTabView: View {
         persist()
     }
 
+    private func toTaxi(_ pid: String) {
+        guard taxi.count < config.taxi else { return }
+        if let i = starters.firstIndex(of: pid) { starters[i] = "" }
+        ir.removeAll { $0 == pid }
+        if !taxi.contains(pid) { taxi.append(pid) }
+        persist()
+    }
+
+    private func activateFromTaxi(_ pid: String) {
+        taxi.removeAll { $0 == pid }
+        persist()
+    }
+
     private func optimize() {
         guard canEdit else { return }
-        let irSet = Set(ir)
+        let reserved = Set(ir).union(taxi)
         let ranked = (team?.roster ?? [])
-            .filter { !irSet.contains($0) && !context.isLocked($0) }
+            .filter { !reserved.contains($0) && !context.isLocked($0) }
             .compactMap { pid -> (id: String, pos: String, pts: Double)? in
                 guard let p = leaguePlayers[pid] else { return nil }
                 return (pid, p.position, context.liveOrProjected(pid))
@@ -619,6 +689,7 @@ struct LineupTabView: View {
         )
         starters = resolved.starters
         ir = team.ir.filter { team.roster.contains($0) }
+        taxi = team.taxi.filter { team.roster.contains($0) }
         loadingContext = true
         context = await app.weekContext(league: league, week: week)
         loadingContext = false
@@ -628,10 +699,11 @@ struct LineupTabView: View {
         guard let league, let team = app.myTeam(in: league) else { return }
         let snapStarters = starters
         let snapIR = ir
+        let snapTaxi = taxi
         saving = true
         Task {
             do {
-                if let updated = try await app.setLineup(team: team, week: week, starters: snapStarters, ir: snapIR) {
+                if let updated = try await app.setLineup(team: team, week: week, starters: snapStarters, ir: snapIR, taxi: snapTaxi) {
                     app.selectedLeague = updated
                 }
             } catch {
