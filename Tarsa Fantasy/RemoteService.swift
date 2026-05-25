@@ -1856,50 +1856,70 @@ actor RemoteService {
 
     // Commish-only. Spawns a new child league for the next season. For a
     // standard league teams are NOT cloned — owners re-claim with the new join
-    // code (a fresh redraft). For a dynasty league the RPC carries every team
-    // forward with its owner, branding, and roster intact (so rosters are never
-    // cleared); the child is otherwise scheduleless, so we generate a fresh
-    // round-robin over the carried-over teams here, mirroring createLeague.
+    // code (a fresh redraft). For a dynasty league every team is carried forward
+    // with its owner, branding, and roster intact (so rosters are never
+    // cleared). The whole rollover is atomic: we generate the new team IDs and a
+    // round-robin schedule over them up front and hand both to the RPC, which
+    // writes the league row, schedule, waiver priority, and cloned teams in a
+    // single transaction. That avoids a half-initialized child (and duplicate
+    // children on retry) if anything fails mid-rollover.
     func rolloverLeague(parentID: String, newSeason: Int, newName: String?) async throws -> League? {
         guard let pid = UUID(uuidString: parentID) else { return nil }
+
+        // Dynasty needs the parent's teams + flag before the call so the
+        // schedule can reference the carried-over team IDs. Fail loudly rather
+        // than silently rolling a dynasty league over with an empty payload.
+        guard let parent = try await self.league(id: parentID) else {
+            throw RemoteError.parentLeagueNotFound
+        }
+        var teamsJSON: AnyJSON = .array([])
+        var scheduleJSON: AnyJSON = .array([])
+        var waiverPriority: [String] = []
+        if parent.isDynasty, !parent.teams.isEmpty {
+            let newIDs = parent.teams.map { _ in UUID().uuidString }
+            let schedule = Fantasy.generateSchedule(
+                teamIDs: newIDs, weeks: parent.regularSeasonWeeks
+            )
+            scheduleJSON = scheduleAsAnyJSON(schedule)
+            // Default pre-season priority: reverse team order (last picks first).
+            waiverPriority = Array(newIDs.reversed())
+            teamsJSON = .array(zip(parent.teams, newIDs).enumerated().map { idx, pair in
+                dynastyTeamJSON(newID: pair.1, team: pair.0, sortIndex: idx)
+            })
+        }
+
         struct Args: Encodable {
-            let p_parent_id: UUID; let p_new_season: Int; let p_new_name: String
+            let p_parent_id: UUID
+            let p_new_season: Int
+            let p_new_name: String
+            let p_schedule: AnyJSON
+            let p_waiver_priority: [String]
+            let p_teams: AnyJSON
         }
         let row: LeagueRow = try await client.rpc("rollover_league", params: Args(
-            p_parent_id: pid, p_new_season: newSeason, p_new_name: newName ?? ""
+            p_parent_id: pid, p_new_season: newSeason, p_new_name: newName ?? "",
+            p_schedule: scheduleJSON, p_waiver_priority: waiverPriority, p_teams: teamsJSON
         )).execute().value
-        if row.isDynasty {
-            try await seedDynastySchedule(child: row.id, weeks: row.regularSeasonWeeks)
-        }
         return try await self.league(id: row.id.uuidString)
     }
 
-    // Generates the regular-season schedule for a freshly rolled-over dynasty
-    // league. The RPC has already cloned the teams forward, so we read them back
-    // and run the same round-robin generator league creation uses.
-    private func seedDynastySchedule(child childID: UUID, weeks: Int?) async throws {
-        let childTeams: [TeamRow] = try await client.from("teams")
-            .select()
-            .eq("league_id", value: childID)
-            .order("sort_index", ascending: true)
-            .execute()
-            .value
-        guard !childTeams.isEmpty else { return }
-
-        let teamIDs = childTeams.map { $0.id.uuidString }
-        let schedule = Fantasy.generateSchedule(teamIDs: teamIDs, weeks: weeks)
-        struct ScheduleUpdate: Encodable {
-            let schedule: AnyJSON
-            let waiver_priority: [String]
-        }
-        _ = try await client.from("leagues")
-            .update(ScheduleUpdate(
-                schedule: scheduleAsAnyJSON(schedule),
-                // Default pre-season priority: reverse team order (last picks first).
-                waiver_priority: Array(teamIDs.reversed())
-            ))
-            .eq("id", value: childID)
-            .execute()
+    // Serializes a carried-over dynasty team for the rollover RPC. Roster, IR,
+    // owner, division, and branding come forward; the new season's lineups and
+    // weekly snapshots reset (omitted here).
+    private func dynastyTeamJSON(newID: String, team: FantasyTeam, sortIndex: Int) -> AnyJSON {
+        .object([
+            "id":           .string(newID),
+            "name":         .string(team.name),
+            "owner_id":     team.ownerID.map { AnyJSON.string($0) } ?? .null,
+            "sort_index":   .integer(sortIndex),
+            "division":     team.division.map { AnyJSON.integer($0) } ?? .null,
+            "roster":       stringsAsAnyJSON(team.roster),
+            "starters":     stringsAsAnyJSON(team.starters),
+            "ir":           stringsAsAnyJSON(team.ir),
+            "logo_url":     team.logoURL.map { AnyJSON.string($0) } ?? .null,
+            "color_hex":    team.colorHex.map { AnyJSON.string($0) } ?? .null,
+            "abbreviation": team.abbreviation.map { AnyJSON.string($0) } ?? .null
+        ])
     }
 
     // Walks the parent chain from `leagueID` upward and returns every
@@ -3043,7 +3063,7 @@ actor RemoteService {
 
     enum RemoteError: LocalizedError {
         case invalidUserID, tooFewTeams, tooManyTeams, joinCodeCollision,
-             rosterFull, playerLocked, emptyMessage
+             rosterFull, playerLocked, emptyMessage, parentLeagueNotFound
         var errorDescription: String? {
             switch self {
             case .invalidUserID:     return "Invalid user."
@@ -3053,6 +3073,7 @@ actor RemoteService {
             case .rosterFull:        return "Your roster is full — choose a player to drop."
             case .playerLocked:      return "This player's game is in progress and can't be added or dropped."
             case .emptyMessage:      return "Message can't be empty."
+            case .parentLeagueNotFound: return "Couldn't load the league to roll over. Try again."
             }
         }
     }

@@ -6,15 +6,26 @@
 alter table public.leagues
     add column if not exists is_dynasty boolean not null default false;
 
--- Roll a league into the next season. Standard leagues spawn an empty child
--- (owners re-claim with the new join code — a fresh redraft). Dynasty leagues
--- additionally clone every team forward with its owner, branding, and roster
--- (but not the prior season's frozen weekly lineups) so rosters never clear.
--- Cloning runs here in the security-definer RPC so teams owned by other members
--- are copied regardless of row-level security; the client then generates the
--- new schedule over the carried-over teams (reusing the league-creation path).
+-- Roll a league into the next season, atomically. Standard leagues spawn an
+-- empty child (owners re-claim with the new join code — a fresh redraft).
+-- Dynasty leagues additionally carry every team forward with its owner,
+-- branding, and roster (but not the prior season's frozen weekly lineups) so
+-- rosters never clear. The client generates the new team IDs + schedule
+-- (reusing the league-creation round-robin) and passes them in, so the whole
+-- rollover — league row, schedule, waiver priority, and cloned teams — commits
+-- in a single transaction. Running the team insert here (security definer)
+-- preserves owners that belong to other members regardless of row-level
+-- security. The previous 3-arg signature is dropped so the defaulted overload
+-- isn't ambiguous.
+drop function if exists public.rollover_league(uuid, int, text);
+
 create or replace function public.rollover_league(
-    p_parent_id uuid, p_new_season int, p_new_name text
+    p_parent_id       uuid,
+    p_new_season      int,
+    p_new_name        text,
+    p_schedule        jsonb  default '[]'::jsonb,
+    p_waiver_priority text[] default '{}'::text[],
+    p_teams           jsonb  default '[]'::jsonb
 ) returns public.leagues
 language plpgsql security definer set search_path = public as $$
 declare
@@ -46,13 +57,13 @@ begin
         parent.scoring,
         parent.creator_id,
         parent.roster_config,
-        '[]'::jsonb,
+        coalesce(p_schedule, '[]'::jsonb),
         new_code,
         parent.waiver_process_day,
         parent.waiver_process_hour,
         parent.waiver_period_hours,
         parent.commissioner_approval,
-        '{}'::text[],
+        coalesce(p_waiver_priority, '{}'::text[]),
         parent.trade_approval,
         null,
         parent.trade_vote_hours,
@@ -66,16 +77,20 @@ begin
     )
     returning * into child;
 
-    if parent.is_dynasty then
+    if jsonb_typeof(p_teams) = 'array' and jsonb_array_length(p_teams) > 0 then
         insert into public.teams (
             id, league_id, name, owner_id, sort_index, division,
             roster, starters, ir, logo_url, color_hex, abbreviation
         )
         select
-            gen_random_uuid(), child.id, t.name, t.owner_id, t.sort_index, t.division,
-            t.roster, t.starters, t.ir, t.logo_url, t.color_hex, t.abbreviation
-        from public.teams t
-        where t.league_id = parent.id;
+            x.id, child.id, x.name, x.owner_id, x.sort_index, x.division,
+            coalesce(x.roster, '{}'), coalesce(x.starters, '{}'), coalesce(x.ir, '{}'),
+            x.logo_url, x.color_hex, x.abbreviation
+        from jsonb_to_recordset(p_teams) as x(
+            id uuid, name text, owner_id uuid, sort_index int, division int,
+            roster text[], starters text[], ir text[],
+            logo_url text, color_hex text, abbreviation text
+        );
     end if;
 
     return child;
