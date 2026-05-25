@@ -158,6 +158,29 @@ struct ProfileView: View {
                 .ffCard()
             }
             .buttonStyle(.plain)
+
+            NavigationLink {
+                AdminNotificationsView()
+            } label: {
+                HStack(spacing: FFSpace.m) {
+                    Image(systemName: "bell.badge.fill")
+                        .foregroundStyle(FFColor.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Push notifications")
+                            .font(.ffHeadline)
+                            .foregroundStyle(FFColor.textPrimary)
+                        Text("Compose, target, and schedule alerts.")
+                            .font(.ffCaption)
+                            .foregroundStyle(FFColor.textSecondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                .ffCard()
+            }
+            .buttonStyle(.plain)
         }
     }
 

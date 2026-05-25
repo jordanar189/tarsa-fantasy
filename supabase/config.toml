@@ -35,3 +35,6 @@ verify_jwt = false
 
 [functions.sync_mfl]
 verify_jwt = false
+
+[functions.send_push]
+verify_jwt = false   # cron invokes via service_role; app invokes with the user JWT

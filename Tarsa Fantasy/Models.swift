@@ -964,6 +964,28 @@ struct FeedbackItem: Identifiable, Hashable, Sendable {
     let createdAt: Date
 }
 
+// Admin-composed push notification. Mirrors the push_notifications table and
+// serves as both the compose payload and the history row.
+enum NotificationStatus: String, Hashable, Sendable {
+    case scheduled, sending, sent, failed, canceled
+}
+
+struct AdminNotification: Identifiable, Hashable, Sendable {
+    let id: String
+    let title: String
+    let body: String
+    let imageURL: String?
+    let deepLink: String?
+    let targetAll: Bool
+    let targetUserIDs: [String]
+    let scheduledAt: Date?       // nil = sent/sending immediately
+    let status: NotificationStatus
+    let sentAt: Date?
+    let sentCount: Int
+    let failCount: Int
+    let createdAt: Date
+}
+
 // One row of the friendships table. Stored canonically (user_a < user_b),
 // but the FriendshipStatus helpers below project it into "the other user"
 // from the caller's perspective.

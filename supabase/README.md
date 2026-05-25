@@ -240,3 +240,37 @@ curl -X POST "https://uxpfktjpmyhdlwfxnwri.supabase.co/functions/v1/sync_espn_li
 
 If you need to keep many historical seasons, summarize older ones (drop
 `player_games` rows older than 3 seasons; keep season aggregates only).
+
+## Push notifications
+
+The `send_push` Edge Function delivers admin-composed notifications via APNs
+(token-based auth, HTTP/2). The `push_notifications` table is both the compose
+queue and the history; the `dispatch_push_minute` cron runs it every minute for
+anything that's due, and the app invokes it directly for "send now". Device
+tokens live in `device_tokens` (one row per device, registered on launch).
+
+One-time setup (in addition to `supabase db push`, which creates the tables and
+the cron):
+
+1. **Store the APNs secrets** in Dashboard → Edge Functions → Secrets:
+
+   ```
+   APNS_KEY        = <full contents of the .p8 file, incl. BEGIN/END lines>
+   APNS_KEY_ID     = <10-char Key ID for that .p8>
+   APNS_TEAM_ID    = <Apple Developer Team ID>
+   APNS_BUNDLE_ID  = com.personal.Tarsa-Fantasy
+   ```
+
+2. **Deploy the function:**
+
+   ```bash
+   supabase functions deploy send_push
+   ```
+
+The cron uses the existing `project_url` / `service_role_key` vault secrets, so
+no extra vault entries are needed. Verify with:
+
+```sql
+select jobname, last_run_time, last_run_status from cron.job_run_details
+  where jobname = 'dispatch_push_minute' order by last_run_time desc limit 5;
+```
