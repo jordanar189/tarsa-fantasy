@@ -8,4 +8,10 @@
 
 GIPHY_API_KEY =
 
+// APNs environment, referenced as $(APS_ENV) in Tarsa Fantasy.entitlements.
+// Debug builds register against the APNs sandbox; Release (TestFlight/App
+// Store) must use production, or push silently routes to the wrong endpoint.
+APS_ENV = production
+APS_ENV[config=Debug] = development
+
 #include? "Secrets.xcconfig"

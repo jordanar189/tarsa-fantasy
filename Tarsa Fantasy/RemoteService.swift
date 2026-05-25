@@ -2554,6 +2554,126 @@ actor RemoteService {
         return rows.map { Profile(id: $0.id.uuidString, username: $0.username) }
     }
 
+    // MARK: - Push notifications
+
+    // Registers (or refreshes) this device's APNs token for the signed-in user.
+    // The RPC stamps user_id from auth.uid() and upserts on the token, so a
+    // device that changes hands re-points cleanly to the new account.
+    func registerDeviceToken(_ token: String, environment: String) async throws {
+        struct Args: Encodable { let p_token: String; let p_environment: String }
+        _ = try await client.rpc(
+            "register_device_token",
+            params: Args(p_token: token, p_environment: environment)
+        ).execute()
+    }
+
+    func unregisterDeviceToken(_ token: String) async {
+        struct Args: Encodable { let p_token: String }
+        _ = try? await client.rpc("unregister_device_token", params: Args(p_token: token)).execute()
+    }
+
+    // Admin: upload an image to attach to a notification. Storage RLS gates the
+    // write to admins; the bucket is public-read so APNs/the service extension
+    // can fetch it.
+    func uploadNotificationImage(data: Data, contentType: String) async throws -> String {
+        let ext: String
+        switch contentType.lowercased() {
+        case "image/png":  ext = "png"
+        case "image/gif":  ext = "gif"
+        case "image/heic": ext = "heic"
+        case "image/webp": ext = "webp"
+        default:           ext = "jpg"
+        }
+        let filename = "\(UUID().uuidString.lowercased()).\(ext)"
+        _ = try await client.storage
+            .from("notification-images")
+            .upload(filename, data: data, options: FileOptions(contentType: contentType, upsert: false))
+        return try client.storage.from("notification-images").getPublicURL(path: filename).absoluteString
+    }
+
+    // Best-effort cleanup of an uploaded image when the notification row it was
+    // meant for never got created (avoids orphaned objects in the bucket).
+    func deleteNotificationImage(urlString: String) async {
+        guard let name = URL(string: urlString)?.lastPathComponent, !name.isEmpty else { return }
+        _ = try? await client.storage.from("notification-images").remove(paths: [name])
+    }
+
+    // Admin: queue a notification. With no scheduledAt it's sent right away by
+    // invoking the sender directly (the per-minute cron is the safety net);
+    // with a scheduledAt the cron picks it up when due.
+    @discardableResult
+    func createNotification(
+        title: String, body: String, imageURL: String?, deepLink: String?,
+        targetUserIDs: [String]?, scheduledAt: Date?
+    ) async throws -> AdminNotification {
+        let isAll = (targetUserIDs?.isEmpty ?? true)
+        struct Insert: Encodable {
+            let title: String
+            let body: String
+            let image_url: String?
+            let deep_link: String?
+            let target: String
+            let target_user_ids: [UUID]   // column is uuid[]; parse so a bad id fails here, not in PG
+            let scheduled_at: Date?
+        }
+        let row: PushNotificationRow = try await client.from("push_notifications")
+            .insert(Insert(
+                title: title, body: body, image_url: imageURL, deep_link: deepLink,
+                target: isAll ? "all" : "users",
+                target_user_ids: isAll ? [] : (targetUserIDs ?? []).compactMap(UUID.init),
+                scheduled_at: scheduledAt
+            ))
+            .select()
+            .single()
+            .execute()
+            .value
+        if scheduledAt == nil {
+            try? await client.functions.invoke(
+                "send_push",
+                options: FunctionInvokeOptions(body: ["notification_id": row.id.uuidString])
+            )
+        }
+        return Self.toAdminNotification(row)
+    }
+
+    func adminNotifications(limit: Int = 50) async -> [AdminNotification] {
+        let rows: [PushNotificationRow] = (try? await client.from("push_notifications")
+            .select()
+            .order("created_at", ascending: false)
+            .limit(limit)
+            .execute()
+            .value) ?? []
+        return rows.map(Self.toAdminNotification)
+    }
+
+    func cancelNotification(id: String) async throws {
+        guard let uuid = UUID(uuidString: id) else { return }
+        struct Update: Encodable { let status: String }
+        _ = try await client.from("push_notifications")
+            .update(Update(status: "canceled"))
+            .eq("id", value: uuid)
+            .eq("status", value: "scheduled")
+            .execute()
+    }
+
+    private static func toAdminNotification(_ r: PushNotificationRow) -> AdminNotification {
+        AdminNotification(
+            id: r.id.uuidString,
+            title: r.title,
+            body: r.body,
+            imageURL: r.imageUrl,
+            deepLink: r.deepLink,
+            targetAll: r.target == "all",
+            targetUserIDs: r.targetUserIds.map { $0.uuidString },
+            scheduledAt: r.scheduledAt,
+            status: NotificationStatus(rawValue: r.status) ?? .scheduled,
+            sentAt: r.sentAt,
+            sentCount: r.sentCount,
+            failCount: r.failCount,
+            createdAt: r.createdAt
+        )
+    }
+
     // MARK: - Tester role + feedback
 
     // Admin-only grant/revoke of the tester flag on another profile. The RPC
@@ -3165,6 +3285,34 @@ struct ProfileRow: Codable, Hashable {
         theme    = try c.decodeIfPresent(String.self, forKey: .theme)
         isAdmin  = try c.decodeIfPresent(Bool.self, forKey: .isAdmin)  ?? false
         isTester = try c.decodeIfPresent(Bool.self, forKey: .isTester) ?? false
+    }
+}
+
+struct PushNotificationRow: Codable, Hashable {
+    let id: UUID
+    let title: String
+    let body: String
+    let imageUrl: String?
+    let deepLink: String?
+    let target: String
+    let targetUserIds: [UUID]
+    let scheduledAt: Date?
+    let status: String
+    let sentAt: Date?
+    let sentCount: Int
+    let failCount: Int
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, body, target, status
+        case imageUrl       = "image_url"
+        case deepLink       = "deep_link"
+        case targetUserIds  = "target_user_ids"
+        case scheduledAt    = "scheduled_at"
+        case sentAt         = "sent_at"
+        case sentCount      = "sent_count"
+        case failCount      = "fail_count"
+        case createdAt      = "created_at"
     }
 }
 

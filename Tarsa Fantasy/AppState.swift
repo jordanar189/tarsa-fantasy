@@ -117,6 +117,13 @@ final class AppState {
                 await self?.refreshLiveSnapshot(season: season)
             }
         }
+        // Notification taps post .pushDeepLink with the payload URL.
+        NotificationCenter.default.addObserver(
+            forName: .pushDeepLink, object: nil, queue: .main
+        ) { [weak self] note in
+            let url = note.object as? URL
+            Task { @MainActor [weak self] in self?.handlePushDeepLink(url) }
+        }
     }
 
     // MARK: - Bootstrap
@@ -128,6 +135,7 @@ final class AppState {
                 session = await remote.restoreSession()
             }
         }
+        if session != nil { await setUpPushNotifications() }
         if !force && !seasons.isEmpty {
             await reloadLeagues()
             await applyInitialLeagueSelection()
@@ -249,6 +257,7 @@ final class AppState {
     }
 
     func signOut() async {
+        await NotificationManager.shared.clearOnSignOut()
         try? await remote.signOut()
         session = nil
         leagueSummaries = []
@@ -272,6 +281,7 @@ final class AppState {
             await applyInitialLeagueSelection()
             await reloadFriendsAndDMs()
             await loadProfileTheme()
+            await setUpPushNotifications()
         } catch {
             authError = error.localizedDescription
         }
@@ -1638,6 +1648,55 @@ final class AppState {
         )
     }
 
+    // MARK: - Push notifications
+
+    // Prompt for permission (once) and register/refresh this device's token.
+    // Called after sign-in and on each bootstrap when a session exists.
+    func setUpPushNotifications() async {
+        guard session != nil else { return }
+        await NotificationManager.shared.requestAuthorization()
+        await NotificationManager.shared.uploadTokenIfPossible()
+    }
+
+    private func handlePushDeepLink(_ url: URL?) {
+        guard let url else { return }
+        // tarsafantasy://lineup → jump to the Lineup tab of the current league.
+        if url.host == "lineup", selectedLeagueID != nil {
+            tab = .lineup
+        }
+    }
+
+    func uploadNotificationImage(data: Data, contentType: String) async throws -> String {
+        guard isAdmin else { throw AppError.notAuthorized }
+        return try await remote.uploadNotificationImage(data: data, contentType: contentType)
+    }
+
+    func deleteNotificationImage(urlString: String) async {
+        await remote.deleteNotificationImage(urlString: urlString)
+    }
+
+    @discardableResult
+    func sendNotification(
+        title: String, body: String, imageURL: String?, deepLink: String?,
+        targetUserIDs: [String]?, scheduledAt: Date?
+    ) async throws -> AdminNotification {
+        guard isAdmin else { throw AppError.notAuthorized }
+        return try await remote.createNotification(
+            title: title, body: body, imageURL: imageURL, deepLink: deepLink,
+            targetUserIDs: targetUserIDs, scheduledAt: scheduledAt
+        )
+    }
+
+    func adminNotifications() async -> [AdminNotification] {
+        guard isAdmin else { return [] }
+        return await remote.adminNotifications()
+    }
+
+    func cancelNotification(id: String) async throws {
+        guard isAdmin else { return }
+        try await remote.cancelNotification(id: id)
+    }
+
     // MARK: - Simulations
 
     enum SimulationDraftMode { case preDrafted, liveDraft }
@@ -1861,12 +1920,13 @@ final class AppState {
     }
 
     enum AppError: LocalizedError {
-        case notSignedIn, leagueNotFound
+        case notSignedIn, leagueNotFound, notAuthorized
         case promotionFailed(String)
         var errorDescription: String? {
             switch self {
             case .notSignedIn:    return "You're not signed in."
             case .leagueNotFound: return "League not found."
+            case .notAuthorized:  return "You don't have permission to do that."
             case .promotionFailed(let what):
                 return "Couldn't finish setting up the league (\(what) failed). Nothing was kept — please try again."
             }
