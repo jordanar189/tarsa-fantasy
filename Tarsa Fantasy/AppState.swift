@@ -1667,8 +1667,12 @@ final class AppState {
     }
 
     func uploadNotificationImage(data: Data, contentType: String) async throws -> String {
-        guard isAdmin else { throw AppError.notSignedIn }
+        guard isAdmin else { throw AppError.notAuthorized }
         return try await remote.uploadNotificationImage(data: data, contentType: contentType)
+    }
+
+    func deleteNotificationImage(urlString: String) async {
+        await remote.deleteNotificationImage(urlString: urlString)
     }
 
     @discardableResult
@@ -1676,7 +1680,7 @@ final class AppState {
         title: String, body: String, imageURL: String?, deepLink: String?,
         targetUserIDs: [String]?, scheduledAt: Date?
     ) async throws -> AdminNotification {
-        guard isAdmin else { throw AppError.notSignedIn }
+        guard isAdmin else { throw AppError.notAuthorized }
         return try await remote.createNotification(
             title: title, body: body, imageURL: imageURL, deepLink: deepLink,
             targetUserIDs: targetUserIDs, scheduledAt: scheduledAt
@@ -1916,12 +1920,13 @@ final class AppState {
     }
 
     enum AppError: LocalizedError {
-        case notSignedIn, leagueNotFound
+        case notSignedIn, leagueNotFound, notAuthorized
         case promotionFailed(String)
         var errorDescription: String? {
             switch self {
             case .notSignedIn:    return "You're not signed in."
             case .leagueNotFound: return "League not found."
+            case .notAuthorized:  return "You don't have permission to do that."
             case .promotionFailed(let what):
                 return "Couldn't finish setting up the league (\(what) failed). Nothing was kept — please try again."
             }

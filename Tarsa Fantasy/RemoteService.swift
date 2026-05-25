@@ -2591,6 +2591,13 @@ actor RemoteService {
         return try client.storage.from("notification-images").getPublicURL(path: filename).absoluteString
     }
 
+    // Best-effort cleanup of an uploaded image when the notification row it was
+    // meant for never got created (avoids orphaned objects in the bucket).
+    func deleteNotificationImage(urlString: String) async {
+        guard let name = URL(string: urlString)?.lastPathComponent, !name.isEmpty else { return }
+        _ = try? await client.storage.from("notification-images").remove(paths: [name])
+    }
+
     // Admin: queue a notification. With no scheduledAt it's sent right away by
     // invoking the sender directly (the per-minute cron is the safety net);
     // with a scheduledAt the cron picks it up when due.
@@ -2606,14 +2613,14 @@ actor RemoteService {
             let image_url: String?
             let deep_link: String?
             let target: String
-            let target_user_ids: [String]
+            let target_user_ids: [UUID]   // column is uuid[]; parse so a bad id fails here, not in PG
             let scheduled_at: Date?
         }
         let row: PushNotificationRow = try await client.from("push_notifications")
             .insert(Insert(
                 title: title, body: body, image_url: imageURL, deep_link: deepLink,
                 target: isAll ? "all" : "users",
-                target_user_ids: isAll ? [] : (targetUserIDs ?? []),
+                target_user_ids: isAll ? [] : (targetUserIDs ?? []).compactMap(UUID.init),
                 scheduled_at: scheduledAt
             ))
             .select()

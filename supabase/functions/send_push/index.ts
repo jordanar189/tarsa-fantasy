@@ -124,7 +124,8 @@ async function finish(
 ): Promise<void> {
     await supa.from("push_notifications").update({
         status,
-        sent_at: new Date().toISOString(),
+        // Only a real send gets a sent_at; a failed row shouldn't look delivered.
+        ...(status === "sent" ? { sent_at: new Date().toISOString() } : {}),
         sent_count: sent,
         fail_count: failed,
         error,

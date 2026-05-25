@@ -253,17 +253,17 @@ private struct ComposeNotificationView: View {
     private func send() async {
         submitting = true
         defer { submitting = false }
+        var uploadedImageURL: String? = nil
         do {
-            var imageURL: String? = nil
             if let data = imageData {
-                imageURL = try await app.uploadNotificationImage(data: data, contentType: "image/jpeg")
+                uploadedImageURL = try await app.uploadNotificationImage(data: data, contentType: "image/jpeg")
             }
             let targets: [String]? = audience == .all ? nil : selectedUsers.map(\.id)
             let when: Date? = scheduleLater ? scheduledDate : nil
             _ = try await app.sendNotification(
                 title: trimmedTitle,
                 body: bodyText.trimmingCharacters(in: .whitespacesAndNewlines),
-                imageURL: imageURL,
+                imageURL: uploadedImageURL,
                 deepLink: openLineupOnTap ? "tarsafantasy://lineup" : nil,
                 targetUserIDs: targets,
                 scheduledAt: when
@@ -279,6 +279,10 @@ private struct ComposeNotificationView: View {
             openLineupOnTap = false
             audience = .all
         } catch {
+            // Don't leave the uploaded image orphaned if the row never got created.
+            if let orphan = uploadedImageURL {
+                await app.deleteNotificationImage(urlString: orphan)
+            }
             self.error = error.localizedDescription
         }
     }
