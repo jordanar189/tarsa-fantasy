@@ -394,16 +394,28 @@ final class AppState {
     // MARK: - Career (multi-season aggregation)
 
     // A player's per-season career table across every available season, most
-    // recent first. For each season the snapshot comes from the in-memory cache
-    // if already loaded, else the disk cache, else the network — without the
-    // live-scores listener / background-refresh wiring loadSeason sets up for the
-    // *active* season, and without retaining historical seasons in memory.
-    //
-    // Heavy on a cold cache (a fetch per season missing from disk), so callers
-    // show a loading state. Seasons are processed one at a time to keep peak
-    // memory to a single snapshot, and the disk decode / fetch / rank crunch all
-    // run off the main actor. Ranks/points use the supplied scoring preset.
+    // recent first, with each season's fantasy points and position rank under
+    // the supplied scoring. Served by the player_career RPC in a single
+    // round-trip (the server aggregates per-season totals + ranks), falling back
+    // to a client-side per-season crunch only if the RPC is unavailable.
     func careerSeasons(playerID: String, scoring: Scoring, settings: ScoringSettings? = nil) async -> [Fantasy.CareerSeasonLine] {
+        // Fast path: one server-side aggregation round-trip (player_career RPC),
+        // which returns the player's per-season totals + position rank directly.
+        // A thrown error (e.g. the RPC isn't deployed yet) falls back to the
+        // client-side crunch below; a successful empty result is a real "no
+        // career" and is returned as-is.
+        if let lines = try? await data.careerLines(
+            playerID: playerID, scoring: scoring, settings: settings
+        ) {
+            return lines
+        }
+        return await careerSeasonsLocal(playerID: playerID, scoring: scoring, settings: settings)
+    }
+
+    // Fallback career aggregation: build each season's line from the in-memory /
+    // disk / network snapshot, one season at a time. Heavy on a cold cache (a
+    // fetch per season) — used only when the player_career RPC is unavailable.
+    private func careerSeasonsLocal(playerID: String, scoring: Scoring, settings: ScoringSettings? = nil) async -> [Fantasy.CareerSeasonLine] {
         var lines: [Fantasy.CareerSeasonLine] = []
         for season in seasons {
             let inMemory = playersBySeason[season]
