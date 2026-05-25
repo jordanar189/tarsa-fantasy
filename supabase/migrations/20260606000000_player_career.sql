@@ -146,11 +146,15 @@ language sql stable security definer set search_path = public as $$
     ),
     -- Rank within (season, position). Players with no position are excluded
     -- from ranking (matches Fantasy.positionRanks) but still surface below.
+    -- row_number() (not rank/dense_rank) mirrors the client's sorted+enumerated
+    -- ranking, which gives tied players distinct consecutive ranks (1, 2 — not
+    -- 1, 1). player_id breaks ties deterministically so ranks are stable across
+    -- calls (the client's sort is unstable, so either tie order is acceptable).
     ranked as (
         select
             s.player_id,
             s.season,
-            (rank() over (partition by s.season, s.position order by s.points desc))::int as rank,
+            (row_number() over (partition by s.season, s.position order by s.points desc, s.player_id))::int as rank,
             (count(*) over (partition by s.season, s.position))::int as total_at_position
         from scored s
         where coalesce(s.position, '') <> ''
