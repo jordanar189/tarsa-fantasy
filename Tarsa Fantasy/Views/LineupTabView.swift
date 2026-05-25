@@ -689,7 +689,10 @@ struct LineupTabView: View {
         )
         starters = resolved.starters
         ir = team.ir.filter { team.roster.contains($0) }
-        taxi = team.taxi.filter { team.roster.contains($0) }
+        // Honor taxi membership only while taxi slots are configured, so a
+        // disabled taxi doesn't strand players off the bench (matches the
+        // resolveLineup / optimalWeekPoints / WaiverClaimSheet guards).
+        taxi = config.taxi > 0 ? team.taxi.filter { team.roster.contains($0) } : []
         loadingContext = true
         context = await app.weekContext(league: league, week: week)
         loadingContext = false
