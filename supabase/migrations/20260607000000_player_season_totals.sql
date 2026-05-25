@@ -12,7 +12,12 @@
 -- sum (DST points-allowed tier is per-game / non-additive), identical to the
 -- previous RPC and to SeasonTotals.specialPoints.
 
-create materialized view if not exists public.player_season_totals as
+-- Drop + recreate (rather than IF NOT EXISTS) so a re-run always produces the
+-- current column set, and so a stale ad-hoc view in a dev DB can't mask the
+-- definition below. Migrations run once in production, so the rebuild cost is
+-- a non-issue. WITH DATA is explicit to document the "instant on deploy" behavior.
+drop materialized view if exists public.player_season_totals;
+create materialized view public.player_season_totals as
     select
         pg.player_id,
         pg.season,
@@ -60,7 +65,8 @@ create materialized view if not exists public.player_season_totals as
         ) as special_points
     from public.player_games pg
     join public.players_cache pc on pc.id = pg.player_id
-    group by pg.player_id, pg.season, upper(pc.position);
+    group by pg.player_id, pg.season, upper(pc.position)
+    with data;
 
 -- (player_id, season) is unique (one position per player in players_cache),
 -- which also lets us REFRESH ... CONCURRENTLY without blocking readers.
