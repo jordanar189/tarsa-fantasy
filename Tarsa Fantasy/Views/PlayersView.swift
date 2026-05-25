@@ -14,19 +14,16 @@ struct PlayersBrowser: View {
     // Recently-dropped players in the selected league, so the claim action
     // knows whether an add is instant (free agent) or a waiver claim.
     @State private var dropped: [DroppedPlayer] = []
-    @State private var claimTarget: ClaimTarget? = nil
+    @State private var claimTarget: AddClaimTarget? = nil
+    @State private var tradeTarget: AcquireTradeTarget? = nil
 
     enum Availability: String, CaseIterable, Identifiable, Hashable {
         case all = "All", available = "Available"
         var id: String { rawValue }
     }
 
-    struct ClaimTarget: Identifiable {
-        let team: FantasyTeam
-        let addPlayer: PlayerSummary
-        let isOnWaivers: Bool
-        let waiverUntil: Date?
-        var id: String { addPlayer.id }
+    private var droppedByID: [String: DroppedPlayer] {
+        Dictionary(dropped.map { ($0.playerID, $0) }, uniquingKeysWith: { a, _ in a })
     }
 
     // Player IDs already on some roster in the selected league.
@@ -96,22 +93,32 @@ struct PlayersBrowser: View {
                 }
                 Spacer()
             } else {
+                // Hoisted once so the per-row status icon doesn't recompute the
+                // snapshot / current week 150 times.
+                let snapshot = app.displaySelectedPlayers()
+                let week = Fantasy.currentWeek(players: snapshot)
+                let dmap = droppedByID
                 List(results) { row in
-                    Button {
-                        if comparing {
-                            toggleCompare(row.id)
-                        } else {
-                            app.showPlayer(row.id)
+                    HStack(spacing: FFSpace.s) {
+                        Button {
+                            if comparing {
+                                toggleCompare(row.id)
+                            } else {
+                                app.showPlayer(row.id)
+                            }
+                        } label: {
+                            PlayerRow(
+                                summary: row, source: snapshot,
+                                scoring: app.activeScoring,
+                                matchup: matchupMap[row.id],
+                                selectedForCompare: comparing ? compareSelection.contains(row.id) : nil
+                            )
                         }
-                    } label: {
-                        PlayerRow(
-                            summary: row, source: app.displaySelectedPlayers(),
-                            scoring: app.activeScoring,
-                            matchup: matchupMap[row.id],
-                            selectedForCompare: comparing ? compareSelection.contains(row.id) : nil
-                        )
+                        .buttonStyle(.plain)
+                        if !comparing {
+                            acquisitionControl(for: row, players: snapshot, week: week, droppedByID: dmap)
+                        }
                     }
-                    .buttonStyle(.plain)
                     .listRowBackground(FFColor.bg)
                     .listRowSeparatorTint(FFColor.border)
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -154,6 +161,14 @@ struct PlayersBrowser: View {
                 }
             }
         }
+        .sheet(item: $tradeTarget) { t in
+            if let lg = app.selectedLeague {
+                ProposeTradeView(
+                    league: lg, fromTeam: t.fromTeam, counterOf: nil,
+                    requestPlayer: (teamID: t.toTeamID, playerID: t.playerID)
+                ) { _ in }
+            }
+        }
         .task(id: app.selectedLeagueID) { await reloadDropped() }
     }
 
@@ -166,7 +181,7 @@ struct PlayersBrowser: View {
             let drop = dropped.first(where: { $0.playerID == row.id && $0.isOnWaivers })
             let onWaivers = drop != nil
             Button {
-                claimTarget = ClaimTarget(
+                claimTarget = AddClaimTarget(
                     team: team, addPlayer: row,
                     isOnWaivers: onWaivers, waiverUntil: drop?.waiverUntil
                 )
@@ -174,6 +189,38 @@ struct PlayersBrowser: View {
                 Label(onWaivers ? "Claim" : "Add", systemImage: "plus.circle.fill")
             }
             .tint(FFColor.accent)
+        }
+    }
+
+    // Status icon (add / claim / trade / on-roster / unavailable) for the
+    // selected league, shown at the trailing edge of each player row.
+    @ViewBuilder
+    private func acquisitionControl(for row: PlayerSummary,
+                                    players: [String: Player],
+                                    week: Int,
+                                    droppedByID: [String: DroppedPlayer]) -> some View {
+        if let lg = app.selectedLeague {
+            let acq = PlayerAcquisition.resolve(
+                playerID: row.id, league: lg, myTeam: myTeam,
+                players: players, droppedByID: droppedByID, week: week
+            )
+            AcquisitionIcon(acquisition: acq, enabled: myTeam != nil) {
+                handleAcquisition(acq, row: row)
+            }
+        }
+    }
+
+    private func handleAcquisition(_ acq: PlayerAcquisition, row: PlayerSummary) {
+        guard let team = myTeam else { return }
+        switch acq {
+        case .addable:
+            claimTarget = AddClaimTarget(team: team, addPlayer: row, isOnWaivers: false, waiverUntil: nil)
+        case .claimable(let until):
+            claimTarget = AddClaimTarget(team: team, addPlayer: row, isOnWaivers: true, waiverUntil: until)
+        case .trade(let teamID, _):
+            tradeTarget = AcquireTradeTarget(fromTeam: team, toTeamID: teamID, playerID: row.id)
+        case .onMyRoster, .unavailable:
+            break
         }
     }
 

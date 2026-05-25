@@ -46,7 +46,10 @@ struct LeagueDetailView: View {
                     }
                     .padding(.horizontal, FFSpace.l)
                     .padding(.top, FFSpace.s)
-                    .padding(.bottom, 40)
+                    // Clear the tab bar + collapsed league-chat peek that overlay
+                    // the bottom; matches the Lineup/Matchup tabs so the last
+                    // widget (e.g. standings) scrolls fully into view.
+                    .padding(.bottom, 80)
                 }
             } else {
                 ProgressView().tint(FFColor.accent)

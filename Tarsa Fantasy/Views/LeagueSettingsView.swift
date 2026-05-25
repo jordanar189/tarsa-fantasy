@@ -27,9 +27,13 @@ struct LeagueSettingsView: View {
     // Playoffs
     @State private var playoffTeams: Int
     @State private var playoffReseed: Bool
+    @State private var playoffStartWeek: Int
+    @State private var weeksPerRound: Int
     // Custom scoring
     @State private var useCustomScoring: Bool
     @State private var scoringSettings: ScoringSettings
+    // Taxi squad
+    @State private var taxiEnabled: Bool
     // Divisions
     @State private var divisionsEnabled: Bool
     @State private var divisionNames: [String]
@@ -74,8 +78,11 @@ struct LeagueSettingsView: View {
         _hasTradeDeadline = State(initialValue: league.tradeSettings.deadline != nil)
         _playoffTeams = State(initialValue: league.playoffTeams)
         _playoffReseed = State(initialValue: league.playoffReseed)
+        _playoffStartWeek = State(initialValue: league.playoffStartWeek)
+        _weeksPerRound = State(initialValue: league.weeksPerRound)
         _useCustomScoring = State(initialValue: league.scoringSettings != nil)
         _scoringSettings = State(initialValue: league.effectiveScoringSettings)
+        _taxiEnabled = State(initialValue: league.rosterConfig.taxi > 0)
         _divisionsEnabled = State(initialValue: league.hasDivisions)
         _divisionNames = State(initialValue: league.divisionNames.isEmpty
                                ? ["East", "West"] : league.divisionNames)
@@ -92,6 +99,7 @@ struct LeagueSettingsView: View {
                     inviteSection
                     generalSection
                     rosterSection
+                    taxiSection
                     playoffsSection
                     scoringSection
                     divisionsSection
@@ -233,7 +241,8 @@ struct LeagueSettingsView: View {
                 Text("Total").font(.ffBody).foregroundStyle(FFColor.textPrimary)
                 Spacer()
                 Text("\(rosterConfig.starterCount) starters · \(rosterConfig.totalSize) max" +
-                     (rosterConfig.ir > 0 ? " · \(rosterConfig.ir) IR" : ""))
+                     (rosterConfig.ir > 0 ? " · \(rosterConfig.ir) IR" : "") +
+                     (rosterConfig.taxi > 0 ? " · \(rosterConfig.taxi) taxi" : ""))
                     .font(.ffStatSmall)
                     .foregroundStyle(FFColor.accent)
             }
@@ -249,6 +258,43 @@ struct LeagueSettingsView: View {
                 .foregroundStyle(FFColor.textTertiary)
         }
         .listRowBackground(FFColor.surface)
+    }
+
+    // MARK: - Taxi squad
+
+    private var taxiSection: some View {
+        Section {
+            Toggle("Taxi squad", isOn: $taxiEnabled)
+                .tint(FFColor.accent)
+                .onChange(of: taxiEnabled) { _, on in
+                    if on && rosterConfig.taxi == 0 { rosterConfig.taxi = 2 }
+                }
+            if taxiEnabled {
+                rosterStepper("Taxi slots", value: $rosterConfig.taxi, range: 1...10)
+                Stepper(value: $rosterConfig.taxiMaxExperience, in: 0...5) {
+                    HStack {
+                        Text("Max experience").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                        Spacer()
+                        Text(taxiExperienceLabel(rosterConfig.taxiMaxExperience))
+                            .font(.ffStatSmall)
+                            .foregroundStyle(FFColor.accent)
+                    }
+                }
+                .tint(FFColor.accent)
+            }
+        } header: {
+            Text("Taxi squad").ffEyebrow()
+        } footer: {
+            Text(taxiEnabled
+                 ? "Managers can stash up to \(rosterConfig.taxi) \(taxiExperienceLabel(rosterConfig.taxiMaxExperience).lowercased()) off the active roster. Taxi players don't score and don't count against the roster limit."
+                 : "Off. Turn on to give managers extra slots for developing inexperienced players.")
+                .foregroundStyle(FFColor.textTertiary)
+        }
+        .listRowBackground(FFColor.surface)
+    }
+
+    private func taxiExperienceLabel(_ years: Int) -> String {
+        years == 0 ? "Rookies only" : "≤ \(years) year\(years == 1 ? "" : "s") experience"
     }
 
     private func rosterStepper(_ label: String, value: Binding<Int>, range: ClosedRange<Int>) -> some View {
@@ -288,6 +334,22 @@ struct LeagueSettingsView: View {
             if playoffTeams >= 2 {
                 Toggle("Re-seed each round", isOn: $playoffReseed)
                     .tint(FFColor.accent)
+                Stepper(value: $playoffStartWeek, in: playoffStartRange) {
+                    HStack {
+                        Text("Start week").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                        Spacer()
+                        Text("Week \(playoffStartWeek)").font(.ffStatSmall).foregroundStyle(FFColor.accent)
+                    }
+                }
+                .tint(FFColor.accent)
+                Picker(selection: $weeksPerRound) {
+                    Text("1 week").tag(1)
+                    Text("2 weeks").tag(2)
+                } label: {
+                    Text("Weeks per round").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                }
+                .pickerStyle(.menu)
+                .tint(FFColor.accent)
                 HStack {
                     Text("Postseason").font(.ffBody).foregroundStyle(FFColor.textSecondary)
                     Spacer()
@@ -299,18 +361,47 @@ struct LeagueSettingsView: View {
         } header: {
             Text("Playoffs").ffEyebrow()
         } footer: {
-            Text("Top finishers make a single-elimination bracket after the \(league.regularSeasonWeeks)-week regular season. Higher seeds get first-round byes when the field isn't a power of two.")
+            Text(playoffsFooter)
                 .foregroundStyle(FFColor.textTertiary)
         }
         .listRowBackground(FFColor.surface)
+        // Keep the start week valid as the field size / round length change the
+        // latest week the bracket can still finish by Week 18.
+        .onAppear { clampPlayoffStart() }
+        .onChange(of: weeksPerRound) { _, _ in clampPlayoffStart() }
+        .onChange(of: playoffTeams) { _, _ in clampPlayoffStart() }
+    }
+
+    // Rounds needed for the current field, and the total weeks they span.
+    private var playoffSpan: Int {
+        guard playoffTeams >= 2 else { return 0 }
+        let rounds = max(1, Int(ceil(log2(Double(playoffTeams)))))
+        return rounds * max(1, weeksPerRound)
+    }
+    // Latest start so the championship still ends by Week 18; floor keeps ≥6
+    // regular-season weeks when the span allows.
+    private var maxPlayoffStartWeek: Int { max(2, League.maxSeasonWeek - playoffSpan + 1) }
+    private var minPlayoffStartWeek: Int { min(7, maxPlayoffStartWeek) }
+    private var playoffStartRange: ClosedRange<Int> { minPlayoffStartWeek...maxPlayoffStartWeek }
+    private var playoffEndWeek: Int { playoffStartWeek + playoffSpan - 1 }
+
+    private func clampPlayoffStart() {
+        playoffStartWeek = min(max(playoffStartWeek, minPlayoffStartWeek), maxPlayoffStartWeek)
     }
 
     private var playoffSummary: String {
         guard playoffTeams >= 2 else { return "Off" }
-        let rounds = max(1, Int(ceil(log2(Double(playoffTeams)))))
-        let start = league.regularSeasonWeeks + 1
-        let end = league.regularSeasonWeeks + rounds
-        return "Weeks \(start)–\(end)"
+        return "Weeks \(playoffStartWeek)–\(playoffEndWeek)"
+    }
+
+    private var playoffsFooter: String {
+        guard playoffTeams >= 2 else {
+            return "No postseason — final standings decide it."
+        }
+        return "Regular season runs Weeks 1–\(playoffStartWeek - 1); playoffs Weeks "
+            + "\(playoffStartWeek)–\(playoffEndWeek) (championship Week \(playoffEndWeek)). "
+            + "Latest start that finishes by Week \(League.maxSeasonWeek) is Week \(maxPlayoffStartWeek). "
+            + "Changing the start week reshuffles the remaining schedule, so set it before games are played."
     }
 
     // MARK: - Scoring (custom per-stat)
@@ -866,12 +957,27 @@ struct LeagueSettingsView: View {
             let divisions = divisionsEnabled ? divisionNames
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty } : []
+            // Taxi off zeroes the slot count; on keeps at least one slot.
+            var cfg = rosterConfig
+            cfg.taxi = taxiEnabled ? max(1, cfg.taxi) : 0
+            // Playoff start week drives the regular-season length. When it
+            // changes, regenerate the (prefix-stable) round-robin so already
+            // played weeks keep their matchups and the new length lines up.
+            let newRegularSeasonWeeks = playoffTeams >= 2
+                ? playoffStartWeek - 1
+                : league.regularSeasonWeeks
+            let newSchedule = newRegularSeasonWeeks != league.regularSeasonWeeks
+                ? Fantasy.generateSchedule(teamIDs: league.teams.map(\.id), weeks: newRegularSeasonWeeks)
+                : league.schedule
             var latest: League? = try await app.updateLeague(
                 leagueID: league.id, name: leagueName,
-                scoring: scoring, rosterConfig: rosterConfig,
+                scoring: scoring, rosterConfig: cfg,
                 playoffTeams: playoffTeams, playoffReseed: playoffReseed,
                 scoringSettings: useCustomScoring ? scoringSettings : nil,
-                divisionNames: divisions
+                divisionNames: divisions,
+                regularSeasonWeeks: newRegularSeasonWeeks,
+                weeksPerRound: weeksPerRound,
+                schedule: newSchedule
             )
             // Push per-team division assignments when divisions are on.
             if divisionsEnabled, divisions.count >= 2 {

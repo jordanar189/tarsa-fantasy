@@ -339,8 +339,13 @@ struct TradeBlockBuilderSheet: View {
     @State private var note = ""
     @State private var roster: [RosterPick] = []
     @State private var seeking: [RosterPick] = []
+    @State private var seekingPositions: Set<String> = []
     @State private var seekQuery = ""
     @State private var loading = true
+
+    // General positions a manager can ask for instead of (or alongside) a
+    // specific player. FLEX reads as "any RB/WR/TE".
+    private static let seekablePositions = ["QB", "RB", "WR", "TE", "FLEX", "K", "DEF"]
 
     private struct RosterPick: Identifiable, Hashable {
         let id: String
@@ -352,7 +357,7 @@ struct TradeBlockBuilderSheet: View {
     }
 
     private var canPost: Bool {
-        !selected.isEmpty || !seeking.isEmpty
+        !selected.isEmpty || !seeking.isEmpty || !seekingPositions.isEmpty
             || !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -392,6 +397,7 @@ struct TradeBlockBuilderSheet: View {
             }
             .task { await loadRoster() }
         }
+        .hostsPlayerProfileSheet()
     }
 
     @ViewBuilder
@@ -427,6 +433,7 @@ struct TradeBlockBuilderSheet: View {
     private var seekingSection: some View {
         VStack(alignment: .leading, spacing: FFSpace.s) {
             Text("Players I'm after").ffEyebrow()
+            positionSeekRow
             if !seeking.isEmpty {
                 VStack(spacing: FFSpace.s) {
                     ForEach(seeking) { pick in
@@ -445,28 +452,56 @@ struct TradeBlockBuilderSheet: View {
         }
     }
 
+    // Tap a position to add it to the wishlist as a general ask.
+    private var positionSeekRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: FFSpace.xs) {
+                ForEach(Self.seekablePositions, id: \.self) { pos in
+                    positionChip(pos)
+                }
+            }
+        }
+    }
+
+    private func positionChip(_ pos: String) -> some View {
+        let on = seekingPositions.contains(pos)
+        return Text(pos)
+            .font(.ffCaption.bold())
+            .foregroundStyle(on ? FFColor.bg : FFColor.textSecondary)
+            .padding(.horizontal, FFSpace.s)
+            .padding(.vertical, 6)
+            .background(on ? FFColor.positive : FFColor.surface, in: Capsule())
+            .overlay(Capsule().strokeBorder(on ? FFColor.positive : FFColor.border, lineWidth: 1))
+            .contentShape(Capsule())
+            .onTapGesture {
+                if on { seekingPositions.remove(pos) } else { seekingPositions.insert(pos) }
+            }
+    }
+
     private func offerRow(_ pick: RosterPick) -> some View {
         let isSelected = selected.contains(pick.id)
-        return Button {
-            if isSelected { selected.remove(pick.id) } else { selected.insert(pick.id) }
-        } label: {
-            HStack(spacing: FFSpace.s) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isSelected ? FFColor.accent : FFColor.textTertiary)
-                Text(pick.name)
-                    .font(.ffBody)
-                    .foregroundStyle(FFColor.textPrimary)
-                Spacer()
-            }
-            .padding(.horizontal, FFSpace.m)
-            .padding(.vertical, FFSpace.s)
-            .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.s))
-            .overlay(
-                RoundedRectangle(cornerRadius: FFRadius.s)
-                    .strokeBorder(isSelected ? FFColor.accent.opacity(0.6) : FFColor.border, lineWidth: 1)
-            )
+        // Row tap toggles selection; the name itself opens the player profile
+        // (descendant tap takes precedence over the row's tap).
+        return HStack(spacing: FFSpace.s) {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(isSelected ? FFColor.accent : FFColor.textTertiary)
+            Text(pick.name)
+                .font(.ffBody)
+                .foregroundStyle(FFColor.textPrimary)
+                .playerLink(pick.id)
+            Spacer()
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, FFSpace.m)
+        .padding(.vertical, FFSpace.s)
+        .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.s))
+        .overlay(
+            RoundedRectangle(cornerRadius: FFRadius.s)
+                .strokeBorder(isSelected ? FFColor.accent.opacity(0.6) : FFColor.border, lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if isSelected { selected.remove(pick.id) } else { selected.insert(pick.id) }
+        }
     }
 
     private func seekingChip(_ pick: RosterPick) -> some View {
@@ -477,6 +512,7 @@ struct TradeBlockBuilderSheet: View {
             Text(pick.name)
                 .font(.ffBody)
                 .foregroundStyle(FFColor.textPrimary)
+                .playerLink(pick.id)
             Spacer()
             Button {
                 seeking.removeAll { $0.id == pick.id }
@@ -530,14 +566,22 @@ struct TradeBlockBuilderSheet: View {
     }
 
     private func post() {
-        let names = roster.filter { selected.contains($0.id) }.map(\.name)
-        let seekNames = seeking.map(\.name)
+        let offered = roster.filter { selected.contains($0.id) }
+        let names = offered.map(\.name)
+        let ids = offered.map(\.id)
+        // Specific players carry their ids (tappable in the posted card); general
+        // positions are appended with empty ids so they render as plain chips.
+        let posNames = Self.seekablePositions.filter { seekingPositions.contains($0) }
+        let seekNames = seeking.map(\.name) + posNames
+        let seekIDs = seeking.map(\.id) + posNames.map { _ in "" }
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
         onCreate(ChatPayload(
             players: names.isEmpty ? nil : names,
             seeking: seekNames.isEmpty ? nil : seekNames,
             note: trimmedNote.isEmpty ? nil : trimmedNote,
-            teamName: myTeam?.name
+            teamName: myTeam?.name,
+            playerIDs: ids.isEmpty ? nil : ids,
+            seekingIDs: seekIDs.isEmpty ? nil : seekIDs
         ))
     }
 }
