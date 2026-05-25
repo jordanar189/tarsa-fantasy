@@ -7,6 +7,8 @@ struct LeagueOverviewView: View {
     @Environment(AppState.self) private var app
     @State private var showingCreate = false
     @State private var showingMessages = false
+    @State private var showingSleeperImport = false
+    @State private var importedSelection: String? = nil
     @State private var joinSheet: JoinSheet? = nil
 
     // Drives the join sheet. `code` is non-nil when opened from an invite
@@ -20,7 +22,7 @@ struct LeagueOverviewView: View {
         NavigationStack {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
-                if app.leagueSummaries.isEmpty {
+                if app.leagueSummaries.isEmpty && app.importedSleeperLeagues.isEmpty {
                     FFGlow(intensity: 0.7).ignoresSafeArea()
                 }
                 content
@@ -40,10 +42,16 @@ struct LeagueOverviewView: View {
             }
             .sheet(isPresented: $showingCreate) { CreateLeagueView() }
             .sheet(isPresented: $showingMessages) { ChatView() }
+            .sheet(isPresented: $showingSleeperImport) {
+                SleeperImportView { id in importedSelection = id }
+            }
             .sheet(item: $joinSheet) { sheet in
                 JoinLeagueView(initialCode: sheet.code) { id in
                     Task { await app.selectLeague(id) }
                 }
+            }
+            .navigationDestination(item: $importedSelection) { id in
+                ImportedLeagueDetailView(leagueID: id)
             }
             .task { await app.reloadLeagues() }
             .onAppear { consumePendingJoin() }
@@ -59,7 +67,7 @@ struct LeagueOverviewView: View {
 
     @ViewBuilder
     private var content: some View {
-        if app.leagueSummaries.isEmpty {
+        if app.leagueSummaries.isEmpty && app.importedSleeperLeagues.isEmpty {
             empty
         } else {
             list
@@ -88,6 +96,8 @@ struct LeagueOverviewView: View {
                     .ffPrimaryButton()
                 Button("Join a league") { joinSheet = JoinSheet(code: nil) }
                     .ffSecondaryButton()
+                Button("Import from Sleeper") { showingSleeperImport = true }
+                    .ffSecondaryButton()
             }
             .padding(.horizontal, FFSpace.xxl)
             Spacer()
@@ -104,26 +114,56 @@ struct LeagueOverviewView: View {
                 actionRow(icon: "person.badge.plus", title: "Join a league", subtitle: "Claim a team with an invite link or code") {
                     joinSheet = JoinSheet(code: nil)
                 }
-
-                HStack {
-                    Text("Your leagues").ffEyebrow()
-                    Spacer()
+                actionRow(icon: "square.and.arrow.down", title: "Import from Sleeper", subtitle: "Bring in rosters, history & transactions") {
+                    showingSleeperImport = true
                 }
-                .padding(.horizontal, 4)
-                .padding(.top, FFSpace.s)
 
-                ForEach(app.leagueSummaries) { lg in
-                    Button {
-                        Task { await app.selectLeague(lg.id) }
-                    } label: {
-                        LeagueListRow(summary: lg)
+                if !app.leagueSummaries.isEmpty {
+                    HStack {
+                        Text("Your leagues").ffEyebrow()
+                        Spacer()
                     }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        Button(role: .destructive) {
-                            Task { await app.deleteLeague(lg.id) }
+                    .padding(.horizontal, 4)
+                    .padding(.top, FFSpace.s)
+
+                    ForEach(app.leagueSummaries) { lg in
+                        Button {
+                            Task { await app.selectLeague(lg.id) }
                         } label: {
-                            Label("Delete", systemImage: "trash")
+                            LeagueListRow(summary: lg)
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                Task { await app.deleteLeague(lg.id) }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+
+                if !app.importedSleeperLeagues.isEmpty {
+                    HStack {
+                        Text("Imported from Sleeper").ffEyebrow()
+                        Spacer()
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.top, FFSpace.s)
+
+                    ForEach(app.importedSleeperLeagues) { lg in
+                        Button {
+                            importedSelection = lg.id
+                        } label: {
+                            ImportedLeagueRow(league: lg)
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                app.deleteImportedSleeperLeague(id: lg.id)
+                            } label: {
+                                Label("Remove import", systemImage: "trash")
+                            }
                         }
                     }
                 }
@@ -179,9 +219,43 @@ struct LeagueListRow: View {
                     if summary.isTest {
                         FFPill { Text("SIM").foregroundStyle(FFColor.warning) }
                     }
+                    if summary.isDynasty {
+                        FFPill { Text("DYNASTY").foregroundStyle(FFColor.accent) }
+                    }
                     FFPill { Text(String(summary.season)) }
                     FFPill { Text(summary.scoring.label.uppercased()) }
                     FFPill { Text("\(summary.teamCount) TEAMS") }
+                }
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(FFColor.textTertiary)
+        }
+        .ffCard()
+    }
+}
+
+struct ImportedLeagueRow: View {
+    let league: ImportedLeague
+
+    var body: some View {
+        HStack(spacing: FFSpace.l) {
+            SleeperAvatar(id: league.latest?.avatar, size: 40)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(league.name)
+                    .font(.ffHeadline)
+                    .foregroundStyle(FFColor.textPrimary)
+                    .lineLimit(1)
+                HStack(spacing: FFSpace.s) {
+                    if league.isActivated {
+                        FFPill { Text("ACTIVE").foregroundStyle(FFColor.positive) }
+                    } else {
+                        FFPill { Text("SLEEPER").foregroundStyle(FFColor.accent) }
+                    }
+                    if league.seasonYear > 0 { FFPill { Text(String(league.seasonYear)) } }
+                    if !league.scoringLabel.isEmpty { FFPill { Text(league.scoringLabel.uppercased()) } }
+                    if league.seasons.count > 1 { FFPill { Text("\(league.seasons.count) SEASONS") } }
                 }
             }
             Spacer()

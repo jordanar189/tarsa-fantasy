@@ -65,13 +65,17 @@ end$$;
 
 grant execute on function public.register_device_token(text, text) to authenticated;
 
--- unregister_device_token: drop a single device's token (used on sign-out).
+-- unregister_device_token: drop this device's token on sign-out. Scoped to the
+-- caller's own row — even though it's security definer, a leaked token value
+-- must not let one account delete another account's registration.
 create or replace function public.unregister_device_token(p_token text)
 returns void
 language plpgsql security definer set search_path = public, auth
 as $$
 begin
-    delete from public.device_tokens where token = p_token;
+    if auth.uid() is null then return; end if;
+    delete from public.device_tokens
+     where token = p_token and user_id = auth.uid();
 end$$;
 
 grant execute on function public.unregister_device_token(text) to authenticated;
@@ -93,6 +97,9 @@ create table if not exists public.push_notifications (
     scheduled_at    timestamptz,
     status          text not null default 'scheduled'
                     check (status in ('scheduled', 'sending', 'sent', 'failed', 'canceled')),
+    -- When the sender claimed the row (status → 'sending'). Used as a lease so a
+    -- row stranded in 'sending' (sender crash/timeout) is reclaimed and retried.
+    sending_at      timestamptz,
     sent_at         timestamptz,
     sent_count      int not null default 0,
     fail_count      int not null default 0,
@@ -128,6 +135,39 @@ drop trigger if exists push_notifications_set_creator on public.push_notificatio
 create trigger push_notifications_set_creator
     before insert on public.push_notifications
     for each row execute function public.push_notifications_set_creator();
+
+-- Atomically claim sendable notifications and flip them to 'sending'. Claims:
+--   • due rows (scheduled, scheduled_at null or past), and
+--   • rows stuck in 'sending' past the lease — so a sender that died mid-flight
+--     gets its work retried instead of stranding the notification forever.
+-- `for update skip locked` keeps overlapping sender runs from double-claiming.
+-- Pass p_id to claim one specific row (the app's "send now" path). Returns the
+-- claimed rows so the sender works only on what it owns.
+create or replace function public.claim_push_notifications(
+    p_id uuid default null,
+    p_limit int default 50,
+    p_lease_seconds int default 300
+)
+returns setof public.push_notifications
+language sql security definer set search_path = public, pg_temp
+as $$
+    update public.push_notifications n
+       set status = 'sending', sending_at = now()
+     where n.id in (
+         select c.id from public.push_notifications c
+          where case
+                  when p_id is not null then c.id = p_id and c.status = 'scheduled'
+                  else (c.status = 'scheduled' and (c.scheduled_at is null or c.scheduled_at <= now()))
+                    or (c.status = 'sending'   and c.sending_at < now() - make_interval(secs => p_lease_seconds))
+                end
+          order by c.created_at
+          limit p_limit
+          for update skip locked
+       )
+    returning n.*;
+$$;
+
+grant execute on function public.claim_push_notifications(uuid, int, int) to service_role;
 
 -- ---------------------------------------------------------------------------
 -- 3. notification image storage

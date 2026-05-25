@@ -7,6 +7,7 @@ import Charts
 struct PositionDistributionChart: View {
     let games: [Game]
     let scoring: Scoring
+    var settings: ScoringSettings? = nil
 
     private struct Bar: Identifiable {
         let id: Int
@@ -16,7 +17,7 @@ struct PositionDistributionChart: View {
 
     private var bars: [Bar] {
         games.sorted { $0.week < $1.week }
-             .map { Bar(id: $0.week, week: $0.week, points: $0.points(scoring: scoring)) }
+             .map { Bar(id: $0.week, week: $0.week, points: $0.points(scoring: scoring, settings: settings)) }
     }
 
     private var avg: Double {

@@ -102,7 +102,15 @@ actor NFLDataService {
                 fumblesLost: g.fumblesLost,
                 fantasyPoints: g.fantasyPoints,
                 fantasyPointsPPR: g.fantasyPointsPPR,
-                fantasyPointsHalfPPR: g.fantasyPointsHalfPPR
+                fantasyPointsHalfPPR: g.fantasyPointsHalfPPR,
+                fieldGoals0_19: g.fieldGoals0_19, fieldGoals20_29: g.fieldGoals20_29,
+                fieldGoals30_39: g.fieldGoals30_39, fieldGoals40_49: g.fieldGoals40_49,
+                fieldGoals50_59: g.fieldGoals50_59, fieldGoals60Plus: g.fieldGoals60Plus,
+                fieldGoalsMissed: g.fieldGoalsMissed,
+                extraPointsMade: g.extraPointsMade, extraPointsMissed: g.extraPointsMissed,
+                defSacks: g.defSacks, defInterceptions: g.defInterceptions,
+                defFumbleRecoveries: g.defFumbleRecoveries, defTouchdowns: g.defTouchdowns,
+                defSafeties: g.defSafeties, pointsAllowed: g.pointsAllowed
             ))
         }
         for pid in assembled.keys {
@@ -255,6 +263,23 @@ actor NFLDataService {
         let fantasyPoints: Double
         let fantasyPointsPPR: Double
         let fantasyPointsHalfPPR: Double
+        // Kicking + team-defense inputs (added with the K/DST scoring overhaul).
+        // Decoded leniently so rows synced before the columns existed still load.
+        let fieldGoals0_19: Double
+        let fieldGoals20_29: Double
+        let fieldGoals30_39: Double
+        let fieldGoals40_49: Double
+        let fieldGoals50_59: Double
+        let fieldGoals60Plus: Double
+        let fieldGoalsMissed: Double
+        let extraPointsMade: Double
+        let extraPointsMissed: Double
+        let defSacks: Double
+        let defInterceptions: Double
+        let defFumbleRecoveries: Double
+        let defTouchdowns: Double
+        let defSafeties: Double
+        let pointsAllowed: Double?
         enum CodingKeys: String, CodingKey {
             case season, week, team, opponent, completions, attempts, carries, receptions, targets
             case playerID              = "player_id"
@@ -269,6 +294,170 @@ actor NFLDataService {
             case fantasyPoints         = "fantasy_points"
             case fantasyPointsPPR      = "fantasy_points_ppr"
             case fantasyPointsHalfPPR  = "fantasy_points_half_ppr"
+            case fieldGoals0_19        = "fg_made_0_19"
+            case fieldGoals20_29       = "fg_made_20_29"
+            case fieldGoals30_39       = "fg_made_30_39"
+            case fieldGoals40_49       = "fg_made_40_49"
+            case fieldGoals50_59       = "fg_made_50_59"
+            case fieldGoals60Plus      = "fg_made_60"
+            case fieldGoalsMissed      = "fg_missed"
+            case extraPointsMade       = "pat_made"
+            case extraPointsMissed     = "pat_missed"
+            case defSacks              = "def_sacks"
+            case defInterceptions      = "def_interceptions"
+            case defFumbleRecoveries   = "def_fumble_recoveries"
+            case defTouchdowns         = "def_tds"
+            case defSafeties           = "def_safeties"
+            case pointsAllowed         = "def_points_allowed"
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            playerID             = try c.decode(String.self, forKey: .playerID)
+            season               = try c.decode(Int.self,    forKey: .season)
+            week                 = try c.decode(Int.self,    forKey: .week)
+            team                 = try c.decodeIfPresent(String.self, forKey: .team) ?? ""
+            opponent             = try c.decodeIfPresent(String.self, forKey: .opponent) ?? ""
+            completions          = try c.decodeIfPresent(Double.self, forKey: .completions) ?? 0
+            attempts             = try c.decodeIfPresent(Double.self, forKey: .attempts) ?? 0
+            passingYards         = try c.decodeIfPresent(Double.self, forKey: .passingYards) ?? 0
+            passingTDs           = try c.decodeIfPresent(Double.self, forKey: .passingTDs) ?? 0
+            passingInterceptions = try c.decodeIfPresent(Double.self, forKey: .passingInterceptions) ?? 0
+            carries              = try c.decodeIfPresent(Double.self, forKey: .carries) ?? 0
+            rushingYards         = try c.decodeIfPresent(Double.self, forKey: .rushingYards) ?? 0
+            rushingTDs           = try c.decodeIfPresent(Double.self, forKey: .rushingTDs) ?? 0
+            receptions           = try c.decodeIfPresent(Double.self, forKey: .receptions) ?? 0
+            targets              = try c.decodeIfPresent(Double.self, forKey: .targets) ?? 0
+            receivingYards       = try c.decodeIfPresent(Double.self, forKey: .receivingYards) ?? 0
+            receivingTDs         = try c.decodeIfPresent(Double.self, forKey: .receivingTDs) ?? 0
+            fumblesLost          = try c.decodeIfPresent(Double.self, forKey: .fumblesLost) ?? 0
+            fantasyPoints        = try c.decodeIfPresent(Double.self, forKey: .fantasyPoints) ?? 0
+            fantasyPointsPPR     = try c.decodeIfPresent(Double.self, forKey: .fantasyPointsPPR) ?? 0
+            fantasyPointsHalfPPR = try c.decodeIfPresent(Double.self, forKey: .fantasyPointsHalfPPR) ?? 0
+            fieldGoals0_19       = try c.decodeIfPresent(Double.self, forKey: .fieldGoals0_19) ?? 0
+            fieldGoals20_29      = try c.decodeIfPresent(Double.self, forKey: .fieldGoals20_29) ?? 0
+            fieldGoals30_39      = try c.decodeIfPresent(Double.self, forKey: .fieldGoals30_39) ?? 0
+            fieldGoals40_49      = try c.decodeIfPresent(Double.self, forKey: .fieldGoals40_49) ?? 0
+            fieldGoals50_59      = try c.decodeIfPresent(Double.self, forKey: .fieldGoals50_59) ?? 0
+            fieldGoals60Plus     = try c.decodeIfPresent(Double.self, forKey: .fieldGoals60Plus) ?? 0
+            fieldGoalsMissed     = try c.decodeIfPresent(Double.self, forKey: .fieldGoalsMissed) ?? 0
+            extraPointsMade      = try c.decodeIfPresent(Double.self, forKey: .extraPointsMade) ?? 0
+            extraPointsMissed    = try c.decodeIfPresent(Double.self, forKey: .extraPointsMissed) ?? 0
+            defSacks             = try c.decodeIfPresent(Double.self, forKey: .defSacks) ?? 0
+            defInterceptions     = try c.decodeIfPresent(Double.self, forKey: .defInterceptions) ?? 0
+            defFumbleRecoveries  = try c.decodeIfPresent(Double.self, forKey: .defFumbleRecoveries) ?? 0
+            defTouchdowns        = try c.decodeIfPresent(Double.self, forKey: .defTouchdowns) ?? 0
+            defSafeties          = try c.decodeIfPresent(Double.self, forKey: .defSafeties) ?? 0
+            pointsAllowed        = try c.decodeIfPresent(Double.self, forKey: .pointsAllowed)
+        }
+    }
+
+    // One row of the player_career RPC: a single season's pre-aggregated career
+    // line. Maps straight onto Fantasy.CareerSeasonLine (the server already did
+    // the totals/points/rank crunch the client used to do per season).
+    private struct CareerRowDB: Decodable {
+        let season: Int
+        let position: String
+        let teams: [String]
+        let gamesPlayed: Int
+        let completions: Double
+        let attempts: Double
+        let passingYards: Double
+        let passingTDs: Double
+        let passingInterceptions: Double
+        let carries: Double
+        let rushingYards: Double
+        let rushingTDs: Double
+        let receptions: Double
+        let targets: Double
+        let receivingYards: Double
+        let receivingTDs: Double
+        let fumblesLost: Double
+        let fantasyPoints: Double
+        let fantasyPointsPPR: Double
+        let fantasyPointsHalfPPR: Double
+        let specialPoints: Double
+        let points: Double
+        let pointsPerGame: Double
+        let rank: Int?
+        let totalAtPosition: Int?
+        enum CodingKeys: String, CodingKey {
+            case season, position, teams, points, completions, attempts
+            case carries, receptions, targets, rank
+            case gamesPlayed           = "games_played"
+            case passingYards          = "passing_yards"
+            case passingTDs            = "passing_tds"
+            case passingInterceptions  = "passing_interceptions"
+            case rushingYards          = "rushing_yards"
+            case rushingTDs            = "rushing_tds"
+            case receivingYards        = "receiving_yards"
+            case receivingTDs          = "receiving_tds"
+            case fumblesLost           = "fumbles_lost"
+            case fantasyPoints         = "fantasy_points"
+            case fantasyPointsPPR      = "fantasy_points_ppr"
+            case fantasyPointsHalfPPR  = "fantasy_points_half_ppr"
+            case specialPoints         = "special_points"
+            case pointsPerGame         = "points_per_game"
+            case totalAtPosition       = "total_at_position"
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            season               = try c.decode(Int.self, forKey: .season)
+            position             = try c.decodeIfPresent(String.self, forKey: .position) ?? ""
+            teams                = try c.decodeIfPresent([String].self, forKey: .teams) ?? []
+            gamesPlayed          = try c.decodeIfPresent(Int.self, forKey: .gamesPlayed) ?? 0
+            completions          = try c.decodeIfPresent(Double.self, forKey: .completions) ?? 0
+            attempts             = try c.decodeIfPresent(Double.self, forKey: .attempts) ?? 0
+            passingYards         = try c.decodeIfPresent(Double.self, forKey: .passingYards) ?? 0
+            passingTDs           = try c.decodeIfPresent(Double.self, forKey: .passingTDs) ?? 0
+            passingInterceptions = try c.decodeIfPresent(Double.self, forKey: .passingInterceptions) ?? 0
+            carries              = try c.decodeIfPresent(Double.self, forKey: .carries) ?? 0
+            rushingYards         = try c.decodeIfPresent(Double.self, forKey: .rushingYards) ?? 0
+            rushingTDs           = try c.decodeIfPresent(Double.self, forKey: .rushingTDs) ?? 0
+            receptions           = try c.decodeIfPresent(Double.self, forKey: .receptions) ?? 0
+            targets              = try c.decodeIfPresent(Double.self, forKey: .targets) ?? 0
+            receivingYards       = try c.decodeIfPresent(Double.self, forKey: .receivingYards) ?? 0
+            receivingTDs         = try c.decodeIfPresent(Double.self, forKey: .receivingTDs) ?? 0
+            fumblesLost          = try c.decodeIfPresent(Double.self, forKey: .fumblesLost) ?? 0
+            fantasyPoints        = try c.decodeIfPresent(Double.self, forKey: .fantasyPoints) ?? 0
+            fantasyPointsPPR     = try c.decodeIfPresent(Double.self, forKey: .fantasyPointsPPR) ?? 0
+            fantasyPointsHalfPPR = try c.decodeIfPresent(Double.self, forKey: .fantasyPointsHalfPPR) ?? 0
+            specialPoints        = try c.decodeIfPresent(Double.self, forKey: .specialPoints) ?? 0
+            points               = try c.decodeIfPresent(Double.self, forKey: .points) ?? 0
+            pointsPerGame        = try c.decodeIfPresent(Double.self, forKey: .pointsPerGame) ?? 0
+            rank                 = try c.decodeIfPresent(Int.self, forKey: .rank)
+            totalAtPosition      = try c.decodeIfPresent(Int.self, forKey: .totalAtPosition)
+        }
+        func toLine() -> Fantasy.CareerSeasonLine {
+            var t = SeasonTotals()
+            t.gamesPlayed          = gamesPlayed
+            t.completions          = completions
+            t.attempts             = attempts
+            t.passingYards         = passingYards
+            t.passingTDs           = passingTDs
+            t.passingInterceptions = passingInterceptions
+            t.carries              = carries
+            t.rushingYards         = rushingYards
+            t.rushingTDs           = rushingTDs
+            t.receptions           = receptions
+            t.targets              = targets
+            t.receivingYards       = receivingYards
+            t.receivingTDs         = receivingTDs
+            t.fumblesLost          = fumblesLost
+            t.fantasyPoints        = fantasyPoints
+            t.fantasyPointsPPR     = fantasyPointsPPR
+            t.fantasyPointsHalfPPR = fantasyPointsHalfPPR
+            t.specialPoints        = specialPoints
+            let posRank: PositionRank? = rank.map {
+                PositionRank(position: position, rank: $0,
+                             totalAtPosition: totalAtPosition ?? 0,
+                             seasonPoints: points)
+            }
+            return Fantasy.CareerSeasonLine(
+                season: season, teams: teams, position: position,
+                gamesPlayed: gamesPlayed, totals: t,
+                points: points, pointsPerGame: pointsPerGame,
+                positionRank: posRank
+            )
         }
     }
 
@@ -288,6 +477,10 @@ actor NFLDataService {
                 birth_date, height_in, weight_lb, college, jersey_number,
                 draft_year, draft_round, draft_pick, years_exp, status, bye_week
                 """)
+                // Order by the primary key so offset pagination is stable.
+                // Without a deterministic total order Postgres may return a row
+                // on two pages (and skip another), duplicating/dropping players.
+                .order("id", ascending: true)
                 .range(from: from, to: from + page - 1)
                 .execute().value
             out.append(contentsOf: rows)
@@ -509,6 +702,53 @@ actor NFLDataService {
         return byTeam
     }
 
+    // MARK: - Career (server-side aggregation)
+
+    // A player's full per-season career table in a single round-trip. The
+    // player_career RPC aggregates per-season totals + position rank in
+    // Postgres, so the client fetches ~10 rows instead of downloading every
+    // season's full snapshot to rank one player. Scoring is threaded through to
+    // match the app's math: custom league coefficients are passed when the
+    // settings differ from the named preset; special (K/DST) points always use
+    // standard weights server-side, matching SeasonTotals.specialPoints.
+    func careerLines(
+        playerID: String, scoring: Scoring, settings: ScoringSettings?
+    ) async throws -> [Fantasy.CareerSeasonLine] {
+        let useCustom = settings.map { !$0.matchesPreset(scoring) } ?? false
+        let s = settings ?? .preset(scoring)
+        struct Args: Encodable {
+            let p_player_id: String
+            let p_scoring: String
+            let p_use_custom: Bool
+            let p_pass_yards_per_point: Double
+            let p_pass_td: Double
+            let p_interception: Double
+            let p_rush_yards_per_point: Double
+            let p_rush_td: Double
+            let p_rec_yards_per_point: Double
+            let p_rec_td: Double
+            let p_reception: Double
+            let p_fumble_lost: Double
+        }
+        let args = Args(
+            p_player_id: playerID,
+            p_scoring: scoring.rawValue,
+            p_use_custom: useCustom,
+            p_pass_yards_per_point: s.passingYardsPerPoint,
+            p_pass_td: s.passingTD,
+            p_interception: s.interception,
+            p_rush_yards_per_point: s.rushingYardsPerPoint,
+            p_rush_td: s.rushingTD,
+            p_rec_yards_per_point: s.receivingYardsPerPoint,
+            p_rec_td: s.receivingTD,
+            p_reception: s.reception,
+            p_fumble_lost: s.fumbleLost
+        )
+        let rows: [CareerRowDB] = try await client.rpc("player_career", params: args)
+            .execute().value
+        return rows.map { $0.toLine() }
+    }
+
     // MARK: - ADP
 
     // Legacy default. Returns the latest snapshot for the season.
@@ -660,6 +900,12 @@ actor NFLDataService {
             let rows: [GameRowDB] = try await client.from("player_games")
                 .select()
                 .eq("season", value: season)
+                // Order by the full key (player_id, week) so offset pagination
+                // is deterministic. Ordering by `week` alone leaves rows within
+                // a week unordered, so across pages Postgres can repeat a row
+                // (showing a week twice in the game log) and skip another
+                // (a missing week) — the duplicate/missing-game bug.
+                .order("player_id", ascending: true)
                 .order("week", ascending: true)
                 .range(from: from, to: from + page - 1)
                 .execute().value

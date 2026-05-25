@@ -4,22 +4,53 @@ import NukeUI
 
 // Shared small UI components used across screens.
 
+// Canonical headshot requests. Every small avatar decodes once, at one pixel
+// size, regardless of the point size it's shown at — so a player shown at
+// 30/34/36/40pt across screens shares a single decode and cache entry, and the
+// prefetcher can warm exactly the image the view later reads back (the cache
+// key includes the resize processor, so prefetch and display must build the
+// *same* request to hit). Headers above the canonical size (player detail,
+// compare) are few on screen and decode at their real size.
+//
+// The display scale is passed in (from the view's `\.displayScale`) rather than
+// read off `UIScreen.main`, so this stays callable off any actor and the
+// canonical pixel size adapts to 2x devices instead of baking in 3x.
+enum AvatarImage {
+    // Covers every list/roster avatar (≤40pt) with headroom.
+    static let canonicalMaxPoints: CGFloat = 44
+
+    // Build the resize request in *pixels*. Passing pixels with `.pixels`
+    // avoids Nuke's `.points` path, which would multiply by the screen scale a
+    // second time and decode ~3× too large on retina devices.
+    static func request(_ url: String,
+                        displaySize: CGFloat = canonicalMaxPoints,
+                        scale: CGFloat) -> ImageRequest? {
+        guard !url.isEmpty, let u = URL(string: url) else { return nil }
+        // Small avatars all collapse onto the canonical size so they share a
+        // cache entry (and match the prefetcher, which has no display size);
+        // larger one-off headers decode at their real size.
+        let points = displaySize <= canonicalMaxPoints ? canonicalMaxPoints : displaySize
+        let pixels = (points * max(scale, 2)).rounded(.up)
+        return ImageRequest(
+            url: u,
+            processors: [ImageProcessors.Resize(
+                size: CGSize(width: pixels, height: pixels),
+                unit: .pixels,
+                contentMode: .aspectFill
+            )],
+            priority: .normal
+        )
+    }
+}
+
 struct PlayerAvatar: View {
+    @Environment(\.displayScale) private var displayScale
     let url: String
     let fallback: String
     var size: CGFloat = 36
 
-    // Decode at the actual rendered pixel size so a 200px headshot doesn't
-    // sit in memory as a 200px UIImage for a 36pt avatar.
     private var request: ImageRequest? {
-        guard let u = URL(string: url) else { return nil }
-        let scale = max(UIScreen.main.scale, 2)
-        let target = CGSize(width: size * scale, height: size * scale)
-        return ImageRequest(
-            url: u,
-            processors: [ImageProcessors.Resize(size: target, contentMode: .aspectFill)],
-            priority: .normal
-        )
+        AvatarImage.request(url, displaySize: size, scale: displayScale)
     }
 
     var body: some View {
@@ -121,17 +152,19 @@ struct DefaultTeamCrest: View {
 // when scrolled into view. Cancelled automatically when the view disappears.
 struct AvatarPrefetcher: ViewModifier {
     let urls: [String]
+    @Environment(\.displayScale) private var displayScale
     @State private var prefetcher: ImagePrefetcher = ImagePrefetcher(destination: .memoryCache)
 
     func body(content: Content) -> some View {
         content
+            // Prefetch the *same* canonical request PlayerAvatar reads back, so
+            // the warm lands in the decoded-image cache (keyed on the resize
+            // processor) and not just on disk. Same display scale → same key.
             .onChange(of: urls) { _, new in
-                let requests = new.compactMap { URL(string: $0).map { ImageRequest(url: $0) } }
-                prefetcher.startPrefetching(with: requests)
+                prefetcher.startPrefetching(with: new.compactMap { AvatarImage.request($0, scale: displayScale) })
             }
             .onAppear {
-                let requests = urls.compactMap { URL(string: $0).map { ImageRequest(url: $0) } }
-                prefetcher.startPrefetching(with: requests)
+                prefetcher.startPrefetching(with: urls.compactMap { AvatarImage.request($0, scale: displayScale) })
             }
             .onDisappear { prefetcher.stopPrefetching() }
     }
@@ -608,5 +641,143 @@ extension String {
         let parts = self.split(separator: " ")
         let letters = parts.prefix(2).compactMap { $0.first.map { String($0) } }
         return letters.joined().uppercased()
+    }
+}
+
+// MARK: - Full-screen image viewer
+
+// Identifies a set of images to present full-screen, starting at `index`.
+// Use as a `.fullScreenCover(item:)` payload.
+struct ImageGallery: Identifiable {
+    let id = UUID()
+    let urls: [String]
+    let index: Int
+}
+
+// Full-screen, swipeable, pinch-to-zoom image viewer over a black backdrop.
+// Paging is enabled when more than one image is supplied.
+struct FullScreenImageViewer: View {
+    let urls: [String]
+    var startIndex: Int = 0
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selection: Int
+
+    init(urls: [String], startIndex: Int = 0) {
+        self.urls = urls
+        self.startIndex = startIndex
+        _selection = State(initialValue: max(0, min(startIndex, urls.count - 1)))
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+
+            TabView(selection: $selection) {
+                ForEach(Array(urls.enumerated()), id: \.offset) { idx, urlStr in
+                    ZoomableImage(urlString: urlStr)
+                        .tag(idx)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: urls.count > 1 ? .automatic : .never))
+            .ignoresSafeArea()
+
+            Button { dismiss() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(12)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .padding(.top, FFSpace.l)
+            .padding(.trailing, FFSpace.l)
+        }
+    }
+}
+
+// A single image with pinch-to-zoom, drag-to-pan (while zoomed), and
+// double-tap to toggle zoom. Reset back to fit when zoomed all the way out.
+private struct ZoomableImage: View {
+    let urlString: String
+
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+    @State private var containerSize: CGSize = .zero
+
+    private let maxScale: CGFloat = 5
+
+    var body: some View {
+        GeometryReader { geo in
+            AsyncImage(url: URL(string: urlString)) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFit()
+                case .empty:
+                    ZStack { Color.clear; ProgressView().tint(.white) }
+                default:
+                    Image(systemName: "photo.badge.exclamationmark")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .scaleEffect(scale)
+            .offset(offset)
+            .gesture(magnify)
+            .simultaneousGesture(pan)
+            .onTapGesture(count: 2) { toggleZoom() }
+            .onAppear { containerSize = geo.size }
+            .onChange(of: geo.size) { _, newValue in containerSize = newValue }
+        }
+    }
+
+    // Keep the zoomed image within the viewport: the most it can travel from
+    // center is half the overflow (scaledSize - viewSize) on each axis.
+    private func clampOffset(_ proposed: CGSize) -> CGSize {
+        guard scale > 1, containerSize != .zero else { return .zero }
+        let maxX = containerSize.width  * (scale - 1) / 2
+        let maxY = containerSize.height * (scale - 1) / 2
+        return CGSize(
+            width:  min(max(proposed.width,  -maxX), maxX),
+            height: min(max(proposed.height, -maxY), maxY)
+        )
+    }
+
+    private var magnify: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                scale = min(max(lastScale * value.magnification, 1), maxScale)
+            }
+            .onEnded { _ in
+                lastScale = scale
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                    offset = clampOffset(offset)
+                }
+                lastOffset = offset
+            }
+    }
+
+    private var pan: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                guard scale > 1 else { return }
+                offset = clampOffset(CGSize(
+                    width: lastOffset.width + value.translation.width,
+                    height: lastOffset.height + value.translation.height
+                ))
+            }
+            .onEnded { _ in lastOffset = offset }
+    }
+
+    private func toggleZoom() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            if scale > 1 {
+                scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero
+            } else {
+                scale = 2.5; lastScale = 2.5
+            }
+        }
     }
 }

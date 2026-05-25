@@ -45,8 +45,6 @@ interface NotificationRow {
 }
 interface TokenRow { token: string; environment: string }
 
-const SELECT_COLS = "id, title, body, image_url, deep_link, target, target_user_ids";
-
 Deno.serve(async (req: Request) => {
     try {
         if (!APNS_KEY || !APNS_KEY_ID || !APNS_TEAM_ID) {
@@ -56,52 +54,35 @@ Deno.serve(async (req: Request) => {
         let body: { notification_id?: string } = {};
         try { body = await req.json(); } catch { /* empty body → cron mode */ }
 
-        let rows: NotificationRow[] = [];
-        if (body.notification_id) {
-            const { data } = await supa.from("push_notifications")
-                .select(SELECT_COLS)
-                .eq("id", body.notification_id)
-                .maybeSingle();
-            if (data) rows = [data as NotificationRow];
-        } else {
-            const nowIso = new Date().toISOString();
-            const { data } = await supa.from("push_notifications")
-                .select(SELECT_COLS)
-                .eq("status", "scheduled")
-                .or(`scheduled_at.is.null,scheduled_at.lte.${nowIso}`)
-                .limit(50);
-            rows = (data ?? []) as NotificationRow[];
-        }
+        // Atomically claim the rows we'll work on (flips them to 'sending').
+        // The RPC handles due scheduled rows AND stale 'sending' rows whose lease
+        // expired (sender died mid-flight), so nothing strands permanently.
+        const { data, error } = await supa.rpc("claim_push_notifications", {
+            p_id: body.notification_id ?? null,
+        });
+        if (error) throw new Error(error.message);
+        const rows = (data ?? []) as NotificationRow[];
 
-        let processed = 0;
         for (const n of rows) {
-            if (await processNotification(n)) processed += 1;
+            await deliver(n);
         }
-        return json({ ok: true, processed });
+        return json({ ok: true, processed: rows.length });
     } catch (err) {
         return json({ error: String(err) }, 500);
     }
 });
 
-// Claims a notification (scheduled → sending), resolves its target tokens,
-// pushes to each, prunes dead tokens, then records the outcome. Returns false
-// if the row was already claimed by a concurrent run.
-async function processNotification(n: NotificationRow): Promise<boolean> {
-    const { data: claimed } = await supa.from("push_notifications")
-        .update({ status: "sending" })
-        .eq("id", n.id)
-        .eq("status", "scheduled")
-        .select("id")
-        .maybeSingle();
-    if (!claimed) return false;
-
+// Resolves an already-claimed notification's target tokens, pushes to each,
+// prunes dead tokens, then records the outcome. Re-delivering a reclaimed row is
+// at-least-once by design — a stranded 'sending' row is better retried than lost.
+async function deliver(n: NotificationRow): Promise<void> {
     try {
         let query = supa.from("device_tokens").select("token, environment");
         if (n.target === "users") {
             const ids = n.target_user_ids ?? [];
             if (ids.length === 0) {
                 await finish(n.id, "sent", 0, 0, null);
-                return true;
+                return;
             }
             query = query.in("user_id", ids);
         }
@@ -109,7 +90,7 @@ async function processNotification(n: NotificationRow): Promise<boolean> {
         const tokens: TokenRow[] = (tokenData ?? []) as TokenRow[];
         if (tokens.length === 0) {
             await finish(n.id, "sent", 0, 0, null);
-            return true;
+            return;
         }
 
         const authToken = await apnsAuthToken();
@@ -133,10 +114,8 @@ async function processNotification(n: NotificationRow): Promise<boolean> {
             await supa.from("device_tokens").delete().in("token", dead);
         }
         await finish(n.id, "sent", sent, failed, null);
-        return true;
     } catch (err) {
         await finish(n.id, "failed", 0, 0, String(err));
-        return true;
     }
 }
 

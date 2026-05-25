@@ -75,8 +75,7 @@ struct MatchupTabView: View {
         guard let league else { return [1] }
         var weeks = league.schedule.map(\.week)
         if league.playoffTeams >= 2 {
-            let rounds = max(1, Int(ceil(log2(Double(league.playoffTeams)))))
-            for r in 0..<rounds { weeks.append(league.playoffStartWeek + r) }
+            weeks.append(contentsOf: league.playoffStartWeek...league.playoffEndWeek)
         }
         return weeks.isEmpty ? [1] : weeks
     }
@@ -115,7 +114,7 @@ struct MatchupTabView: View {
         guard let league, let mine = myTeam else { return nil }
         if week > league.regularSeasonWeeks {
             let bracket = Fantasy.playoffBracket(league: league, players: leaguePlayers)
-            guard let round = bracket.rounds.first(where: { $0.week == week }),
+            guard let round = bracket.rounds.first(where: { week >= $0.week && week <= $0.endWeek }),
                   let game = round.games.first(where: { $0.top.teamID == mine.id || $0.bottom.teamID == mine.id })
             else { return (mine, nil) }
             let oppID = game.top.teamID == mine.id ? game.bottom.teamID : game.top.teamID
@@ -219,7 +218,7 @@ struct MatchupTabView: View {
         VStack(spacing: 4) {
             Text(label).ffEyebrow(color: winning ? FFColor.accent : FFColor.textTertiary)
             TeamCrestView(team: s.team, size: 38)
-            Text(s.team.shortLabel).font(.ffCaption).foregroundStyle(FFColor.textSecondary).lineLimit(1)
+            Text(s.team.shortLabel).font(.ffCaption).foregroundStyle(FFColor.textPrimary).lineLimit(1)
             Text(s.actual.fpString)
                 .font(.ffStatLarge)
                 .foregroundStyle(winning ? FFColor.accent : FFColor.textPrimary)
@@ -300,18 +299,27 @@ struct MatchupTabView: View {
             Button {
                 if expanded.contains(e.playerID) { expanded.remove(e.playerID) } else { expanded.insert(e.playerID) }
             } label: {
-                VStack(alignment: alignment, spacing: 3) {
-                    Text(displayName(e)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
-                    statusAndContext(e, alignment: alignment)
-                    HStack(spacing: 4) {
-                        if context.actualPoints(e.playerID) != nil {
-                            Text(e.points.fpString).font(.ffStatMedium)
-                                .foregroundStyle(winning ? FFColor.accent : FFColor.textPrimary)
-                        } else {
-                            Text(context.projectedPoints(e.playerID).map { $0.fpString } ?? "—")
-                                .font(.ffStatMedium).foregroundStyle(FFColor.accent)
-                            Text("proj").font(.ffMicro).foregroundStyle(FFColor.textTertiary)
+                HStack(spacing: FFSpace.s) {
+                    if alignment == .leading {
+                        PlayerAvatar(url: e.headshotURL, fallback: e.name.initialsFromName, size: 30)
+                    }
+                    VStack(alignment: alignment, spacing: 3) {
+                        Text(displayName(e)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                        statusAndContext(e, alignment: alignment)
+                        HStack(spacing: 4) {
+                            if context.actualPoints(e.playerID) != nil {
+                                Text(e.points.fpString).font(.ffStatMedium)
+                                    .foregroundStyle(winning ? FFColor.accent : FFColor.textPrimary)
+                            } else {
+                                Text(context.projectedPoints(e.playerID).map { $0.fpString } ?? "—")
+                                    .font(.ffStatMedium).foregroundStyle(FFColor.accent)
+                                Text("proj").font(.ffMicro).foregroundStyle(FFColor.textTertiary)
+                            }
                         }
+                    }
+                    .frame(maxWidth: .infinity)
+                    if alignment == .trailing {
+                        PlayerAvatar(url: e.headshotURL, fallback: e.name.initialsFromName, size: 30)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: frameAlign)
@@ -466,6 +474,9 @@ struct MatchupTabView: View {
                 HStack(spacing: FFSpace.s) {
                     Text(e.slot.label).font(.ffMicro.bold())
                         .foregroundStyle(FFColor.positionTint(e.slot.label)).frame(width: 40, alignment: .leading)
+                    if !e.playerID.isEmpty {
+                        PlayerAvatar(url: e.headshotURL, fallback: e.name.initialsFromName, size: 30)
+                    }
                     Text(e.playerID.isEmpty ? "Empty" : displayName(e))
                         .font(.ffBody).foregroundStyle(e.playerID.isEmpty ? FFColor.textTertiary : FFColor.textPrimary)
                     Spacer()

@@ -165,7 +165,8 @@ actor RemoteService {
                 createdAt: row.createdAt,
                 joinCode: row.joinCode,
                 creatorID: row.creatorId.uuidString,
-                isTest: row.isTest
+                isTest: row.isTest,
+                isDynasty: row.isDynasty
             )
         }
     }
@@ -232,8 +233,10 @@ actor RemoteService {
         regularSeasonWeeks: Int? = nil,
         playoffTeams: Int = 6,
         playoffReseed: Bool = true,
+        weeksPerRound: Int = 1,
         divisionNames: [String] = [],
-        scoringSettings: ScoringSettings? = nil
+        scoringSettings: ScoringSettings? = nil,
+        isDynasty: Bool = false
     ) async throws -> League {
         guard let creatorUUID = UUID(uuidString: creatorID) else {
             throw RemoteError.invalidUserID
@@ -280,8 +283,10 @@ actor RemoteService {
             let regular_season_weeks: Int
             let playoff_teams: Int
             let playoff_reseed: Bool
+            let weeks_per_round: Int
             let division_names: AnyJSON
             let scoring_settings: AnyJSON?
+            let is_dynasty: Bool
         }
         let leagueID = UUID()
         // Initial priority: reverse-order of team creation (last team picks
@@ -301,8 +306,10 @@ actor RemoteService {
             regular_season_weeks: effectiveSeasonWeeks,
             playoff_teams: cappedPlayoffTeams,
             playoff_reseed: playoffReseed,
+            weeks_per_round: min(max(weeksPerRound, 1), 2),
             division_names: stringsAsAnyJSON(cleanedDivisions),
-            scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON)
+            scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON),
+            is_dynasty: isDynasty
         )
         let insertedLeague: LeagueRow = try await client.from("leagues")
             .insert(leagueInsert)
@@ -409,26 +416,40 @@ actor RemoteService {
     // Used by the weekly lineup editor.
     @discardableResult
     func setLineup(
-        teamID: String, starters: [String], ir: [String],
+        teamID: String, starters: [String], ir: [String], taxi: [String],
         weeklyLineups: [Int: [String]]
     ) async throws -> League? {
         guard let teamUUID = UUID(uuidString: teamID) else { return nil }
         struct LineupUpdate: Encodable {
             let starters: [String]
             let ir: [String]
+            let taxi: [String]
             let weekly_lineups: AnyJSON
         }
         let weeklyJSON: AnyJSON = .object(Dictionary(uniqueKeysWithValues:
             weeklyLineups.map { (String($0.key), AnyJSON.array($0.value.map { .string($0) })) }
         ))
         let updated: TeamRow = try await client.from("teams")
-            .update(LineupUpdate(starters: starters, ir: ir, weekly_lineups: weeklyJSON))
+            .update(LineupUpdate(starters: starters, ir: ir, taxi: taxi, weekly_lineups: weeklyJSON))
             .eq("id", value: teamUUID)
             .select()
             .single()
             .execute()
             .value
         return try await league(id: updated.leagueId.uuidString)
+    }
+
+    // Set just a team's logo. Used by Sleeper promotion to carry each team's
+    // avatar onto the created league. Skips the league re-fetch the fuller
+    // customization path does — promotion reloads the league once at the end.
+    // Commish-only on unclaimed teams via the teams_commish_update RLS policy.
+    func setTeamLogo(teamID: String, logoURL: String) async throws {
+        guard let teamUUID = UUID(uuidString: teamID) else { return }
+        struct LogoUpdate: Encodable { let logo_url: String }
+        _ = try await client.from("teams")
+            .update(LogoUpdate(logo_url: logoURL))
+            .eq("id", value: teamUUID)
+            .execute()
     }
 
     // Team branding: name, logo URL, accent color, abbreviation. Any nil
@@ -560,6 +581,7 @@ actor RemoteService {
                     starters: t.starters,
                     ownerID: t.ownerId?.uuidString,
                     ir: t.ir,
+                    taxi: t.taxi,
                     weeklyLineups: Dictionary(uniqueKeysWithValues:
                         t.weeklyLineups.compactMap { key, value in
                             Int(key).map { ($0, value) }
@@ -589,12 +611,14 @@ actor RemoteService {
             ),
             isTest: row.isTest,
             simulatedWeek: row.simulatedWeek,
+            isDynasty: row.isDynasty,
             parentLeagueID: row.parentLeagueId?.uuidString,
             seasonCompleted: row.seasonCompleted,
             seasonCompletedAt: row.seasonCompletedAt,
             regularSeasonWeeks: row.regularSeasonWeeks,
             playoffTeams: row.playoffTeams,
             playoffReseed: row.playoffReseed,
+            weeksPerRound: row.weeksPerRound,
             scoringSettings: row.scoringSettings,
             divisionNames: row.divisionNames,
             championTeamID: row.championTeamId?.uuidString,
@@ -615,6 +639,8 @@ actor RemoteService {
             "def":   .integer(c.def),
             "bench": .integer(c.bench),
             "ir":    .integer(c.ir),
+            "taxi":  .integer(c.taxi),
+            "taxiMaxExperience": .integer(c.taxiMaxExperience),
         ])
     }
 
@@ -644,6 +670,10 @@ actor RemoteService {
         if let options = p.options   { obj["options"] = .array(options.map { .string($0) }) }
         if let players = p.players   { obj["players"] = .array(players.map { .string($0) }) }
         if let seeking = p.seeking   { obj["seeking"] = .array(seeking.map { .string($0) }) }
+        // Parallel player-id arrays so trade-block chips stay tappable after a
+        // reload/fetch (nil/empty entries render as plain, non-linked chips).
+        if let ids = p.playerIDs     { obj["playerIDs"] = .array(ids.map { .string($0) }) }
+        if let ids = p.seekingIDs    { obj["seekingIDs"] = .array(ids.map { .string($0) }) }
         if let note = p.note         { obj["note"] = .string(note) }
         if let teamName = p.teamName { obj["teamName"] = .string(teamName) }
         if let allow = p.allowMultiple   { obj["allowMultiple"] = .bool(allow) }
@@ -778,10 +808,12 @@ actor RemoteService {
             roster.removeAll { $0 == drop }
         }
         if !roster.contains(addPlayerID) { roster.append(addPlayerID) }
-        // IR players sit outside the active roster, so they don't count toward
-        // the size limit — only active (non-IR) players do.
-        let irSet = Set(team.ir)
-        let activeCount = roster.filter { !irSet.contains($0) }.count
+        // Reserves (IR + taxi) sit outside the active roster, so they don't
+        // count toward the size limit — only active players do. Taxi only counts
+        // as reserved while the league has taxi slots configured.
+        let taxiReserved = league.rosterConfig.taxi > 0 ? Set(team.taxi) : Set<String>()
+        let reserved = Set(team.ir).union(taxiReserved)
+        let activeCount = roster.filter { !reserved.contains($0) }.count
         guard activeCount <= league.rosterConfig.totalSize else {
             throw RemoteError.rosterFull
         }
@@ -969,7 +1001,10 @@ actor RemoteService {
         playoffTeams: Int,
         playoffReseed: Bool,
         scoringSettings: ScoringSettings?,
-        divisionNames: [String]
+        divisionNames: [String],
+        regularSeasonWeeks: Int,
+        weeksPerRound: Int,
+        schedule: [ScheduleWeek]
     ) async throws -> League? {
         guard let uuid = UUID(uuidString: leagueID) else { return nil }
         let cleaned = name.trimmingCharacters(in: .whitespaces)
@@ -985,6 +1020,12 @@ actor RemoteService {
             // .null clears custom scoring back to the named preset.
             let scoring_settings: AnyJSON
             let division_names: AnyJSON
+            let regular_season_weeks: Int
+            let weeks_per_round: Int
+            // Regenerated to match the regular-season length when the playoff
+            // start week changes. The round-robin is prefix-stable, so already
+            // played weeks keep their matchups.
+            let schedule: AnyJSON
         }
         _ = try await client.from("leagues")
             .update(LeagueUpdate(
@@ -994,7 +1035,10 @@ actor RemoteService {
                 playoff_teams: max(0, playoffTeams),
                 playoff_reseed: playoffReseed,
                 scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON) ?? .null,
-                division_names: stringsAsAnyJSON(cleanedDivisions)
+                division_names: stringsAsAnyJSON(cleanedDivisions),
+                regular_season_weeks: max(1, regularSeasonWeeks),
+                weeks_per_round: min(max(weeksPerRound, 1), 2),
+                schedule: scheduleAsAnyJSON(schedule)
             ))
             .eq("id", value: uuid)
             .execute()
@@ -1529,6 +1573,35 @@ actor RemoteService {
         return out
     }
 
+    // Full injury history for one player across every season we have on file.
+    // Raw weekly rows (one per weekly report) — collapse into events client-side
+    // via Fantasy.injuryEvents. Powers the player injury-history tracker.
+    func injuryHistory(playerID: String) async -> [InjuryHistoryRow] {
+        struct Row: Decodable {
+            let season: Int
+            let week: Int
+            let status: String?     // nflverse report_status is nullable
+            let details: String?
+            let practiceStatus: String?
+            enum CodingKeys: String, CodingKey {
+                case season, week, status, details
+                case practiceStatus = "practice_status"
+            }
+        }
+        let rows: [Row] = (try? await client.from("injury_history")
+            .select("season, week, status, details, practice_status")
+            .eq("player_id", value: playerID)
+            .order("season", ascending: true)
+            .order("week", ascending: true)
+            .execute().value) ?? []
+        return rows.map {
+            InjuryHistoryRow(
+                season: $0.season, week: $0.week, status: $0.status,
+                details: $0.details, practiceStatus: $0.practiceStatus
+            )
+        }
+    }
+
     private static let plainDate: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
@@ -1763,18 +1836,146 @@ actor RemoteService {
         return fresh
     }
 
-    // Commish-only. Spawns a new child league for the next season. Returns
-    // the freshly created child League; teams are NOT cloned — callers can
-    // claim teams normally with the new join code.
+    // Backfills one completed historical season's final standings into league
+    // history. Unlike completeLeagueSeason this targets an arbitrary past season
+    // and does NOT flip season_completed — it's a one-shot archive of imported
+    // (Sleeper) history. Historical teams/managers have no app UUIDs, so only
+    // names are stored for the scoring leader / champion (no head-to-head links).
+    func archiveImportedSeason(
+        leagueID: String,
+        season: Int,
+        standings: [StandingsRow],
+        scoringLeaderTeamName: String?,
+        championTeamName: String?
+    ) async throws {
+        guard let lid = UUID(uuidString: leagueID) else { return }
+        let standingsJSON: AnyJSON = .array(standings.map { row in
+            .object([
+                "id":             .string(row.id),
+                "name":           .string(row.name),
+                "wins":           .integer(row.wins),
+                "losses":         .integer(row.losses),
+                "ties":           .integer(row.ties),
+                "pointsFor":      .double(row.pointsFor),
+                "pointsAgainst":  .double(row.pointsAgainst),
+                "games":          .integer(row.games),
+                "rank":           .integer(row.rank),
+            ])
+        })
+        // The deployed `write_league_season_archive(p_league_id, p_season,
+        // p_standings, p_scoring_leader_team_id, p_scoring_leader_name,
+        // p_champion_team_id default null, p_champion_team_name default null)`
+        // has NO SQL default for the scoring-leader params. Swift's synthesized
+        // Encodable omits nil optionals, which would drop those keys and make
+        // PostgREST fail to resolve the function — so encode every key
+        // explicitly (nil → JSON null) via a custom encode(to:). The champion
+        // params do have SQL defaults (an omitted key would be fine), but we
+        // encode them the same way so the payload is uniform — every parameter
+        // key is always present.
+        struct ArchiveArgs: Encodable {
+            let p_league_id: UUID
+            let p_season: Int
+            let p_standings: AnyJSON
+            let p_scoring_leader_team_id: UUID?
+            let p_scoring_leader_name: String?
+            let p_champion_team_id: UUID?
+            let p_champion_team_name: String?
+
+            enum CodingKeys: String, CodingKey {
+                case p_league_id, p_season, p_standings
+                case p_scoring_leader_team_id, p_scoring_leader_name
+                case p_champion_team_id, p_champion_team_name
+            }
+            func encode(to encoder: Encoder) throws {
+                var c = encoder.container(keyedBy: CodingKeys.self)
+                try c.encode(p_league_id, forKey: .p_league_id)
+                try c.encode(p_season, forKey: .p_season)
+                try c.encode(p_standings, forKey: .p_standings)
+                // `encode` (not `encodeIfPresent`) so nil serializes as null.
+                try c.encode(p_scoring_leader_team_id, forKey: .p_scoring_leader_team_id)
+                try c.encode(p_scoring_leader_name, forKey: .p_scoring_leader_name)
+                try c.encode(p_champion_team_id, forKey: .p_champion_team_id)
+                try c.encode(p_champion_team_name, forKey: .p_champion_team_name)
+            }
+        }
+        _ = try await client.rpc("write_league_season_archive", params: ArchiveArgs(
+            p_league_id: lid,
+            p_season: season,
+            p_standings: standingsJSON,
+            p_scoring_leader_team_id: nil,
+            p_scoring_leader_name: scoringLeaderTeamName,
+            p_champion_team_id: nil,
+            p_champion_team_name: championTeamName
+        )).execute()
+    }
+
+    // Commish-only. Spawns a new child league for the next season. For a
+    // standard league teams are NOT cloned — owners re-claim with the new join
+    // code (a fresh redraft). For a dynasty league every team is carried forward
+    // with its owner, branding, and roster intact (so rosters are never
+    // cleared). The whole rollover is atomic: we generate the new team IDs and a
+    // round-robin schedule over them up front and hand both to the RPC, which
+    // writes the league row, schedule, waiver priority, and cloned teams in a
+    // single transaction. That avoids a half-initialized child (and duplicate
+    // children on retry) if anything fails mid-rollover.
     func rolloverLeague(parentID: String, newSeason: Int, newName: String?) async throws -> League? {
         guard let pid = UUID(uuidString: parentID) else { return nil }
+
+        // Dynasty needs the parent's teams + flag before the call so the
+        // schedule can reference the carried-over team IDs. Fail loudly rather
+        // than silently rolling a dynasty league over with an empty payload.
+        guard let parent = try await self.league(id: parentID) else {
+            throw RemoteError.parentLeagueNotFound
+        }
+        var teamsJSON: AnyJSON = .array([])
+        var scheduleJSON: AnyJSON = .array([])
+        var waiverPriority: [String] = []
+        if parent.isDynasty, !parent.teams.isEmpty {
+            let newIDs = parent.teams.map { _ in UUID().uuidString }
+            let schedule = Fantasy.generateSchedule(
+                teamIDs: newIDs, weeks: parent.regularSeasonWeeks
+            )
+            scheduleJSON = scheduleAsAnyJSON(schedule)
+            // Default pre-season priority: reverse team order (last picks first).
+            waiverPriority = Array(newIDs.reversed())
+            teamsJSON = .array(zip(parent.teams, newIDs).enumerated().map { idx, pair in
+                dynastyTeamJSON(newID: pair.1, team: pair.0, sortIndex: idx)
+            })
+        }
+
         struct Args: Encodable {
-            let p_parent_id: UUID; let p_new_season: Int; let p_new_name: String
+            let p_parent_id: UUID
+            let p_new_season: Int
+            let p_new_name: String
+            let p_schedule: AnyJSON
+            let p_waiver_priority: [String]
+            let p_teams: AnyJSON
         }
         let row: LeagueRow = try await client.rpc("rollover_league", params: Args(
-            p_parent_id: pid, p_new_season: newSeason, p_new_name: newName ?? ""
+            p_parent_id: pid, p_new_season: newSeason, p_new_name: newName ?? "",
+            p_schedule: scheduleJSON, p_waiver_priority: waiverPriority, p_teams: teamsJSON
         )).execute().value
         return try await self.league(id: row.id.uuidString)
+    }
+
+    // Serializes a carried-over dynasty team for the rollover RPC. Roster, IR,
+    // owner, division, and branding come forward; the new season's lineups and
+    // weekly snapshots reset (omitted here).
+    private func dynastyTeamJSON(newID: String, team: FantasyTeam, sortIndex: Int) -> AnyJSON {
+        .object([
+            "id":           .string(newID),
+            "name":         .string(team.name),
+            "owner_id":     team.ownerID.map { AnyJSON.string($0) } ?? .null,
+            "sort_index":   .integer(sortIndex),
+            "division":     team.division.map { AnyJSON.integer($0) } ?? .null,
+            "roster":       stringsAsAnyJSON(team.roster),
+            "starters":     stringsAsAnyJSON(team.starters),
+            "ir":           stringsAsAnyJSON(team.ir),
+            "taxi":         stringsAsAnyJSON(team.taxi),
+            "logo_url":     team.logoURL.map { AnyJSON.string($0) } ?? .null,
+            "color_hex":    team.colorHex.map { AnyJSON.string($0) } ?? .null,
+            "abbreviation": team.abbreviation.map { AnyJSON.string($0) } ?? .null
+        ])
     }
 
     // Walks the parent chain from `leagueID` upward and returns every
@@ -2001,10 +2202,16 @@ actor RemoteService {
     // MARK: - League chat
 
     // Fetches the most-recent `limit` messages for a league, oldest-first so
-    // the caller can append directly into a chat transcript. Username comes
-    // from a join on profiles. Reactions are embedded via a join on
-    // league_message_reactions so the chat opens with full state in one
-    // round-trip.
+    // the caller can append directly into a chat transcript. Reactions and poll
+    // responses are embedded via real child FKs to league_messages so the chat
+    // opens with full state in one round-trip.
+    //
+    // Usernames are resolved in a separate batched lookup rather than a
+    // `profiles!user_id` embed. That embed 400s whenever the message↔profiles
+    // relationship isn't in PostgREST's schema cache (e.g. right after any
+    // migration reloads it), and the `try?` below would swallow that into a
+    // permanently empty transcript — i.e. every message vanishing on reload.
+    // Same failure mode and fix as feedbackInbox.
     func messages(leagueID: String, limit: Int = 200) async -> LeagueChatLoad {
         guard let lid = UUID(uuidString: leagueID) else {
             return LeagueChatLoad(messages: [], reactions: [:])
@@ -2018,11 +2225,10 @@ actor RemoteService {
             let createdAt: Date
             let messageType: String?
             let payload: ChatPayload?
-            let profiles: ProfilesJoin?
             let leagueMessageReactions: [ReactionJoin]?
             let messageResponses: [ResponseJoin]?
             enum CodingKeys: String, CodingKey {
-                case id, content, profiles, payload
+                case id, content, payload
                 case leagueId  = "league_id"
                 case userId    = "user_id"
                 case imageUrl  = "image_url"
@@ -2032,7 +2238,6 @@ actor RemoteService {
                 case messageResponses = "message_responses"
             }
         }
-        struct ProfilesJoin: Decodable { let username: String? }
         struct ReactionJoin: Decodable {
             let userId: UUID
             let emoji: String
@@ -2051,11 +2256,15 @@ actor RemoteService {
             }
         }
         let rows: [Row] = (try? await client.from("league_messages")
-            .select("id, league_id, user_id, content, image_url, created_at, message_type, payload, profiles!user_id(username), league_message_reactions(user_id, emoji), message_responses(user_id, choice, slot)")
+            .select("id, league_id, user_id, content, image_url, created_at, message_type, payload, league_message_reactions(user_id, emoji), message_responses(user_id, choice, slot)")
             .eq("league_id", value: lid)
             .order("created_at", ascending: false)
             .limit(limit)
             .execute().value) ?? []
+
+        // Resolve author usernames in one batched lookup; a failure here only
+        // costs display names, never the messages themselves.
+        let names = await usernames(forIDs: Set(rows.map(\.userId)))
 
         var messages: [LeagueMessage] = []
         var reactions: [String: [LeagueMessageReaction]] = [:]
@@ -2066,7 +2275,7 @@ actor RemoteService {
                 id: mid,
                 leagueID: r.leagueId.uuidString,
                 userID: r.userId.uuidString,
-                username: r.profiles?.username,
+                username: names[r.userId],
                 content: r.content,
                 imageURL: r.imageUrl,
                 createdAt: r.createdAt,
@@ -2598,6 +2807,80 @@ actor RemoteService {
         return true
     }
 
+    // Discussion thread for a single feedback item, oldest first. RLS limits
+    // reads to the feedback author + admins, so a non-privileged caller gets
+    // an empty list rather than someone else's thread.
+    func feedbackComments(feedbackID: String) async -> [FeedbackComment] {
+        guard let fid = UUID(uuidString: feedbackID) else { return [] }
+        struct Row: Decodable {
+            let id: UUID; let userId: UUID; let content: String; let createdAt: Date
+            enum CodingKeys: String, CodingKey {
+                case id, content
+                case userId    = "user_id"
+                case createdAt = "created_at"
+            }
+        }
+        let rows: [Row] = (try? await client.from("feedback_comments")
+            .select("id, user_id, content, created_at")
+            .eq("feedback_id", value: fid)
+            .order("created_at", ascending: true)
+            .execute().value) ?? []
+        let names = await usernames(forIDs: Set(rows.map(\.userId)))
+        return rows.map { r in
+            FeedbackComment(
+                id: r.id.uuidString, feedbackID: feedbackID,
+                userID: r.userId.uuidString, username: names[r.userId] ?? "Unknown",
+                content: r.content, createdAt: r.createdAt
+            )
+        }
+    }
+
+    @discardableResult
+    func addFeedbackComment(
+        feedbackID: String, userID: String, content: String
+    ) async throws -> FeedbackComment {
+        guard let fid = UUID(uuidString: feedbackID),
+              let uid = UUID(uuidString: userID) else { throw RemoteError.invalidUserID }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw RemoteError.emptyMessage }
+        struct Insert: Encodable {
+            let feedback_id: UUID
+            let user_id: UUID
+            let content: String
+        }
+        struct Row: Decodable {
+            let id: UUID; let userId: UUID; let content: String; let createdAt: Date
+            enum CodingKeys: String, CodingKey {
+                case id, content
+                case userId    = "user_id"
+                case createdAt = "created_at"
+            }
+        }
+        let row: Row = try await client.from("feedback_comments")
+            .insert(Insert(feedback_id: fid, user_id: uid, content: trimmed))
+            .select("id, user_id, content, created_at")
+            .single()
+            .execute().value
+        let names = await usernames(forIDs: [row.userId])
+        return FeedbackComment(
+            id: row.id.uuidString, feedbackID: feedbackID,
+            userID: row.userId.uuidString, username: names[row.userId] ?? "You",
+            content: row.content, createdAt: row.createdAt
+        )
+    }
+
+    // Admin-only grant/revoke of the admin flag on another profile. The RPC
+    // re-checks the caller is an admin server-side.
+    @discardableResult
+    func setAdminRole(userID: String, isAdmin: Bool) async throws -> Bool {
+        guard let uid = UUID(uuidString: userID) else { throw RemoteError.invalidUserID }
+        struct Args: Encodable { let p_user: UUID; let p_is_admin: Bool }
+        let row: ProfileRow = try await client
+            .rpc("set_admin_role", params: Args(p_user: uid, p_is_admin: isAdmin))
+            .execute().value
+        return row.isAdmin
+    }
+
     // MARK: - Friendships
 
     private struct FriendshipRow: Decodable {
@@ -2957,7 +3240,7 @@ actor RemoteService {
 
     enum RemoteError: LocalizedError {
         case invalidUserID, tooFewTeams, tooManyTeams, joinCodeCollision,
-             rosterFull, playerLocked, emptyMessage
+             rosterFull, playerLocked, emptyMessage, parentLeagueNotFound
         var errorDescription: String? {
             switch self {
             case .invalidUserID:     return "Invalid user."
@@ -2967,6 +3250,7 @@ actor RemoteService {
             case .rosterFull:        return "Your roster is full — choose a player to drop."
             case .playerLocked:      return "This player's game is in progress and can't be added or dropped."
             case .emptyMessage:      return "Message can't be empty."
+            case .parentLeagueNotFound: return "Couldn't load the league to roll over. Try again."
             }
         }
     }
@@ -3046,12 +3330,14 @@ struct LeagueRow: Codable, Hashable {
     let tradeVoteHours: Int
     let isTest: Bool
     let simulatedWeek: Int?
+    let isDynasty: Bool
     let parentLeagueId: UUID?
     let seasonCompleted: Bool
     let seasonCompletedAt: Date?
     let regularSeasonWeeks: Int?
     let playoffTeams: Int
     let playoffReseed: Bool
+    let weeksPerRound: Int
     let scoringSettings: ScoringSettings?
     let divisionNames: [String]
     let championTeamId: UUID?
@@ -3074,12 +3360,14 @@ struct LeagueRow: Codable, Hashable {
         case tradeVoteHours       = "trade_vote_hours"
         case isTest               = "is_test"
         case simulatedWeek        = "simulated_week"
+        case isDynasty            = "is_dynasty"
         case parentLeagueId       = "parent_league_id"
         case seasonCompleted      = "season_completed"
         case seasonCompletedAt    = "season_completed_at"
         case regularSeasonWeeks   = "regular_season_weeks"
         case playoffTeams         = "playoff_teams"
         case playoffReseed        = "playoff_reseed"
+        case weeksPerRound        = "weeks_per_round"
         case scoringSettings      = "scoring_settings"
         case divisionNames        = "division_names"
         case championTeamId       = "champion_team_id"
@@ -3110,12 +3398,14 @@ struct LeagueRow: Codable, Hashable {
         tradeVoteHours       = try c.decodeIfPresent(Int.self,     forKey: .tradeVoteHours)       ?? 24
         isTest               = try c.decodeIfPresent(Bool.self,    forKey: .isTest)               ?? false
         simulatedWeek        = try c.decodeIfPresent(Int.self,     forKey: .simulatedWeek)
+        isDynasty            = try c.decodeIfPresent(Bool.self,    forKey: .isDynasty)            ?? false
         parentLeagueId       = try c.decodeIfPresent(UUID.self,    forKey: .parentLeagueId)
         seasonCompleted      = try c.decodeIfPresent(Bool.self,    forKey: .seasonCompleted)      ?? false
         seasonCompletedAt    = try c.decodeIfPresent(Date.self,    forKey: .seasonCompletedAt)
         regularSeasonWeeks   = try c.decodeIfPresent(Int.self,     forKey: .regularSeasonWeeks)
         playoffTeams         = try c.decodeIfPresent(Int.self,     forKey: .playoffTeams)         ?? 6
         playoffReseed        = try c.decodeIfPresent(Bool.self,    forKey: .playoffReseed)        ?? true
+        weeksPerRound        = try c.decodeIfPresent(Int.self,     forKey: .weeksPerRound)        ?? 1
         scoringSettings      = try c.decodeIfPresent(ScoringSettings.self, forKey: .scoringSettings)
         divisionNames        = try c.decodeIfPresent([String].self, forKey: .divisionNames)       ?? []
         championTeamId       = try c.decodeIfPresent(UUID.self,    forKey: .championTeamId)
@@ -3132,6 +3422,7 @@ struct TeamRow: Codable, Hashable {
     let starters: [String]
     let sortIndex: Int
     let ir: [String]
+    let taxi: [String]
     let weeklyLineups: [String: [String]]
     let division: Int?
     let logoUrl: String?
@@ -3139,7 +3430,7 @@ struct TeamRow: Codable, Hashable {
     let abbreviation: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ir, division, abbreviation
+        case id, name, roster, starters, ir, taxi, division, abbreviation
         case leagueId      = "league_id"
         case ownerId       = "owner_id"
         case sortIndex     = "sort_index"
@@ -3158,6 +3449,7 @@ struct TeamRow: Codable, Hashable {
         starters  = try c.decodeIfPresent([String].self, forKey: .starters) ?? []
         sortIndex = try c.decodeIfPresent(Int.self, forKey: .sortIndex)     ?? 0
         ir        = try c.decodeIfPresent([String].self, forKey: .ir)       ?? []
+        taxi      = try c.decodeIfPresent([String].self, forKey: .taxi)     ?? []
         weeklyLineups = try c.decodeIfPresent([String: [String]].self, forKey: .weeklyLineups) ?? [:]
         division  = try c.decodeIfPresent(Int.self, forKey: .division)
         logoUrl   = try c.decodeIfPresent(String.self, forKey: .logoUrl)

@@ -68,7 +68,7 @@ struct PlayoffBracketView: View {
             HStack {
                 Text(round.name.uppercased()).ffEyebrow()
                 Spacer()
-                Text("Week \(round.week)")
+                Text(round.weekLabel)
                     .font(.ffCaption.bold())
                     .foregroundStyle(FFColor.textTertiary)
             }

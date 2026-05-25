@@ -92,9 +92,8 @@ struct TradesView: View {
                         .font(.system(size: 14, weight: .semibold))
                     Text("Propose a trade")
                 }
-                .ffPrimaryButton(disabled: !canPropose)
             }
-            .buttonStyle(.plain)
+            .ffPrimaryButton(disabled: !canPropose)
             .disabled(!canPropose)
             if !canPropose, let deadline = league.tradeSettings.deadline, deadline < Date() {
                 Text("Trade deadline passed \(deadline.shortRelative).")
@@ -219,7 +218,10 @@ struct TradesView: View {
                 ForEach(ids, id: \.self) { pid in
                     let p = players[pid]
                     HStack(spacing: 4) {
-                        if let p { PositionPill(position: p.position) }
+                        if let p {
+                            PlayerAvatar(url: p.headshotURL, fallback: p.name.initialsFromName, size: 24)
+                            PositionPill(position: p.position)
+                        }
                         Text(p?.name ?? pid)
                             .font(.ffCaption)
                             .foregroundStyle(FFColor.textPrimary)

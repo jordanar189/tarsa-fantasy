@@ -6,8 +6,10 @@ enum Fantasy {
 
     // Fantasy-relevant positions for UI surfacing. nflverse data also includes
     // IDP rows (LB/DB/DL/CB/S/etc); the data layer keeps them for stats use
-    // but no browseable list should expose them until we add IDP support.
-    static let fantasyPositions: Set<String> = ["QB", "RB", "WR", "TE", "K"]
+    // but no browseable list should expose them until we add IDP support. DEF is
+    // the synthetic per-team defense (DEF_<TEAM>), surfaced now that team-defense
+    // scoring exists.
+    static let fantasyPositions: Set<String> = ["QB", "RB", "WR", "TE", "K", "DEF"]
     static func isFantasyPosition(_ position: String) -> Bool {
         fantasyPositions.contains(position.uppercased())
     }
@@ -34,6 +36,7 @@ enum Fantasy {
             t.fantasyPoints        += g.fantasyPoints
             t.fantasyPointsPPR     += g.fantasyPointsPPR
             t.fantasyPointsHalfPPR += g.fantasyPointsHalfPPR
+            t.specialPoints        += g.specialPoints
         }
         return t
     }
@@ -193,8 +196,8 @@ enum Fantasy {
     // cannot be picked again that loop — even if the per-round template
     // still permits it.
     //
-    // Final two rounds (rounds totalRounds-1 and totalRounds) prefer K
-    // (we don't model DEF as a roster position in this app).
+    // Final two rounds (rounds totalRounds-1 and totalRounds) are the K/DEF
+    // phase.
     //
     // If no allowed-pool candidate is available we fall back to the
     // highest-ADP player overall.
@@ -427,6 +430,51 @@ enum Fantasy {
         return assignment
     }
 
+    // Positions still required to complete the STARTING lineup (bench/IR
+    // excluded) given the players already on `roster`. An unfilled FLEX slot
+    // expands to RB/WR/TE since any of them can start there. Returns the set of
+    // draftable position strings plus the count of unfilled starter slots —
+    // used late in a draft to steer a team toward positions it can still start
+    // once it has only as many picks left as empty starting slots.
+    static func starterNeeds(
+        roster: [String],
+        players: [String: Player],
+        config: RosterConfig,
+        scoring: Scoring,
+        settings: ScoringSettings? = nil
+    ) -> (positions: Set<String>, unfilledCount: Int) {
+        let slots = config.starterSlots
+        let assignment = autoFillLineup(
+            roster: roster, players: players, config: config,
+            scoring: scoring, settings: settings
+        )
+        var positions: Set<String> = []
+        var unfilled = 0
+        for (i, slot) in slots.enumerated() where assignment[i].isEmpty {
+            unfilled += 1
+            switch slot {
+            case .qb:   positions.insert("QB")
+            case .rb:   positions.insert("RB")
+            case .wr:   positions.insert("WR")
+            case .te:   positions.insert("TE")
+            case .k:    positions.insert("K")
+            case .def:  positions.insert("DEF")
+            case .flex: positions.formUnion(["RB", "WR", "TE"])
+            case .bench, .ir: break
+            }
+        }
+        return (positions, unfilled)
+    }
+
+    // Whether a player qualifies for the taxi (practice) squad: at most
+    // `maxExperience` years of NFL experience (0 = rookies only). Unknown
+    // experience is treated as ineligible so veterans — and team defenses,
+    // which have no experience value — can't be stashed by accident.
+    static func taxiEligible(_ player: Player?, maxExperience: Int) -> Bool {
+        guard let years = player?.profile?.yearsExp else { return false }
+        return years <= maxExperience
+    }
+
     // Returns the team's lineup as (starters, bench) player IDs. If the stored
     // starters are missing or stale (e.g. old leagues, roster edited without
     // re-saving lineup), it auto-fills on the fly.
@@ -438,7 +486,11 @@ enum Fantasy {
         settings: ScoringSettings? = nil,
         week: Int? = nil
     ) -> (starters: [String], bench: [String]) {
-        let irSet = Set(team.ir)
+        // Reserves (IR + taxi) sit outside the active lineup: never start, never
+        // appear on the bench, never score. Taxi membership is honored only while
+        // the league has taxi slots configured, so disabling taxi returns stashed
+        // players to the active roster instead of leaving them as unscorable ghosts.
+        let reservedSet = Set(team.ir).union(config.taxi > 0 ? Set(team.taxi) : Set<String>())
         // Prefer the frozen lineup for the requested week, then the live
         // lineup, then an auto-fill.
         let chosen: [String]? = {
@@ -455,20 +507,20 @@ enum Fantasy {
             starters = chosen.map { onRoster.contains($0) ? $0 : "" }
         } else if team.starters.count == config.starterCount
             && team.starters.contains(where: { !$0.isEmpty }) {
-            // Drop starter IDs no longer on the roster (or moved to IR).
+            // Drop starter IDs no longer on the roster (or moved to IR/taxi).
             let onRoster = Set(team.roster)
             starters = team.starters.map {
-                (onRoster.contains($0) && !irSet.contains($0)) ? $0 : ""
+                (onRoster.contains($0) && !reservedSet.contains($0)) ? $0 : ""
             }
         } else {
             starters = autoFillLineup(
                 roster: team.roster, players: players,
-                config: config, scoring: scoring, settings: settings, ir: irSet
+                config: config, scoring: scoring, settings: settings, ir: reservedSet
             )
         }
         let startingSet = Set(starters.filter { !$0.isEmpty })
-        // Bench excludes both starters and IR-stashed players.
-        let bench = team.roster.filter { !startingSet.contains($0) && !irSet.contains($0) }
+        // Bench excludes starters and reserves (IR + taxi).
+        let bench = team.roster.filter { !startingSet.contains($0) && !reservedSet.contains($0) }
         return (starters, bench)
     }
 
@@ -706,12 +758,104 @@ enum Fantasy {
         }
     }
 
+    // MARK: - Score breakdown (game-log detail)
+
+    // One line in a single game's fantasy-score breakdown: a stat category,
+    // a short description of the rate that scored it, and the points it
+    // contributed under the chosen scoring.
+    struct ScoreComponent: Identifiable, Hashable {
+        let label: String
+        let detail: String
+        let points: Double
+        var id: String { label }
+    }
+
+    // Breaks a single game's fantasy points into per-stat contributions. Uses
+    // the league's custom per-stat weights when given, otherwise the named
+    // preset. Components are built from the raw box-score line; any gap between
+    // their sum and the displayed score (2-pt conversions, return TDs, etc. the
+    // line doesn't carry — only relevant for preset scoring, which reads
+    // nflverse's precomputed field) is folded into a trailing "Other" row so
+    // the parts always reconcile to the total shown in the game log.
+    static func scoreBreakdown(game g: Game, scoring: Scoring, settings: ScoringSettings? = nil) -> (components: [ScoreComponent], total: Double) {
+        let s = settings ?? ScoringSettings.preset(scoring)
+        var components: [ScoreComponent] = []
+
+        func yardLine(_ label: String, yards: Double, divisor: Double) {
+            guard yards != 0, divisor > 0 else { return }
+            components.append(ScoreComponent(
+                label: label,
+                detail: "\(yards.statString) yds · 1 pt/\(divisor.statString)",
+                points: round2(yards / divisor)
+            ))
+        }
+        func eventLine(_ label: String, count: Double, weight: Double) {
+            guard count != 0, weight != 0 else { return }
+            components.append(ScoreComponent(
+                label: label,
+                detail: "\(count.statString) × \(weight.statString) pts",
+                points: round2(count * weight)
+            ))
+        }
+
+        yardLine("Passing Yards", yards: g.passingYards, divisor: s.passingYardsPerPoint)
+        eventLine("Passing TDs", count: g.passingTDs, weight: s.passingTD)
+        eventLine("Interceptions", count: g.passingInterceptions, weight: s.interception)
+        yardLine("Rushing Yards", yards: g.rushingYards, divisor: s.rushingYardsPerPoint)
+        eventLine("Rushing TDs", count: g.rushingTDs, weight: s.rushingTD)
+        eventLine("Receptions", count: g.receptions, weight: s.reception)
+        yardLine("Receiving Yards", yards: g.receivingYards, divisor: s.receivingYardsPerPoint)
+        eventLine("Receiving TDs", count: g.receivingTDs, weight: s.receivingTD)
+        eventLine("Fumbles Lost", count: g.fumblesLost, weight: s.fumbleLost)
+
+        // Kicker (distance-tiered FGs + PATs). Reads straight off the raw stat
+        // line with the league's kicking weights — credited to whoever kicked,
+        // regardless of listed position.
+        eventLine("FG 0-39", count: g.fieldGoals0_19 + g.fieldGoals20_29 + g.fieldGoals30_39, weight: s.fgUnder40)
+        eventLine("FG 40-49", count: g.fieldGoals40_49, weight: s.fg40to49)
+        eventLine("FG 50+", count: g.fieldGoals50_59 + g.fieldGoals60Plus, weight: s.fg50plus)
+        eventLine("Extra Points", count: g.extraPointsMade, weight: s.patMade)
+        eventLine("Missed FG", count: g.fieldGoalsMissed, weight: s.fgMissed)
+        eventLine("Missed PAT", count: g.extraPointsMissed, weight: s.patMissed)
+
+        // Team defense (only DST rows carry a points-allowed figure).
+        if let pa = g.pointsAllowed {
+            eventLine("Sacks", count: g.defSacks, weight: s.defSack)
+            eventLine("DEF Interceptions", count: g.defInterceptions, weight: s.defInterception)
+            eventLine("Fumble Recoveries", count: g.defFumbleRecoveries, weight: s.defFumbleRecovery)
+            eventLine("Defensive TDs", count: g.defTouchdowns, weight: s.defTouchdown)
+            eventLine("Safeties", count: g.defSafeties, weight: s.defSafety)
+            components.append(ScoreComponent(
+                label: "Points Allowed",
+                detail: "\(pa.statString) allowed",
+                points: Game.pointsAllowedBonus(pa)
+            ))
+        }
+
+        // Reconcile to the score the game log actually shows. Anything the raw
+        // line can't explain lands in "Other" so the components always sum to
+        // the displayed total. (With custom settings the displayed score is
+        // itself computed from the raw line, so the residual is zero.)
+        let total = round2(g.points(scoring: scoring, settings: settings))
+        let explained = round2(components.reduce(0) { $0 + $1.points })
+        let residual = round2(total - explained)
+        if abs(residual) >= 0.05 {
+            components.append(ScoreComponent(
+                label: "Other",
+                detail: "2-pt, return TDs, etc.",
+                points: residual
+            ))
+        }
+
+        return (components, total)
+    }
+
     // MARK: - Stats overhaul helpers (Phase 1)
 
     // Returns season fantasy rank within each player's position. WR12 etc.
     // Players with no games this season are excluded (no signal to rank).
     static func positionRanks(
-        players: [String: Player], scoring: Scoring
+        players: [String: Player], scoring: Scoring, settings: ScoringSettings? = nil
     ) -> [String: PositionRank] {
         // Group players by position with their season total.
         var byPosition: [String: [(id: String, points: Double)]] = [:]
@@ -720,7 +864,7 @@ enum Fantasy {
             if totals.gamesPlayed == 0 { continue }
             let pos = p.position.uppercased()
             if pos.isEmpty { continue }
-            byPosition[pos, default: []].append((p.id, totals.points(scoring: scoring)))
+            byPosition[pos, default: []].append((p.id, totals.points(scoring: scoring, settings: settings)))
         }
         var out: [String: PositionRank] = [:]
         for (pos, list) in byPosition {
@@ -737,6 +881,85 @@ enum Fantasy {
         return out
     }
 
+    // MARK: - Career (multi-season history)
+
+    // One season's line in a player's career table: that season's counting
+    // totals, fantasy points, and fantasy position rank (computed within the
+    // season's own field) under the chosen scoring preset.
+    struct CareerSeasonLine: Identifiable, Hashable {
+        let season: Int
+        // Teams the player logged a game for that season, in order of first
+        // appearance (handles mid-season trades — usually a single team).
+        let teams: [String]
+        let position: String
+        let gamesPlayed: Int
+        let totals: SeasonTotals
+        let points: Double
+        let pointsPerGame: Double
+        let positionRank: PositionRank?
+        var id: Int { season }
+        var teamLabel: String { teams.isEmpty ? "—" : teams.joined(separator: "/") }
+    }
+
+    // Builds one career line for a player from a single season's snapshot.
+    // Returns nil when the player logged no games that season. Team(s) are
+    // derived from the games (the per-season snapshot's `team` field is the
+    // player's *current* team, not that season's). Pure; the caller supplies
+    // one season snapshot at a time so peak memory stays at one season.
+    static func careerSeasonLine(
+        playerID: String,
+        season: Int,
+        snapshot: [String: Player],
+        scoring: Scoring,
+        settings: ScoringSettings? = nil
+    ) -> CareerSeasonLine? {
+        guard let p = snapshot[playerID] else { return nil }
+        let totals = seasonTotals(p.games)
+        guard totals.gamesPlayed > 0 else { return nil }
+        var teams: [String] = []
+        for g in p.games.sorted(by: { $0.week < $1.week }) where !g.team.isEmpty {
+            if !teams.contains(g.team) { teams.append(g.team) }
+        }
+        let pts = totals.points(scoring: scoring, settings: settings)
+        let rank = positionRanks(players: snapshot, scoring: scoring, settings: settings)[playerID]
+        return CareerSeasonLine(
+            season: season,
+            teams: teams,
+            position: p.position.uppercased(),
+            gamesPlayed: totals.gamesPlayed,
+            totals: totals,
+            points: round2(pts),
+            pointsPerGame: round2(pts / Double(max(totals.gamesPlayed, 1))),
+            positionRank: rank
+        )
+    }
+
+    // Sum a set of per-season totals into one career aggregate.
+    static func combinedTotals(_ totals: [SeasonTotals]) -> SeasonTotals {
+        var t = SeasonTotals()
+        for s in totals {
+            t.gamesPlayed          += s.gamesPlayed
+            t.completions          += s.completions
+            t.attempts             += s.attempts
+            t.passingYards         += s.passingYards
+            t.passingTDs           += s.passingTDs
+            t.passingInterceptions += s.passingInterceptions
+            t.carries              += s.carries
+            t.rushingYards         += s.rushingYards
+            t.rushingTDs           += s.rushingTDs
+            t.receptions           += s.receptions
+            t.targets              += s.targets
+            t.receivingYards       += s.receivingYards
+            t.receivingTDs         += s.receivingTDs
+            t.fumblesLost          += s.fumblesLost
+            t.fantasyPoints        += s.fantasyPoints
+            t.fantasyPointsPPR     += s.fantasyPointsPPR
+            t.fantasyPointsHalfPPR += s.fantasyPointsHalfPPR
+            t.specialPoints        += s.specialPoints
+        }
+        return t
+    }
+
     // MARK: - Trade value (VOR)
 
     // Per-player trade value on a 0–100 scale via Value Over Replacement: a
@@ -746,7 +969,7 @@ enum Fantasy {
     // at that position — starters × teams, with FLEX split across RB/WR/TE — so
     // positional scarcity is baked in (an elite RB outranks an equal-scoring QB
     // in a 1-QB league). Scaled so the league's most valuable player ≈ 100.
-    // Pure: K is valued; team DEF isn't in the player data so it scores 0.
+    // Pure: K and team DEF are valued alongside the offensive positions.
     static func tradeValues(
         players: [String: Player],
         scoring: Scoring,
@@ -772,6 +995,7 @@ enum Fantasy {
             "WR": Double(config.wr) + flexShare,
             "TE": Double(config.te) + flexShare,
             "K":  Double(config.k),
+            "DEF": Double(config.def),
         ]
         var replacement: [String: Double] = [:]
         for (pos, pts) in byPosition {
@@ -833,6 +1057,7 @@ enum Fantasy {
             "WR": Double(config.wr) + flexShare,
             "TE": Double(config.te) + flexShare,
             "K":  Double(config.k),
+            "DEF": Double(config.def),
         ]
         var avgStarter: [String: Double] = [:]
         var replacement: [String: Double] = [:]
@@ -857,7 +1082,7 @@ enum Fantasy {
         // Team weekly-score SD ≈ sqrt(Σ over starter slots of positional variance).
         var teamVar = 0.0
         for (pos, n) in [("QB", config.qb), ("RB", config.rb), ("WR", config.wr),
-                         ("TE", config.te), ("K", config.k)] {
+                         ("TE", config.te), ("K", config.k), ("DEF", config.def)] {
             teamVar += Double(n) * (withinVar[pos] ?? 0)
         }
         if config.flex > 0 {
@@ -883,13 +1108,13 @@ enum Fantasy {
     // .flat when within 10% of season average; .up/.down when meaningfully
     // above/below.
     static func trendDirection(
-        games: [Game], scoring: Scoring, lookback: Int = 3
+        games: [Game], scoring: Scoring, settings: ScoringSettings? = nil, lookback: Int = 3
     ) -> Trend {
         guard games.count >= 2 else { return .flat }
         let sorted = games.sorted { $0.week < $1.week }
         let recent = Array(sorted.suffix(lookback))
-        let recentAvg  = recent.reduce(0.0) { $0 + $1.points(scoring: scoring) } / Double(recent.count)
-        let seasonAvg  = sorted.reduce(0.0) { $0 + $1.points(scoring: scoring) } / Double(sorted.count)
+        let recentAvg  = recent.reduce(0.0) { $0 + $1.points(scoring: scoring, settings: settings) } / Double(recent.count)
+        let seasonAvg  = sorted.reduce(0.0) { $0 + $1.points(scoring: scoring, settings: settings) } / Double(sorted.count)
         if seasonAvg == 0 { return .flat }
         let delta = (recentAvg - seasonAvg) / seasonAvg
         if delta > 0.10  { return .up }
@@ -929,15 +1154,6 @@ enum Fantasy {
             out[id] = copy
         }
         return out
-    }
-
-    // Players not on any roster in this league.
-    static func freeAgents(league: League, players: [String: Player]) -> Set<String> {
-        var rostered: Set<String> = []
-        for t in league.teams { rostered.formUnion(t.roster) }
-        var free: Set<String> = []
-        for id in players.keys where !rostered.contains(id) { free.insert(id) }
-        return free
     }
 
     static func standings(league: League, players: [String: Player]) -> [StandingsRow] {
@@ -1053,6 +1269,124 @@ enum Fantasy {
         return seeds
     }
 
+    // MARK: - Team season stats
+
+    // The best lineup score a team could have started in `week`, using that
+    // week's actual results. The candidate pool is the current roster plus
+    // anyone actually started that week (so a since-dropped starter still
+    // counts — this keeps Max PF ≥ actual PF, i.e. efficiency ≤ 100%). Reserves
+    // (IR/taxi) can't be started unless they were the frozen starter that week.
+    static func optimalWeekPoints(
+        team: FantasyTeam,
+        players: [String: Player],
+        config: RosterConfig,
+        week: Int,
+        scoring: Scoring,
+        settings: ScoringSettings? = nil
+    ) -> Double {
+        let frozen = Set((team.weeklyLineups[week] ?? []).filter { !$0.isEmpty })
+        let taxiReserved = config.taxi > 0 ? Set(team.taxi) : Set<String>()
+        let reserves = Set(team.ir).union(taxiReserved).subtracting(frozen)
+        let pool = Set(team.roster).union(frozen)
+        let ranked = pool
+            .filter { !reserves.contains($0) }
+            .compactMap { pid -> (id: String, position: String, points: Double)? in
+                guard let p = players[pid],
+                      let g = p.games.first(where: { $0.week == week }) else { return nil }
+                return (pid, p.position, g.points(scoring: scoring, settings: settings))
+            }
+            .sorted { $0.points > $1.points }
+        let slots = config.starterSlots
+        var used: Set<String> = []
+        var total = 0.0
+        // Fill FLEX last so a flex-eligible player isn't pulled from a dedicated slot.
+        let order = slots.indices.sorted { i, j in
+            let a = slots[i], b = slots[j]
+            if a == .flex && b != .flex { return false }
+            if b == .flex && a != .flex { return true }
+            return i < j
+        }
+        for i in order {
+            let slot = slots[i]
+            if let pick = ranked.first(where: { !used.contains($0.id) && slot.accepts(position: $0.position) }) {
+                total += pick.points
+                used.insert(pick.id)
+            }
+        }
+        return round2(total)
+    }
+
+    // Richer per-team season stats over the same regular-season, games-started
+    // weeks the standings count: PF, PA, Max PF (optimal), best/worst week, and
+    // a schedule-independent all-play record. Sorted by PF descending.
+    static func teamSeasonStats(league: League, players: [String: Player]) -> [TeamSeasonStats] {
+        struct Acc {
+            var name = ""
+            var games = 0
+            var pf = 0.0
+            var pa = 0.0
+            var maxPF = 0.0
+            var high = 0.0
+            var low = Double.greatestFiniteMagnitude
+            var apW = 0, apL = 0, apT = 0
+        }
+        var acc: [String: Acc] = [:]
+        for team in league.teams { acc[team.id] = Acc(name: team.name) }
+        let teamsByID = Dictionary(uniqueKeysWithValues: league.teams.map { ($0.id, $0) })
+        let settings = league.scoringSettings
+
+        func add(_ id: String, score: Double, against: Double, maxPF: Double) {
+            guard var a = acc[id] else { return }
+            a.games += 1
+            a.pf += score
+            a.pa += against
+            a.maxPF += maxPF
+            a.high = max(a.high, score)
+            a.low = min(a.low, score)
+            acc[id] = a
+        }
+
+        for plan in league.schedule where plan.week <= league.regularSeasonWeeks {
+            // Actual scores for the teams whose matchup has started this week.
+            var weekScores: [(id: String, score: Double)] = []
+            for pair in plan.matchups {
+                guard pair.count == 2,
+                      let home = teamsByID[pair[0]],
+                      let away = teamsByID[pair[1]] else { continue }
+                let h = teamWeekScore(players: players, team: home, config: league.rosterConfig, week: plan.week, scoring: league.scoring, settings: settings)
+                let a = teamWeekScore(players: players, team: away, config: league.rosterConfig, week: plan.week, scoring: league.scoring, settings: settings)
+                guard h.roster.contains(where: { $0.played }) || a.roster.contains(where: { $0.played }) else { continue }
+                let hMax = optimalWeekPoints(team: home, players: players, config: league.rosterConfig, week: plan.week, scoring: league.scoring, settings: settings)
+                let aMax = optimalWeekPoints(team: away, players: players, config: league.rosterConfig, week: plan.week, scoring: league.scoring, settings: settings)
+                add(home.id, score: h.total, against: a.total, maxPF: hMax)
+                add(away.id, score: a.total, against: h.total, maxPF: aMax)
+                weekScores.append((home.id, h.total))
+                weekScores.append((away.id, a.total))
+            }
+            // All-play: compare every team to every other team that played this week.
+            for x in weekScores {
+                for y in weekScores where y.id != x.id {
+                    if x.score > y.score { acc[x.id]!.apW += 1 }
+                    else if x.score < y.score { acc[x.id]!.apL += 1 }
+                    else { acc[x.id]!.apT += 1 }
+                }
+            }
+        }
+
+        return league.teams.map { team -> TeamSeasonStats in
+            let a = acc[team.id] ?? Acc(name: team.name)
+            return TeamSeasonStats(
+                id: team.id, name: a.name, games: a.games,
+                pointsFor: round2(a.pf), pointsAgainst: round2(a.pa),
+                maxPointsFor: round2(a.maxPF),
+                high: round2(a.games > 0 ? a.high : 0),
+                low: round2(a.games > 0 ? a.low : 0),
+                allPlayWins: a.apW, allPlayLosses: a.apL, allPlayTies: a.apT
+            )
+        }
+        .sorted { $0.pointsFor > $1.pointsFor }
+    }
+
     // MARK: - Playoffs
 
     // Standard single-elimination seeding order for a bracket of `size`
@@ -1106,19 +1440,28 @@ enum Fantasy {
         let bracketSize = 1 << rounds
         let byesCount = bracketSize - p
         let startWeek = league.playoffStartWeek
+        let weeksPerRound = max(1, league.weeksPerRound)
         let asOfWeek = currentWeek(players: players)
 
         // An entrant flowing into a round: a concrete team (by seed), a bye, or
         // an undecided "winner of the feeding game".
         struct Entrant { var teamID: String?; var seed: Int?; var isBye: Bool }
 
-        func score(_ teamID: String, week: Int) -> (pts: Double, played: Bool) {
+        // A round's score is the combined score over its weeks (1 or 2). Played
+        // is true once any of those weeks has results.
+        func score(_ teamID: String, weeks: ClosedRange<Int>) -> (pts: Double, played: Bool) {
             guard let t = teamsByID[teamID] else { return (0, false) }
-            let s = teamWeekScore(
-                players: players, team: t, config: league.rosterConfig,
-                week: week, scoring: league.scoring, settings: settings
-            )
-            return (s.total, s.roster.contains { $0.played })
+            var total = 0.0
+            var played = false
+            for w in weeks {
+                let s = teamWeekScore(
+                    players: players, team: t, config: league.rosterConfig,
+                    week: w, scoring: league.scoring, settings: settings
+                )
+                total += s.total
+                if s.roster.contains(where: { $0.played }) { played = true }
+            }
+            return (round2(total), played)
         }
 
         func roundName(_ r: Int) -> String {
@@ -1142,7 +1485,9 @@ enum Fantasy {
         var runnerUpID: String? = nil
 
         for r in 1...rounds {
-            let week = startWeek + (r - 1)
+            let week = startWeek + (r - 1) * weeksPerRound
+            let endWeek = week + weeksPerRound - 1
+            let roundWeeks = week...endWeek
             let weekReached = asOfWeek >= week
             var games: [PlayoffGame] = []
             var next: [Entrant] = []
@@ -1175,7 +1520,7 @@ enum Fantasy {
                                             placeholder: "TBD", points: nil, won: false),
                                 false, 0, false)
                     }
-                    let s = weekReached ? score(tid, week: week) : (pts: 0.0, played: false)
+                    let s = weekReached ? score(tid, weeks: roundWeeks) : (pts: 0.0, played: false)
                     return (PlayoffSide(teamID: tid, teamName: nameByID[tid], seed: e.seed,
                                         placeholder: nil,
                                         points: s.played ? round2(s.pts) : nil, won: false),
@@ -1186,8 +1531,9 @@ enum Fantasy {
                 let bottom = makeSide(b)
                 let bothKnown = top.decided && bottom.decided
                 let anyPlayed = top.played || bottom.played
-                // Decided once the week's games are in (or the week has fully passed).
-                let resolved = bothKnown && anyPlayed && (top.pts != bottom.pts || week < asOfWeek)
+                // Decided once the round's games are in (or the round has fully
+                // passed — for a 2-week round that means past its second week).
+                let resolved = bothKnown && anyPlayed && (top.pts != bottom.pts || asOfWeek > endWeek)
 
                 var winnerID: String? = nil
                 var topSide = top.side
@@ -1225,7 +1571,7 @@ enum Fantasy {
                 }
             }
 
-            roundsOut.append(PlayoffRound(round: r, week: week, name: roundName(r), games: games))
+            roundsOut.append(PlayoffRound(round: r, week: week, endWeek: endWeek, name: roundName(r), games: games))
 
             // Re-seed the field for the next round when configured: the highest
             // remaining seed faces the lowest. Only possible once every advancing
@@ -1333,6 +1679,31 @@ enum Fantasy {
             if let proj = project(playerID: id, context: context, positionMeans: means) {
                 out[id] = proj
             }
+        }
+        return out
+    }
+
+    // Lifts precomputed projections out of a preseason projected snapshot for
+    // one week: each player's synthetic game for `week` becomes a
+    // PlayerProjection. The raw preseason snapshot has no games to project from,
+    // so the live projectAll pass returns nothing there — this lets the league
+    // Lineup/Matchup screens show the same numbers the browse surfaces already
+    // render off the projected snapshot. Only `points`/`opponent` are meaningful;
+    // the band/multiplier fields aren't surfaced for preseason rows.
+    static func projectionsFromSnapshot(
+        _ snapshot: [String: Player], season: Int, week: Int, scoring: Scoring
+    ) -> [String: PlayerProjection] {
+        var out: [String: PlayerProjection] = [:]
+        for (id, p) in snapshot where isFantasyPosition(p.position) {
+            guard let g = p.games.first(where: { $0.week == week }) else { continue }
+            let pts = round2(g.points(scoring: scoring))
+            out[id] = PlayerProjection(
+                playerID: id, season: season, week: week,
+                opponent: g.opponent, isHome: false,
+                points: pts, base: pts,
+                matchupMult: 1, scriptMult: 1, availability: 1,
+                low: pts, high: pts
+            )
         }
         return out
     }

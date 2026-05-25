@@ -16,6 +16,9 @@ struct SimulationOverviewView: View {
     @State private var inactivesAtWeek: Set<String> = []
     @State private var loaded: Bool = false
     @State private var scoreboardWeek: Int? = nil
+    // Cached so the (heavy) optimal-lineup math runs once per appearance/week
+    // change rather than on every SwiftUI render of the team-stats card.
+    @State private var teamStats: [TeamSeasonStats] = []
 
     private var currentWeek: Int { league.simulatedWeek ?? 0 }
     private var scheduleLen: Int { league.schedule.count }
@@ -47,6 +50,7 @@ struct SimulationOverviewView: View {
             standingsSnapshot
             scoreboardCard
             standingsCard
+            teamStatsCard
             informationEnvironment
         }
         .task(id: "\(league.id)-\(currentWeek)") {
@@ -241,14 +245,12 @@ struct SimulationOverviewView: View {
             scoreboardSide(team: teamByID(m.home.teamID), name: m.home.name,
                            points: m.home.points, alignment: .leading,
                            winning: leader == m.home.teamID,
-                           losing: m.played && leader != nil && leader != m.home.teamID,
-                           played: m.played)
+                           losing: m.played && leader != nil && leader != m.home.teamID)
             Text("VS").ffEyebrow(color: FFColor.textTertiary)
             scoreboardSide(team: teamByID(m.away.teamID), name: m.away.name,
                            points: m.away.points, alignment: .trailing,
                            winning: leader == m.away.teamID,
-                           losing: m.played && leader != nil && leader != m.away.teamID,
-                           played: m.played)
+                           losing: m.played && leader != nil && leader != m.away.teamID)
         }
         .padding(.vertical, FFSpace.s)
         .ffHairlineBottom()
@@ -256,7 +258,7 @@ struct SimulationOverviewView: View {
 
     private func scoreboardSide(team: FantasyTeam?, name: String, points: Double,
                                 alignment: HorizontalAlignment, winning: Bool,
-                                losing: Bool = false, played: Bool) -> some View {
+                                losing: Bool = false) -> some View {
         let frameAlign: Alignment = (alignment == .leading) ? .leading : .trailing
         let label = team?.shortLabel ?? name
         return VStack(alignment: alignment, spacing: 4) {
@@ -267,7 +269,7 @@ struct SimulationOverviewView: View {
                     if alignment == .leading, let team { TeamCrestView(team: team, size: 22) }
                     Text(label)
                         .font(.ffBody)
-                        .foregroundStyle(winning ? FFColor.textPrimary : FFColor.textSecondary)
+                        .foregroundStyle(FFColor.textPrimary)
                         .lineLimit(1)
                         .multilineTextAlignment(alignment == .leading ? .leading : .trailing)
                     if alignment == .trailing, let team { TeamCrestView(team: team, size: 22) }
@@ -276,11 +278,12 @@ struct SimulationOverviewView: View {
             }
             .buttonStyle(.plain)
             .disabled(team == nil)
+            // Win/loss tints the score; an unplayed 0.0 stays primary (it's
+            // upcoming, not deactivated) rather than greyed out.
             Text(points.fpString)
                 .font(.ffStatMedium)
                 .foregroundStyle(winning ? FFColor.accent
-                                 : (losing ? FFColor.negative
-                                    : (played ? FFColor.textPrimary : FFColor.textTertiary)))
+                                 : (losing ? FFColor.negative : FFColor.textPrimary))
         }
         .frame(maxWidth: .infinity, alignment: frameAlign)
     }
@@ -294,7 +297,7 @@ struct SimulationOverviewView: View {
                 if let team { TeamCrestView(team: team, size: 22) }
                 Text(team?.shortLabel ?? bye.name)
                     .font(.ffBody)
-                    .foregroundStyle(FFColor.textSecondary)
+                    .foregroundStyle(FFColor.textPrimary)
                 Spacer()
                 Text("BYE")
                     .font(.ffMicro.bold())
@@ -354,6 +357,85 @@ struct SimulationOverviewView: View {
             Rectangle().fill(FFColor.negative.opacity(0.55)).frame(height: 1)
         }
         .padding(.vertical, 4)
+    }
+
+    // MARK: - Team stats
+
+    // Advanced per-team season stats: PF/PA, Max PF (best possible lineup),
+    // Max PF % (efficiency), PPG, best/worst week, and a schedule-independent
+    // all-play record. Scrolls horizontally so the full column set fits on phone.
+    private var teamStatsCard: some View {
+        let stats = teamStats
+        let uid = app.session?.userID
+        return VStack(alignment: .leading, spacing: FFSpace.s) {
+            Text("TEAM STATS").ffEyebrow()
+            ScrollView(.horizontal, showsIndicators: false) {
+                VStack(spacing: 0) {
+                    statsHeaderRow
+                    ForEach(stats) { s in
+                        teamStatsRow(s, isMine: teamByID(s.id)?.ownerID == uid)
+                    }
+                }
+            }
+            Text("Max PF = best possible lineup each week. Max PF % = scoring efficiency. "
+                 + "All-play = record vs. every team each week (luck-neutral).")
+                .font(.ffMicro)
+                .foregroundStyle(FFColor.textTertiary)
+        }
+        .ffCard()
+    }
+
+    // Column widths shared by the header and data rows so they line up.
+    private static let statCols: [(title: String, width: CGFloat)] = [
+        ("PF", 58), ("PA", 58), ("MAX PF", 64), ("MAX %", 56),
+        ("PPG", 56), ("HI", 52), ("LO", 52), ("ALL-PLAY", 72)
+    ]
+    private static let teamColWidth: CGFloat = 128
+
+    private var statsHeaderRow: some View {
+        HStack(spacing: 0) {
+            Text("TEAM").font(.ffMicro).foregroundStyle(FFColor.textTertiary)
+                .frame(width: Self.teamColWidth, alignment: .leading)
+            ForEach(Self.statCols.indices, id: \.self) { i in
+                Text(Self.statCols[i].title)
+                    .font(.ffMicro).foregroundStyle(FFColor.textTertiary)
+                    .frame(width: Self.statCols[i].width, alignment: .trailing)
+            }
+        }
+        .padding(.vertical, 6)
+        .ffHairlineBottom()
+    }
+
+    private func teamStatsRow(_ s: TeamSeasonStats, isMine: Bool) -> some View {
+        let team = teamByID(s.id)
+        let cells = [
+            s.pointsFor.fpString,
+            s.pointsAgainst.fpString,
+            s.maxPointsFor.fpString,
+            String(format: "%.0f%%", s.efficiency * 100),
+            s.pointsPerGame.fpString,
+            s.high.fpString,
+            s.low.fpString,
+            s.allPlayRecord
+        ]
+        return HStack(spacing: 0) {
+            HStack(spacing: 6) {
+                if let team { TeamCrestView(team: team, size: 22) }
+                Text(team?.displayAbbreviation ?? s.name)
+                    .font(.ffBody)
+                    .foregroundStyle(isMine ? FFColor.accent : FFColor.textPrimary)
+                    .lineLimit(1)
+            }
+            .frame(width: Self.teamColWidth, alignment: .leading)
+            ForEach(cells.indices, id: \.self) { i in
+                Text(cells[i])
+                    .font(.ffStatSmall)
+                    .foregroundStyle(FFColor.textPrimary)
+                    .frame(width: Self.statCols[i].width, alignment: .trailing)
+            }
+        }
+        .padding(.vertical, FFSpace.s)
+        .ffHairlineBottom()
     }
 
     private func standingsRow(_ row: StandingsRow, isMine: Bool) -> some View {
@@ -444,7 +526,8 @@ struct SimulationOverviewView: View {
                 VStack(spacing: 0) {
                     ForEach(top, id: \.playerID) { t in
                         trendRow(t, name: snapshot[t.playerID]?.name ?? t.playerID,
-                                 position: snapshot[t.playerID]?.position)
+                                 position: snapshot[t.playerID]?.position,
+                                 headshotURL: snapshot[t.playerID]?.headshotURL ?? "")
                     }
                 }
             }
@@ -452,8 +535,9 @@ struct SimulationOverviewView: View {
         .ffCard()
     }
 
-    private func trendRow(_ t: TrendingPlayer, name: String, position: String?) -> some View {
+    private func trendRow(_ t: TrendingPlayer, name: String, position: String?, headshotURL: String) -> some View {
         HStack(spacing: FFSpace.s) {
+            PlayerAvatar(url: headshotURL, fallback: name.initialsFromName, size: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                 if let p = position, !p.isEmpty {
@@ -491,7 +575,8 @@ struct SimulationOverviewView: View {
                         ForEach(top, id: \.playerID) { inj in
                             injuryRow(inj, name: snapshot[inj.playerID]?.name ?? inj.playerID,
                                       position: snapshot[inj.playerID]?.position,
-                                      team: snapshot[inj.playerID]?.team)
+                                      team: snapshot[inj.playerID]?.team,
+                                      headshotURL: snapshot[inj.playerID]?.headshotURL ?? "")
                         }
                     }
                 }
@@ -500,8 +585,9 @@ struct SimulationOverviewView: View {
         .ffCard()
     }
 
-    private func injuryRow(_ inj: Injury, name: String, position: String?, team: String?) -> some View {
+    private func injuryRow(_ inj: Injury, name: String, position: String?, team: String?, headshotURL: String) -> some View {
         HStack(spacing: FFSpace.s) {
+            PlayerAvatar(url: headshotURL, fallback: name.initialsFromName, size: 32)
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                 HStack(spacing: 4) {
@@ -548,6 +634,10 @@ struct SimulationOverviewView: View {
     private func refreshContext() async {
         loaded = false
         defer { loaded = true }
+        // Compute the team-stats table once here (it runs optimalWeekPoints over
+        // every team-week) instead of inline in the card's body on each render.
+        let statsPlayers = Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
+        self.teamStats = Fantasy.teamSeasonStats(league: league, players: statsPlayers)
         if league.isTest && currentWeek == 0 {
             trending = []
             injuriesAtWeek = [:]

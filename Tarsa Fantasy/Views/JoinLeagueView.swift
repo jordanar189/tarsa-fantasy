@@ -92,8 +92,8 @@ struct JoinLeagueView: View {
                     if lookingUp { ProgressView().tint(FFColor.bg) }
                     else { Text("Find league") }
                 }
-                .ffPrimaryButton(disabled: code.count != 6)
             }
+            .ffPrimaryButton(disabled: code.count != 6)
             .disabled(code.count != 6 || lookingUp)
 
             Spacer()

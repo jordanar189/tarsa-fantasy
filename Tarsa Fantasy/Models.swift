@@ -1,6 +1,6 @@
 import Foundation
 
-enum AppTab: String, Hashable { case nfl, league, lineup, matchup }
+enum AppTab: String, Hashable { case league, lineup, matchup, players }
 
 // Persisted UI theme. `system` follows the device setting; `light`/`dark`
 // force the app into that scheme regardless of the device. Default is
@@ -78,15 +78,21 @@ struct RosterConfig: Codable, Hashable {
     // accepts injured (OUT/IR/PUP/etc.) players. IR players never score and
     // aren't drafted into; membership is tracked on FantasyTeam.ir.
     var ir: Int
+    // Taxi (practice) squad slots. Like IR, extra capacity beyond the active
+    // roster: taxi players never score and don't count against the active size.
+    // Eligibility is by NFL experience — only players with at most
+    // `taxiMaxExperience` years (0 = rookies only) can be stashed. 0 slots = off.
+    var taxi: Int
+    var taxiMaxExperience: Int
 
     static let `default` = RosterConfig(qb: 1, rb: 2, wr: 2, te: 1, flex: 1, k: 1, def: 1, bench: 6, ir: 0)
 
     var starterCount: Int { qb + rb + wr + te + flex + k + def }
     // Active roster size (starters + bench). Drives drafting and roster limits.
-    // IR is deliberately excluded — IR players sit outside the active roster.
+    // IR and taxi are deliberately excluded — they sit outside the active roster.
     var totalSize: Int { starterCount + bench }
-    // Active roster plus IR — the maximum number of players a team can hold.
-    var fullSize: Int { totalSize + ir }
+    // Active roster plus reserves (IR + taxi) — the max players a team can hold.
+    var fullSize: Int { totalSize + ir + taxi }
 
     // Slots in display order, starters first then bench. Index into this array
     // matches the index of the matching entry in FantasyTeam.starters.
@@ -106,12 +112,16 @@ struct RosterConfig: Codable, Hashable {
     var starterSlots: [LineupSlot] { Array(slots.prefix(starterCount)) }
 
     init(qb: Int = 1, rb: Int = 2, wr: Int = 2, te: Int = 1,
-         flex: Int = 1, k: Int = 1, def: Int = 1, bench: Int = 6, ir: Int = 0) {
+         flex: Int = 1, k: Int = 1, def: Int = 1, bench: Int = 6, ir: Int = 0,
+         taxi: Int = 0, taxiMaxExperience: Int = 0) {
         self.qb = qb; self.rb = rb; self.wr = wr; self.te = te
         self.flex = flex; self.k = k; self.def = def; self.bench = bench; self.ir = ir
+        self.taxi = taxi; self.taxiMaxExperience = taxiMaxExperience
     }
 
-    private enum CodingKeys: String, CodingKey { case qb, rb, wr, te, flex, k, def, bench, ir }
+    private enum CodingKeys: String, CodingKey {
+        case qb, rb, wr, te, flex, k, def, bench, ir, taxi, taxiMaxExperience
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -124,6 +134,8 @@ struct RosterConfig: Codable, Hashable {
         def   = try c.decodeIfPresent(Int.self, forKey: .def)   ?? 1
         bench = try c.decodeIfPresent(Int.self, forKey: .bench) ?? 6
         ir    = try c.decodeIfPresent(Int.self, forKey: .ir)    ?? 0
+        taxi  = try c.decodeIfPresent(Int.self, forKey: .taxi)  ?? 0
+        taxiMaxExperience = try c.decodeIfPresent(Int.self, forKey: .taxiMaxExperience) ?? 0
     }
 }
 
@@ -143,6 +155,20 @@ struct ScoringSettings: Codable, Hashable {
     var receivingTD: Double
     var reception: Double               // PPR knob
     var fumbleLost: Double
+    // Kicking. Field goals score by distance; PATs and misses are flat.
+    var fgUnder40: Double               // FG 0–39 yds
+    var fg40to49: Double
+    var fg50plus: Double
+    var patMade: Double
+    var fgMissed: Double                // penalty per missed FG (negative)
+    var patMissed: Double               // penalty per missed PAT (negative)
+    // Team defense (DST). Event values are per-occurrence; the points-allowed
+    // tier bonus is standard (Game.pointsAllowedBonus).
+    var defSack: Double
+    var defInterception: Double
+    var defFumbleRecovery: Double
+    var defTouchdown: Double
+    var defSafety: Double
 
     static let standard = ScoringSettings(
         passingYardsPerPoint: 25, passingTD: 4, interception: -2,
@@ -187,13 +213,21 @@ struct ScoringSettings: Codable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case passingYardsPerPoint, passingTD, interception,
              rushingYardsPerPoint, rushingTD, receivingYardsPerPoint,
-             receivingTD, reception, fumbleLost
+             receivingTD, reception, fumbleLost,
+             fgUnder40, fg40to49, fg50plus, patMade, fgMissed, patMissed,
+             defSack, defInterception, defFumbleRecovery, defTouchdown, defSafety
     }
 
+    // New params default to standard K/DST so existing call sites (the offense
+    // presets) and decoded leagues pick up the defensive/kicking weights for free.
     init(passingYardsPerPoint: Double, passingTD: Double, interception: Double,
          rushingYardsPerPoint: Double, rushingTD: Double,
          receivingYardsPerPoint: Double, receivingTD: Double,
-         reception: Double, fumbleLost: Double) {
+         reception: Double, fumbleLost: Double,
+         fgUnder40: Double = 3, fg40to49: Double = 4, fg50plus: Double = 5,
+         patMade: Double = 1, fgMissed: Double = -1, patMissed: Double = -1,
+         defSack: Double = 1, defInterception: Double = 2, defFumbleRecovery: Double = 2,
+         defTouchdown: Double = 6, defSafety: Double = 2) {
         self.passingYardsPerPoint = passingYardsPerPoint
         self.passingTD = passingTD
         self.interception = interception
@@ -203,6 +237,17 @@ struct ScoringSettings: Codable, Hashable {
         self.receivingTD = receivingTD
         self.reception = reception
         self.fumbleLost = fumbleLost
+        self.fgUnder40 = fgUnder40
+        self.fg40to49 = fg40to49
+        self.fg50plus = fg50plus
+        self.patMade = patMade
+        self.fgMissed = fgMissed
+        self.patMissed = patMissed
+        self.defSack = defSack
+        self.defInterception = defInterception
+        self.defFumbleRecovery = defFumbleRecovery
+        self.defTouchdown = defTouchdown
+        self.defSafety = defSafety
     }
 
     init(from decoder: Decoder) throws {
@@ -217,6 +262,17 @@ struct ScoringSettings: Codable, Hashable {
         receivingTD            = try c.decodeIfPresent(Double.self, forKey: .receivingTD)            ?? d.receivingTD
         reception              = try c.decodeIfPresent(Double.self, forKey: .reception)              ?? d.reception
         fumbleLost             = try c.decodeIfPresent(Double.self, forKey: .fumbleLost)             ?? d.fumbleLost
+        fgUnder40         = try c.decodeIfPresent(Double.self, forKey: .fgUnder40)         ?? d.fgUnder40
+        fg40to49          = try c.decodeIfPresent(Double.self, forKey: .fg40to49)          ?? d.fg40to49
+        fg50plus          = try c.decodeIfPresent(Double.self, forKey: .fg50plus)          ?? d.fg50plus
+        patMade           = try c.decodeIfPresent(Double.self, forKey: .patMade)           ?? d.patMade
+        fgMissed          = try c.decodeIfPresent(Double.self, forKey: .fgMissed)          ?? d.fgMissed
+        patMissed         = try c.decodeIfPresent(Double.self, forKey: .patMissed)         ?? d.patMissed
+        defSack           = try c.decodeIfPresent(Double.self, forKey: .defSack)           ?? d.defSack
+        defInterception   = try c.decodeIfPresent(Double.self, forKey: .defInterception)   ?? d.defInterception
+        defFumbleRecovery = try c.decodeIfPresent(Double.self, forKey: .defFumbleRecovery) ?? d.defFumbleRecovery
+        defTouchdown      = try c.decodeIfPresent(Double.self, forKey: .defTouchdown)      ?? d.defTouchdown
+        defSafety         = try c.decodeIfPresent(Double.self, forKey: .defSafety)         ?? d.defSafety
     }
 }
 
@@ -241,15 +297,41 @@ struct Game: Codable, Hashable, Identifiable {
     var fantasyPoints: Double = 0
     var fantasyPointsPPR: Double = 0
     var fantasyPointsHalfPPR: Double = 0
+    // Kicking inputs (made FGs bucketed by distance + PATs + misses). Non-zero
+    // only on kicker rows; nflverse's fantasy_points is offense-only, so kicker
+    // points are computed here from these instead.
+    var fieldGoals0_19: Double = 0
+    var fieldGoals20_29: Double = 0
+    var fieldGoals30_39: Double = 0
+    var fieldGoals40_49: Double = 0
+    var fieldGoals50_59: Double = 0
+    var fieldGoals60Plus: Double = 0
+    var fieldGoalsMissed: Double = 0
+    var extraPointsMade: Double = 0
+    var extraPointsMissed: Double = 0
+    // Team-defense (DST) inputs, aggregated per team-week onto the DEF_<TEAM>
+    // row. `pointsAllowed` is non-nil only on those rows — it both feeds the
+    // points-allowed tier and flags the row as a team defense.
+    var defSacks: Double = 0
+    var defInterceptions: Double = 0
+    var defFumbleRecoveries: Double = 0
+    var defTouchdowns: Double = 0
+    var defSafeties: Double = 0
+    var pointsAllowed: Double? = nil
 
     var id: String { "\(season)-\(week)-\(team)" }
 
-    func points(scoring: Scoring) -> Double {
+    // Offensive points from nflverse's precomputed field for the named preset.
+    private func presetBase(_ scoring: Scoring) -> Double {
         switch scoring {
         case .standard: return fantasyPoints
         case .ppr:      return fantasyPointsPPR
         case .half:     return fantasyPointsHalfPPR
         }
+    }
+
+    func points(scoring: Scoring) -> Double {
+        presetBase(scoring) + specialPoints
     }
 
     func points(settings: ScoringSettings) -> Double {
@@ -259,7 +341,7 @@ struct Game: Codable, Hashable, Identifiable {
             rushingYards: rushingYards, rushingTDs: rushingTDs,
             receivingYards: receivingYards, receivingTDs: receivingTDs,
             receptions: receptions, fumblesLost: fumblesLost
-        )
+        ) + specialPoints(settings)
     }
 
     // Single funnel for league scoring: when custom settings are present and
@@ -270,6 +352,50 @@ struct Game: Codable, Hashable, Identifiable {
             return points(settings: settings)
         }
         return points(scoring: scoring)
+    }
+
+    // Kicker + team-defense points from the raw stat line, position-independent:
+    // any player credited with the action scores it (a kicker who runs scores
+    // rushing via the offensive path; a TE who kicks scores the FG here). Each
+    // game row carries stats for one role, so at most one term is non-zero.
+    func specialPoints(_ s: ScoringSettings) -> Double { kickerPoints(s) + defensePoints(s) }
+
+    // Default (standard-weight) special points — used by season aggregation,
+    // which is league-agnostic. Per-game league scoring threads real settings.
+    var specialPoints: Double { specialPoints(.standard) }
+
+    // Distance-tiered kicker scoring driven by the league's settings.
+    func kickerPoints(_ s: ScoringSettings) -> Double {
+        (fieldGoals0_19 + fieldGoals20_29 + fieldGoals30_39) * s.fgUnder40
+            + fieldGoals40_49 * s.fg40to49
+            + (fieldGoals50_59 + fieldGoals60Plus) * s.fg50plus
+            + extraPointsMade * s.patMade
+            + fieldGoalsMissed * s.fgMissed
+            + extraPointsMissed * s.patMissed
+    }
+
+    // Team-defense scoring. Only DST rows (non-nil pointsAllowed) score; event
+    // values come from the league settings, plus the points-allowed tier bonus.
+    func defensePoints(_ s: ScoringSettings) -> Double {
+        guard let pa = pointsAllowed else { return 0 }
+        return defSacks * s.defSack
+            + defInterceptions * s.defInterception
+            + defFumbleRecoveries * s.defFumbleRecovery
+            + defTouchdowns * s.defTouchdown
+            + defSafeties * s.defSafety
+            + Game.pointsAllowedBonus(pa)
+    }
+
+    static func pointsAllowedBonus(_ pointsAllowed: Double) -> Double {
+        switch pointsAllowed {
+        case ..<1:   return 10   // shutout
+        case ..<7:   return 7
+        case ..<14:  return 4
+        case ..<21:  return 1
+        case ..<28:  return 0
+        case ..<35:  return -1
+        default:     return -4
+        }
     }
 }
 
@@ -419,13 +545,26 @@ struct SeasonTotals: Hashable {
     var fantasyPoints: Double = 0
     var fantasyPointsPPR: Double = 0
     var fantasyPointsHalfPPR: Double = 0
+    // Summed per-game kicker/DST points. Kept as a running sum (not recomputed
+    // from totaled raw stats) because the DST points-allowed tier is per-game,
+    // not additive — summing 30 points allowed across a season ≠ one tier.
+    //
+    // Note: this sum always uses *standard* K/DST weights (it's accumulated from
+    // Game's no-arg `specialPoints`, i.e. `specialPoints(.standard)`). Season
+    // totals feed the league-agnostic surfaces (Players/Rankings tabs, trade
+    // value, WAR), so custom league K/DST weights deliberately don't apply
+    // there. The per-game league paths (teamWeekScore/scoreboard/standings) call
+    // `Game.points(scoring:settings:)` and DO honor custom K/DST weights.
+    var specialPoints: Double = 0
 
     func points(scoring: Scoring) -> Double {
+        let base: Double
         switch scoring {
-        case .standard: return fantasyPoints
-        case .ppr:      return fantasyPointsPPR
-        case .half:     return fantasyPointsHalfPPR
+        case .standard: base = fantasyPoints
+        case .ppr:      base = fantasyPointsPPR
+        case .half:     base = fantasyPointsHalfPPR
         }
+        return base + specialPoints
     }
 
     func points(settings: ScoringSettings) -> Double {
@@ -435,7 +574,7 @@ struct SeasonTotals: Hashable {
             rushingYards: rushingYards, rushingTDs: rushingTDs,
             receivingYards: receivingYards, receivingTDs: receivingTDs,
             receptions: receptions, fumblesLost: fumblesLost
-        )
+        ) + specialPoints
     }
 
     func points(scoring: Scoring, settings: ScoringSettings?) -> Double {
@@ -474,6 +613,9 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
     // Player IDs parked on injured reserve. A subset of `roster`; these never
     // score and don't count against the active roster size.
     var ir: [String]
+    // Player IDs on the taxi (practice) squad. Like IR, a subset of `roster`
+    // that never scores and doesn't count against the active roster size.
+    var taxi: [String]
     // Per-week frozen lineups, keyed by fantasy week. When a week has an entry,
     // that week is scored from it (the lineup the manager locked in for that
     // week); weeks without an entry fall back to the live `starters`. This is
@@ -491,19 +633,19 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
 
     init(id: String, name: String, roster: [String] = [],
          starters: [String] = [], ownerID: String? = nil,
-         ir: [String] = [], weeklyLineups: [Int: [String]] = [:],
+         ir: [String] = [], taxi: [String] = [], weeklyLineups: [Int: [String]] = [:],
          division: Int? = nil,
          logoURL: String? = nil, colorHex: String? = nil,
          abbreviation: String? = nil) {
         self.id = id; self.name = name; self.roster = roster
         self.starters = starters; self.ownerID = ownerID
-        self.ir = ir; self.weeklyLineups = weeklyLineups; self.division = division
+        self.ir = ir; self.taxi = taxi; self.weeklyLineups = weeklyLineups; self.division = division
         self.logoURL = logoURL; self.colorHex = colorHex
         self.abbreviation = abbreviation
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ownerID, ir, weeklyLineups, division, logoURL, colorHex, abbreviation
+        case id, name, roster, starters, ownerID, ir, taxi, weeklyLineups, division, logoURL, colorHex, abbreviation
     }
 
     init(from decoder: Decoder) throws {
@@ -514,6 +656,7 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
         starters = try c.decodeIfPresent([String].self, forKey: .starters) ?? []
         ownerID  = try c.decodeIfPresent(String.self, forKey: .ownerID)
         ir       = try c.decodeIfPresent([String].self, forKey: .ir)       ?? []
+        taxi     = try c.decodeIfPresent([String].self, forKey: .taxi)     ?? []
         weeklyLineups = try c.decodeIfPresent([Int: [String]].self, forKey: .weeklyLineups) ?? [:]
         division = try c.decodeIfPresent(Int.self, forKey: .division)
         logoURL  = try c.decodeIfPresent(String.self, forKey: .logoURL)
@@ -586,6 +729,10 @@ struct League: Codable, Identifiable, Hashable {
     // scoreboard, free agents) to that fantasy week.
     var isTest: Bool
     var simulatedWeek: Int?
+    // Dynasty: when true, rosters are never cleared. Rolling over to the next
+    // season carries every team (owner, branding, and roster) forward instead
+    // of starting fresh the way a standard (redraft) league does.
+    var isDynasty: Bool
     // Multi-season history: parentLeagueID points to the previous season's
     // league (nil for the first season). seasonCompleted flips when the
     // commish runs "Complete season" — that snapshot freezes the standings
@@ -602,6 +749,9 @@ struct League: Codable, Identifiable, Hashable {
     // Re-seed each round (higher seed always faces lowest remaining) vs. a
     // fixed bracket.
     var playoffReseed: Bool
+    // Fantasy weeks each playoff round spans (1 or 2). With 2, a round's result
+    // is the two-week combined score. Drives the playoff week math below.
+    var weeksPerRound: Int
     // Custom per-stat scoring. Nil = use the `scoring` preset's precomputed
     // fields. Non-nil overrides scoring league-wide.
     var scoringSettings: ScoringSettings?
@@ -622,12 +772,14 @@ struct League: Codable, Identifiable, Hashable {
          tradeSettings: TradeSettings = .default,
          isTest: Bool = false,
          simulatedWeek: Int? = nil,
+         isDynasty: Bool = false,
          parentLeagueID: String? = nil,
          seasonCompleted: Bool = false,
          seasonCompletedAt: Date? = nil,
          regularSeasonWeeks: Int? = nil,
          playoffTeams: Int = 6,
          playoffReseed: Bool = true,
+         weeksPerRound: Int = 1,
          scoringSettings: ScoringSettings? = nil,
          divisionNames: [String] = [],
          championTeamID: String? = nil,
@@ -642,6 +794,7 @@ struct League: Codable, Identifiable, Hashable {
         self.tradeSettings = tradeSettings
         self.isTest = isTest
         self.simulatedWeek = simulatedWeek
+        self.isDynasty = isDynasty
         self.parentLeagueID = parentLeagueID
         self.seasonCompleted = seasonCompleted
         self.seasonCompletedAt = seasonCompletedAt
@@ -650,6 +803,7 @@ struct League: Codable, Identifiable, Hashable {
         self.regularSeasonWeeks = regularSeasonWeeks ?? schedule.count
         self.playoffTeams = playoffTeams
         self.playoffReseed = playoffReseed
+        self.weeksPerRound = min(max(weeksPerRound, 1), 2)
         self.scoringSettings = scoringSettings
         self.divisionNames = divisionNames
         self.championTeamID = championTeamID
@@ -667,6 +821,22 @@ struct League: Codable, Identifiable, Hashable {
     // First postseason week (one past the regular season). Only meaningful
     // when playoffTeams > 0.
     var playoffStartWeek: Int { regularSeasonWeeks + 1 }
+
+    // Single-elimination rounds needed for the field (0 when no postseason).
+    var playoffRounds: Int {
+        guard playoffTeams >= 2 else { return 0 }
+        return max(1, Int(ceil(log2(Double(playoffTeams)))))
+    }
+
+    // Last postseason (championship) week, accounting for weeks-per-round.
+    var playoffEndWeek: Int {
+        guard playoffTeams >= 2 else { return regularSeasonWeeks }
+        return playoffStartWeek + playoffRounds * weeksPerRound - 1
+    }
+
+    // The NFL regular season runs 18 weeks; nflverse REG player stats only exist
+    // through week 18, so the postseason can't extend past it.
+    static let maxSeasonWeek = 18
 }
 
 // One frozen snapshot per (league, season). Created by complete_league_season
@@ -799,6 +969,11 @@ struct ChatPayload: Codable, Hashable, Sendable {
     var options: [String]?
     var players: [String]?
     var seeking: [String]?
+    // Player IDs parallel to `players` / `seeking` (which hold names). Added
+    // later, so messages posted before this decode them as nil and render
+    // their names as plain, non-tappable text.
+    var playerIDs: [String]?
+    var seekingIDs: [String]?
     var note: String?
     var teamName: String?
     var games: [PickGame]?
@@ -810,7 +985,8 @@ struct ChatPayload: Codable, Hashable, Sendable {
          players: [String]? = nil, seeking: [String]? = nil,
          note: String? = nil, teamName: String? = nil,
          games: [PickGame]? = nil, allowMultiple: Bool? = nil,
-         allowAddOptions: Bool? = nil, closesAt: Double? = nil) {
+         allowAddOptions: Bool? = nil, closesAt: Double? = nil,
+         playerIDs: [String]? = nil, seekingIDs: [String]? = nil) {
         self.question = question
         self.options = options
         self.players = players
@@ -821,6 +997,8 @@ struct ChatPayload: Codable, Hashable, Sendable {
         self.allowMultiple = allowMultiple
         self.allowAddOptions = allowAddOptions
         self.closesAt = closesAt
+        self.playerIDs = playerIDs
+        self.seekingIDs = seekingIDs
     }
 }
 
@@ -930,6 +1108,7 @@ struct LeagueSummary: Identifiable, Hashable {
     let joinCode: String
     let creatorID: String
     let isTest: Bool
+    let isDynasty: Bool
 }
 
 struct Profile: Identifiable, Hashable, Sendable {
@@ -983,6 +1162,17 @@ struct AdminNotification: Identifiable, Hashable, Sendable {
     let sentAt: Date?
     let sentCount: Int
     let failCount: Int
+    let createdAt: Date
+}
+
+// One message in a feedback item's discussion thread. Visible to the feedback
+// author and admins; posted by either side.
+struct FeedbackComment: Identifiable, Hashable, Sendable {
+    let id: String
+    let feedbackID: String
+    let userID: String
+    let username: String
+    let content: String
     let createdAt: Date
 }
 
@@ -1485,6 +1675,95 @@ struct Injury: Hashable {
     }
 }
 
+// MARK: - Injury history (player injury tracker)
+
+// One raw weekly row from the injury_history table (sourced from nflverse
+// injury reports). The same injury spans multiple weekly reports; a run of
+// these collapses into an InjuryEvent for display (see Fantasy.injuryEvents).
+struct InjuryHistoryRow: Hashable, Sendable {
+    let season: Int
+    let week: Int               // 0 = preseason / training-camp report
+    let status: String?         // 'Out','Questionable','Doubtful'; nullable in source
+    let details: String?        // body part, e.g. 'Knee', 'Hamstring'
+    let practiceStatus: String? // 'DNP','LP','FP'
+}
+
+// Coarse body-part grouping for the heat map. Paired groups expose two
+// drawable regions (left + right). The source data carries no laterality, so
+// both sides are lit equally ("mirror both sides").
+enum BodyPartGroup: String, CaseIterable, Hashable, Sendable {
+    case head
+    case shoulder
+    case arm
+    case hand
+    case upperBody
+    case lowerBody
+    case upperLeg
+    case knee
+    case lowerLeg
+    case foot
+
+    var displayName: String {
+        switch self {
+        case .head:      return "Head"
+        case .shoulder:  return "Shoulder"
+        case .arm:       return "Arm"
+        case .hand:      return "Hand"
+        case .upperBody: return "Upper Body"
+        case .lowerBody: return "Lower Body"
+        case .upperLeg:  return "Upper Leg"
+        case .knee:      return "Knee"
+        case .lowerLeg:  return "Lower Leg"
+        case .foot:      return "Foot"
+        }
+    }
+
+    // Drawable regions this group occupies — one for central parts, both
+    // sides for paired limbs.
+    var regions: [BodyRegion] {
+        switch self {
+        case .head:      return [.head]
+        case .upperBody: return [.upperBody]
+        case .lowerBody: return [.lowerBody]
+        case .shoulder:  return [.leftShoulder, .rightShoulder]
+        case .arm:       return [.leftArm, .rightArm]
+        case .hand:      return [.leftHand, .rightHand]
+        case .upperLeg:  return [.leftUpperLeg, .rightUpperLeg]
+        case .knee:      return [.leftKnee, .rightKnee]
+        case .lowerLeg:  return [.leftLowerLeg, .rightLowerLeg]
+        case .foot:      return [.leftFoot, .rightFoot]
+        }
+    }
+}
+
+// A single drawable region on the body silhouette.
+enum BodyRegion: String, CaseIterable, Hashable, Sendable {
+    case head
+    case leftShoulder, rightShoulder
+    case leftArm, rightArm
+    case leftHand, rightHand
+    case upperBody, lowerBody
+    case leftUpperLeg, rightUpperLeg
+    case leftKnee, rightKnee
+    case leftLowerLeg, rightLowerLeg
+    case leftFoot, rightFoot
+}
+
+// A distinct injury: consecutive weekly reports of the same body part
+// collapsed into one event, tagged with the worst status seen across the run.
+struct InjuryEvent: Identifiable, Hashable, Sendable {
+    let group: BodyPartGroup?   // nil when the report couldn't be localized
+    let rawDetail: String       // original report text ("Knee", "Illness", …)
+    let season: Int
+    let startWeek: Int
+    let endWeek: Int
+    let worstStatus: String
+    let severity: Int           // 1 (mild) … 4 (severe); drives the gradient
+
+    var id: String { "\(season)-\(startWeek)-\(endWeek)-\(rawDetail)" }
+    var weeksOut: Int { max(1, endWeek - startWeek + 1) }
+}
+
 // Depth chart entry at a specific (season, week, team). depth = 1 is the
 // starter, 2 is the immediate backup, etc.
 struct DepthChartEntry: Hashable {
@@ -1545,6 +1824,34 @@ struct StandingsRow: Identifiable, Hashable {
     }
 }
 
+// Richer per-team season stats beyond the W-L standings: actual vs. optimal
+// scoring, scoring distribution, and a schedule-independent "all-play" record.
+// Built by Fantasy.teamSeasonStats over the same regular-season weeks the
+// standings count.
+struct TeamSeasonStats: Identifiable, Hashable {
+    let id: String          // team ID
+    let name: String
+    let games: Int
+    let pointsFor: Double            // PF — actual points scored
+    let pointsAgainst: Double        // PA — points scored against
+    let maxPointsFor: Double         // Max PF — sum of each week's optimal lineup
+    let high: Double                 // best single-week score
+    let low: Double                  // worst single-week score
+    // All-play: this team's record if it had played every other team every
+    // week. A luck-neutral measure of strength.
+    let allPlayWins: Int
+    let allPlayLosses: Int
+    let allPlayTies: Int
+
+    // Max PF % — lineup efficiency. 1.0 = started the optimal lineup every week.
+    var efficiency: Double { maxPointsFor > 0 ? pointsFor / maxPointsFor : 0 }
+    var pointsPerGame: Double { games > 0 ? pointsFor / Double(games) : 0 }
+    var allPlayRecord: String {
+        allPlayTies > 0 ? "\(allPlayWins)-\(allPlayLosses)-\(allPlayTies)"
+                        : "\(allPlayWins)-\(allPlayLosses)"
+    }
+}
+
 // MARK: - Playoffs (postseason bracket)
 
 // One side of a bracket game. Either a known team, a bye, or a
@@ -1573,10 +1880,16 @@ struct PlayoffGame: Identifiable, Hashable {
 
 struct PlayoffRound: Identifiable, Hashable {
     let round: Int
-    let week: Int
+    let week: Int              // first week of the round
+    let endWeek: Int           // last week of the round (== week for 1-week rounds)
     let name: String           // "Wild Card", "Semifinals", "Championship"
     let games: [PlayoffGame]
     var id: Int { round }
+
+    // "Week 15" or "Weeks 15–16" depending on round length.
+    var weekLabel: String {
+        endWeek > week ? "Weeks \(week)–\(endWeek)" : "Week \(week)"
+    }
 }
 
 struct PlayoffBracket: Hashable {

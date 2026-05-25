@@ -345,13 +345,13 @@ struct StructuredMessageCard: View {
             if let players = payload.players, !players.isEmpty {
                 VStack(alignment: .leading, spacing: FFSpace.xs) {
                     Text("Offering").ffEyebrow()
-                    FlowChips(items: players, tint: FFColor.accent)
+                    FlowChips(items: players, ids: payload.playerIDs, tint: FFColor.accent)
                 }
             }
             if let seeking = payload.seeking, !seeking.isEmpty {
                 VStack(alignment: .leading, spacing: FFSpace.xs) {
                     Text("Looking for").ffEyebrow()
-                    FlowChips(items: seeking, tint: FFColor.positive)
+                    FlowChips(items: seeking, ids: payload.seekingIDs, tint: FFColor.positive)
                 }
             }
             if let note = payload.note, !note.isEmpty {
@@ -368,11 +368,14 @@ struct StructuredMessageCard: View {
 // native Layout so chips flow onto multiple lines within the bubble width.
 private struct FlowChips: View {
     let items: [String]
+    // Player IDs parallel to `items`. When present, each chip taps through to
+    // the player profile; a nil/short list leaves chips inert (older messages).
+    var ids: [String]? = nil
     var tint: Color = FFColor.textPrimary
 
     var body: some View {
         FlowLayout(spacing: FFSpace.xs) {
-            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                 Text(item)
                     .font(.ffCaption.bold())
                     .foregroundStyle(FFColor.textPrimary)
@@ -380,8 +383,14 @@ private struct FlowChips: View {
                     .padding(.vertical, 4)
                     .background(tint.opacity(0.12), in: Capsule())
                     .overlay(Capsule().strokeBorder(tint.opacity(0.5), lineWidth: 1))
+                    .playerLink(idAt(index))
             }
         }
+    }
+
+    private func idAt(_ index: Int) -> String? {
+        guard let ids, index < ids.count else { return nil }
+        return ids[index]
     }
 }
 

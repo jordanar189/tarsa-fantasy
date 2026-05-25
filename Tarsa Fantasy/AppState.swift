@@ -6,7 +6,7 @@ import Observation
 final class AppState {
 
     // Tab selection
-    var tab: AppTab = .nfl
+    var tab: AppTab = .league
 
     // Globally-presented player profile. Set via showPlayer(_:) so tapping a
     // player name anywhere in the app opens PlayerDetailView, without threading
@@ -54,6 +54,10 @@ final class AppState {
     // Leagues belonging to the signed-in user
     var leagueSummaries: [LeagueSummary] = []
 
+    // Read-only leagues imported from Sleeper. Persisted locally (SleeperStore),
+    // not in Supabase — they're browsed, never played through the live engine.
+    var importedSleeperLeagues: [ImportedLeague] = []
+
     // Set when an invite link is opened. LeaguesView consumes it to present
     // the join sheet pre-filled. Held until the user is signed in and the
     // Leagues tab can pick it up.
@@ -92,10 +96,16 @@ final class AppState {
 
     private let data: NFLDataService
     private let remote: RemoteService
+    private let sleeper: SleeperService
 
-    init(data: NFLDataService = .shared, remote: RemoteService = .shared) {
+    init(data: NFLDataService = .shared, remote: RemoteService = .shared,
+         sleeper: SleeperService = .shared) {
         self.data = data
         self.remote = remote
+        self.sleeper = sleeper
+        // Imported Sleeper leagues are local data; load them synchronously so
+        // the Leagues tab can render them on first paint.
+        importedSleeperLeagues = SleeperStore.shared.loadAll()
         // Subscribe to live score updates pushed by LiveScoresListener; each
         // notification re-pulls the matching season snapshot from the data
         // actor so SwiftUI sees the new fantasy points immediately.
@@ -205,12 +215,30 @@ final class AppState {
         }
         let inj = await injuries(for: league)
         let inactive = await inactives(season: league.season, week: week)
-        let ctx = Fantasy.ProjectionContext(
-            season: league.season, week: week, scoring: league.scoring,
-            players: snapshot, schedule: schedule,
-            dvpByPosition: dvp, injuries: inj, inactives: inactive, config: .default
-        )
-        let projections = Fantasy.projectAll(context: ctx)
+
+        // Preseason: the raw snapshot has no games to project from, so a live
+        // projectAll pass comes back empty. Read projections out of the same
+        // prior-season-seeded projected snapshot the browse/draft surfaces use,
+        // so Lineup/Matchup show the same numbers as the Players tab. `players`
+        // stays the raw snapshot so hasPlayed/actualPoints don't mistake a
+        // projection for a finished game.
+        let projections: [String: PlayerProjection]
+        if isPreseason(season: league.season) {
+            await ensureProjectedSnapshot(season: league.season)
+        }
+        if let projected = projectedBySeason[league.season] {
+            projections = Fantasy.projectionsFromSnapshot(
+                projected, season: league.season, week: week, scoring: league.scoring
+            )
+        } else {
+            let ctx = Fantasy.ProjectionContext(
+                season: league.season, week: week, scoring: league.scoring,
+                players: snapshot, schedule: schedule,
+                dvpByPosition: dvp, injuries: inj, inactives: inactive, config: .default
+            )
+            projections = Fantasy.projectAll(context: ctx)
+        }
+
         return WeekContext(
             week: week, scoring: league.scoring, players: snapshot,
             schedule: schedule, dvpByPosition: dvp, injuries: inj,
@@ -371,6 +399,56 @@ final class AppState {
 
     func selectedPlayers() -> [String: Player] {
         players(season: selectedSeason)
+    }
+
+    // MARK: - Career (multi-season aggregation)
+
+    // A player's per-season career table across every available season, most
+    // recent first, with each season's fantasy points and position rank under
+    // the supplied scoring. Served by the player_career RPC in a single
+    // round-trip (the server aggregates per-season totals + ranks), falling back
+    // to a client-side per-season crunch only if the RPC is unavailable.
+    func careerSeasons(playerID: String, scoring: Scoring, settings: ScoringSettings? = nil) async -> [Fantasy.CareerSeasonLine] {
+        // Fast path: one server-side aggregation round-trip (player_career RPC),
+        // which returns the player's per-season totals + position rank directly.
+        // A thrown error (e.g. the RPC isn't deployed yet) falls back to the
+        // client-side crunch below; a successful empty result is a real "no
+        // career" and is returned as-is.
+        if let lines = try? await data.careerLines(
+            playerID: playerID, scoring: scoring, settings: settings
+        ) {
+            return lines
+        }
+        return await careerSeasonsLocal(playerID: playerID, scoring: scoring, settings: settings)
+    }
+
+    // Fallback career aggregation: build each season's line from the in-memory /
+    // disk / network snapshot, one season at a time. Heavy on a cold cache (a
+    // fetch per season) — used only when the player_career RPC is unavailable.
+    private func careerSeasonsLocal(playerID: String, scoring: Scoring, settings: ScoringSettings? = nil) async -> [Fantasy.CareerSeasonLine] {
+        var lines: [Fantasy.CareerSeasonLine] = []
+        for season in seasons {
+            let inMemory = playersBySeason[season]
+            let line = await Task.detached(priority: .userInitiated) { [data] () -> Fantasy.CareerSeasonLine? in
+                let snapshot: [String: Player]
+                if let inMemory {
+                    snapshot = inMemory
+                } else if let cached = PlayerCacheStore.shared.loadSync(season: season) {
+                    snapshot = cached
+                } else if let fetched = try? await data.players(season: season) {
+                    PlayerCacheStore.shared.save(season: season, players: fetched)
+                    snapshot = fetched
+                } else {
+                    return nil
+                }
+                return Fantasy.careerSeasonLine(
+                    playerID: playerID, season: season,
+                    snapshot: snapshot, scoring: scoring, settings: settings
+                )
+            }.value
+            if let line { lines.append(line) }
+        }
+        return lines.sorted { $0.season > $1.season }
     }
 
     // MARK: - Preseason projection snapshots
@@ -620,8 +698,10 @@ final class AppState {
         regularSeasonWeeks: Int = 14,
         playoffTeams: Int = 6,
         playoffReseed: Bool = true,
+        weeksPerRound: Int = 1,
         divisionNames: [String] = [],
-        scoringSettings: ScoringSettings? = nil
+        scoringSettings: ScoringSettings? = nil,
+        isDynasty: Bool = false
     ) async throws -> League {
         guard let session else { throw AppError.notSignedIn }
         let league = try await remote.createLeague(
@@ -632,8 +712,10 @@ final class AppState {
             regularSeasonWeeks: regularSeasonWeeks,
             playoffTeams: playoffTeams,
             playoffReseed: playoffReseed,
+            weeksPerRound: weeksPerRound,
             divisionNames: divisionNames,
-            scoringSettings: scoringSettings
+            scoringSettings: scoringSettings,
+            isDynasty: isDynasty
         )
         await reloadLeagues()
         await selectLeague(league.id)
@@ -667,6 +749,182 @@ final class AppState {
     func deleteLeague(_ id: String) async {
         try? await remote.deleteLeague(id)
         await reloadLeagues()
+    }
+
+    // MARK: - Sleeper import
+
+    // Current NFL season per Sleeper, used to default the import picker.
+    func sleeperCurrentSeason() async -> Int? {
+        await sleeper.nflState()?.season
+    }
+
+    func sleeperUser(username: String) async throws -> SleeperUserBrief {
+        try await sleeper.user(username: username)
+    }
+
+    func sleeperLeagues(userID: String, season: Int) async throws -> [SleeperLeagueBrief] {
+        try await sleeper.leagues(userID: userID, season: season)
+    }
+
+    // Pulls a Sleeper league and its full season history, persists it locally,
+    // and returns it. Re-importing the same league refreshes it in place.
+    @discardableResult
+    func importSleeperLeague(rootLeagueID: String) async throws -> ImportedLeague {
+        let league = try await sleeper.importLeague(rootLeagueID: rootLeagueID)
+        if let idx = importedSleeperLeagues.firstIndex(where: { $0.id == league.id }) {
+            // Preserve the local-only activation link across a re-import — the
+            // Sleeper API never returns it, so a fresh fetch would drop it and
+            // the league would look un-promoted again.
+            var merged = league
+            merged.activatedLeagueID = importedSleeperLeagues[idx].activatedLeagueID
+            importedSleeperLeagues[idx] = merged
+        } else {
+            importedSleeperLeagues.insert(league, at: 0)
+        }
+        SleeperStore.shared.saveAll(importedSleeperLeagues)
+        return league
+    }
+
+    func deleteImportedSleeperLeague(id: String) {
+        importedSleeperLeagues.removeAll { $0.id == id }
+        SleeperStore.shared.saveAll(importedSleeperLeagues)
+    }
+
+    func importedSleeperLeague(id: String) -> ImportedLeague? {
+        importedSleeperLeagues.first { $0.id == id }
+    }
+
+    // Promotes a read-only Sleeper import into a real, playable Tarsa league
+    // owned by the signed-in user (the "replacement for Sleeper" path). It:
+    //   • creates the live league + teams using the import's latest season —
+    //     scoring, roster slots and regular-season length are carried over;
+    //   • claims the user's chosen team as commissioner and leaves the rest
+    //     open so leaguemates can join with the league's join code;
+    //   • populates every team's current roster from the latest Sleeper season
+    //     (mapped to app player ids) and auto-fills a starting lineup;
+    //   • backfills each completed prior season's final standings into league
+    //     history so the History tab shows past champions and records.
+    // Going-forward scoring uses this app's nflverse engine, so it won't
+    // reproduce Sleeper's historical per-week points exactly.
+    @discardableResult
+    func promoteSleeperLeague(importedID: String, myRosterID: Int, name: String? = nil) async throws -> League {
+        guard let session else { throw AppError.notSignedIn }
+        guard let imported = importedSleeperLeague(id: importedID),
+              let latest = imported.latest,
+              let myTeam = latest.teams.first(where: { $0.rosterID == myRosterID })
+        else { throw AppError.leagueNotFound }
+
+        let scoring = SleeperPromotion.scoring(fromLabel: latest.scoringLabel)
+        let rosterConfig = SleeperPromotion.rosterConfig(from: latest.rosterPositions)
+        let regularSeasonWeeks = SleeperPromotion.regularSeasonWeeks(from: latest)
+        let leagueName: String
+        if let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
+            leagueName = trimmed
+        } else {
+            leagueName = imported.name
+        }
+        let seasonYear = latest.seasonYear
+
+        // Order teams so the user's team is first — createLeague claims index 0
+        // for the creator. Keep the parallel ImportedTeam order to map rosters
+        // back to the created teams (returned in the same sort order). Names are
+        // forced non-empty so createLeague can't drop a blank-named team and
+        // throw the zip below out of alignment.
+        let others = latest.teams.filter { $0.rosterID != myRosterID }
+        let orderedSources = [myTeam] + others
+        func teamName(_ t: ImportedTeam) -> String {
+            let n = t.teamName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return n.isEmpty ? "Team \(t.rosterID)" : n
+        }
+
+        let league = try await remote.createLeague(
+            creatorID: session.userID,
+            name: leagueName,
+            season: seasonYear,
+            scoring: scoring,
+            rosterConfig: rosterConfig,
+            yourTeamName: teamName(myTeam),
+            otherTeamNames: others.map(teamName),
+            regularSeasonWeeks: regularSeasonWeeks
+        )
+
+        // Populating rosters is the core promise, so a failure here is fatal:
+        // collect failures and, if any occur, roll the new league back so the
+        // user gets a clean retry instead of a half-populated league that looks
+        // like it succeeded. Created teams come back sorted by the
+        // [myTeam] + others order we inserted them in.
+        let snapshot = await loadSeason(seasonYear) ?? players(season: seasonYear)
+        let lookup = latest.playerLookup
+        let nameIndex = SleeperPromotion.nameIndex(for: snapshot)
+        var rosterFailures = 0
+        for (created, source) in zip(league.teams, orderedSources) {
+            // Carry the Sleeper team logo over (best-effort — purely cosmetic, so
+            // a failure here must never fail or roll back the promotion). Done
+            // before the empty-roster skip so logo-only teams still get branded.
+            if let logo = SleeperService.fullAvatarURLString(source.avatar) {
+                try? await remote.setTeamLogo(teamID: created.id, logoURL: logo)
+            }
+            let roster = SleeperPromotion.resolveRoster(
+                for: source, lookup: lookup, snapshot: snapshot, nameIndex: nameIndex
+            )
+            guard !roster.isEmpty else { continue }
+            let starters = Fantasy.autoFillLineup(
+                roster: roster, players: snapshot,
+                config: rosterConfig, scoring: scoring
+            )
+            do {
+                _ = try await remote.setRoster(teamID: created.id, roster: roster, starters: starters)
+            } catch {
+                rosterFailures += 1
+            }
+        }
+        guard rosterFailures == 0 else {
+            // Roll back so the user gets a clean retry instead of a partial
+            // league (and so retrying doesn't create a duplicate). Best-effort —
+            // if the delete itself fails we still report the original problem.
+            try? await remote.deleteLeague(league.id)
+            throw AppError.promotionFailed("\(rosterFailures) team roster\(rosterFailures == 1 ? "" : "s")")
+        }
+
+        // Backfill prior seasons' final standings into history. Best-effort: the
+        // league is fully playable without it, so a history-write hiccup must
+        // never block (or undo) an otherwise-successful promotion. Any season
+        // older than the live one is finished, so its standings are final.
+        for season in imported.seasons where season.seasonYear < seasonYear {
+            let standings = SleeperPromotion.standingsRows(for: season)
+            guard !standings.isEmpty else { continue }
+            let leaderName = season.standings.max(by: { $0.pointsFor < $1.pointsFor })?.teamName
+            let champName = season.championRosterID.flatMap { season.teamsByRoster[$0]?.teamName }
+            do {
+                try await remote.archiveImportedSeason(
+                    leagueID: league.id,
+                    season: season.seasonYear,
+                    standings: standings,
+                    scoringLeaderTeamName: leaderName,
+                    championTeamName: champName
+                )
+            } catch {
+                // Non-fatal — the league is fully playable without backfilled
+                // history. Log so a silent failure is still diagnosable rather
+                // than surfacing as an unexplained empty History tab.
+                #if DEBUG
+                print("Sleeper history backfill failed for \(season.seasonYear): \(error)")
+                #endif
+            }
+        }
+
+        // Tag the local import as activated so the UI routes to the live league.
+        if let idx = importedSleeperLeagues.firstIndex(where: { $0.id == importedID }) {
+            importedSleeperLeagues[idx].activatedLeagueID = league.id
+            SleeperStore.shared.saveAll(importedSleeperLeagues)
+        }
+
+        await reloadLeagues()
+        await selectLeague(league.id)
+        // selectLeague has already loaded the fully-populated league into
+        // selectedLeague; callers here only need the id, so return the row
+        // createLeague handed back.
+        return league
     }
 
     // MARK: - League history (multi-season)
@@ -1005,12 +1263,15 @@ final class AppState {
     func updateLeague(
         leagueID: String, name: String, scoring: Scoring, rosterConfig: RosterConfig,
         playoffTeams: Int, playoffReseed: Bool,
-        scoringSettings: ScoringSettings?, divisionNames: [String]
+        scoringSettings: ScoringSettings?, divisionNames: [String],
+        regularSeasonWeeks: Int, weeksPerRound: Int, schedule: [ScheduleWeek]
     ) async throws -> League? {
         let updated = try await remote.updateLeague(
             leagueID: leagueID, name: name, scoring: scoring, rosterConfig: rosterConfig,
             playoffTeams: playoffTeams, playoffReseed: playoffReseed,
-            scoringSettings: scoringSettings, divisionNames: divisionNames
+            scoringSettings: scoringSettings, divisionNames: divisionNames,
+            regularSeasonWeeks: regularSeasonWeeks, weeksPerRound: weeksPerRound,
+            schedule: schedule
         )
         await reloadLeagues()
         return updated
@@ -1021,12 +1282,12 @@ final class AppState {
     // updates the live default lineup to match the latest edit.
     @discardableResult
     func setLineup(
-        team: FantasyTeam, week: Int, starters: [String], ir: [String]
+        team: FantasyTeam, week: Int, starters: [String], ir: [String], taxi: [String]
     ) async throws -> League? {
         var weekly = team.weeklyLineups
         weekly[week] = starters
         return try await remote.setLineup(
-            teamID: team.id, starters: starters, ir: ir, weeklyLineups: weekly
+            teamID: team.id, starters: starters, ir: ir, taxi: taxi, weeklyLineups: weekly
         )
     }
 
@@ -1088,6 +1349,13 @@ final class AppState {
 
     func playerNicknameHistory(playerID: String) async -> [NicknameHistoryEntry] {
         await remote.playerNicknameHistory(playerID: playerID)
+    }
+
+    // Full career injury history for one player, collapsed into distinct events
+    // (newest first). Season-independent — covers every season on file.
+    func injuryHistory(playerID: String) async -> [InjuryEvent] {
+        let rows = await remote.injuryHistory(playerID: playerID)
+        return Fantasy.injuryEvents(from: rows)
     }
 
     @discardableResult
@@ -1335,6 +1603,11 @@ final class AppState {
         try await remote.setTesterRole(userID: userID, isTester: isTester)
     }
 
+    @discardableResult
+    func setAdminRole(userID: String, isAdmin: Bool) async throws -> Bool {
+        try await remote.setAdminRole(userID: userID, isAdmin: isAdmin)
+    }
+
     func uploadFeedbackImage(data: Data, contentType: String) async throws -> String {
         guard let session else { throw AppError.notSignedIn }
         return try await remote.uploadFeedbackImage(
@@ -1350,14 +1623,29 @@ final class AppState {
         )
     }
 
+    // Review list. Server RLS returns every item to admins and only the
+    // caller's own items to non-admin testers, so the same call powers both
+    // the admin triage inbox and a tester's "my feedback" view.
     func feedbackInbox() async -> [FeedbackItem] {
-        guard isAdmin else { return [] }
+        guard canGiveFeedback else { return [] }
         return await remote.feedbackInbox()
     }
 
     @discardableResult
     func setFeedbackStatus(id: String, status: FeedbackStatus) async throws -> Bool {
         try await remote.setFeedbackStatus(id: id, status: status)
+    }
+
+    func feedbackComments(feedbackID: String) async -> [FeedbackComment] {
+        await remote.feedbackComments(feedbackID: feedbackID)
+    }
+
+    @discardableResult
+    func addFeedbackComment(feedbackID: String, content: String) async throws -> FeedbackComment {
+        guard let session else { throw AppError.notSignedIn }
+        return try await remote.addFeedbackComment(
+            feedbackID: feedbackID, userID: session.userID, content: content
+        )
     }
 
     // MARK: - Push notifications
@@ -1427,7 +1715,8 @@ final class AppState {
         rosterConfig: RosterConfig = .default,
         yourTeamName: String,
         mode: SimulationDraftMode = .preDrafted,
-        botCount: Int
+        botCount: Int,
+        scoringSettings: ScoringSettings? = nil
     ) async throws -> League {
         guard let session else { throw AppError.notSignedIn }
         let bots = max(1, botCount)
@@ -1439,7 +1728,8 @@ final class AppState {
             scoring: scoring,
             rosterConfig: rosterConfig,
             yourTeamName: yourTeamName,
-            otherTeamNames: otherNames
+            otherTeamNames: otherNames,
+            scoringSettings: scoringSettings
         )
         // Flip is_test + clear deadline; the row is otherwise normal.
         try await remote.markAsTestLeague(leagueID: league.id)
@@ -1627,10 +1917,13 @@ final class AppState {
 
     enum AppError: LocalizedError {
         case notSignedIn, leagueNotFound
+        case promotionFailed(String)
         var errorDescription: String? {
             switch self {
             case .notSignedIn:    return "You're not signed in."
             case .leagueNotFound: return "League not found."
+            case .promotionFailed(let what):
+                return "Couldn't finish setting up the league (\(what) failed). Nothing was kept — please try again."
             }
         }
     }

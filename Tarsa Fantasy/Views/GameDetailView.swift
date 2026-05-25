@@ -121,7 +121,7 @@ struct GameDetailView: View {
             }
             Text(abbr)
                 .font(.ffCaption.bold())
-                .foregroundStyle(winning ? FFColor.textPrimary : FFColor.textSecondary)
+                .foregroundStyle(FFColor.textPrimary)
             if let s = score, game.status != .scheduled {
                 Text("\(s)").font(.ffStatLarge)
                     .foregroundStyle(winning ? FFColor.accent : FFColor.textPrimary)
@@ -274,6 +274,7 @@ private struct OverviewTab: View {
                         onSelectPlayer?(player.id)
                     } label: {
                         HStack(spacing: 6) {
+                            PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 28)
                             PositionPill(position: player.position)
                             Text(player.name).font(.ffCaption).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                             Spacer()

@@ -31,7 +31,12 @@ struct FeedbackButton: View {
                 .contentShape(Circle())
                 .onTapGesture { showingSheet = true }
                 .gesture(
-                    DragGesture(minimumDistance: 8)
+                    // Global space, not local: the icon is moved by .offset
+                    // driven by this gesture, so a local-space translation would
+                    // shift with the icon and feed back into itself, making the
+                    // drag stutter. translation is a frame-independent delta, so
+                    // base + translation stays valid.
+                    DragGesture(minimumDistance: 8, coordinateSpace: .global)
                         .updating($dragTranslation) { value, state, _ in
                             state = value.translation
                         }
@@ -107,14 +112,15 @@ private struct FeedbackSheet: View {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
                 VStack(spacing: FFSpace.l) {
-                    if app.isAdmin {
-                        SegmentedTabPicker(items: Tab.allCases, selection: $tab) {
-                            Text($0.label)
-                        }
-                        .padding(.horizontal, FFSpace.l)
-                        .padding(.top, FFSpace.l)
+                    // Everyone who can open this sheet (testers + admins) gets
+                    // the Review tab; the list itself shows admins everything
+                    // and testers only their own submissions.
+                    SegmentedTabPicker(items: Tab.allCases, selection: $tab) {
+                        Text($0.label)
                     }
-                    if tab == .send || !app.isAdmin {
+                    .padding(.horizontal, FFSpace.l)
+                    .padding(.top, FFSpace.l)
+                    if tab == .send {
                         FeedbackComposeView { dismiss() }
                     } else {
                         FeedbackReviewView()
@@ -317,32 +323,69 @@ private struct FeedbackComposeView: View {
     }
 }
 
-// MARK: - Review (admin)
+// MARK: - Review
+
+// Status filter shown above the review list.
+private enum FeedbackFilter: String, CaseIterable, Identifiable {
+    case all, open, resolved
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .all:      return "All"
+        case .open:     return "Open"
+        case .resolved: return "Resolved"
+        }
+    }
+    func matches(_ item: FeedbackItem) -> Bool {
+        switch self {
+        case .all:      return true
+        case .open:     return item.status == .open
+        case .resolved: return item.status == .resolved
+        }
+    }
+}
 
 private struct FeedbackReviewView: View {
     @Environment(AppState.self) private var app
     @State private var items: [FeedbackItem] = []
     @State private var loaded = false
+    @State private var filter: FeedbackFilter = .all
+
+    private var visibleItems: [FeedbackItem] {
+        items.filter { filter.matches($0) }
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: FFSpace.s) {
-                if !loaded {
-                    ProgressView().tint(FFColor.accent).padding(.top, FFSpace.xxl)
-                } else if items.isEmpty {
-                    empty
-                } else {
-                    ForEach(items) { item in
-                        FeedbackCard(item: item) { newStatus in
-                            await updateStatus(item, to: newStatus)
+        VStack(spacing: FFSpace.m) {
+            SegmentedTabPicker(items: FeedbackFilter.allCases, selection: $filter) {
+                Text($0.label)
+            }
+            .padding(.horizontal, FFSpace.l)
+
+            ScrollView {
+                LazyVStack(spacing: FFSpace.s) {
+                    if !loaded {
+                        ProgressView().tint(FFColor.accent).padding(.top, FFSpace.xxl)
+                    } else if visibleItems.isEmpty {
+                        empty
+                    } else {
+                        ForEach(visibleItems) { item in
+                            NavigationLink {
+                                FeedbackDetailView(item: item) { updated in
+                                    apply(updated)
+                                }
+                            } label: {
+                                FeedbackRowCard(item: item)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
+                .padding(FFSpace.l)
             }
-            .padding(FFSpace.l)
+            .task { await reload() }
+            .refreshable { await reload() }
         }
-        .task { await reload() }
-        .refreshable { await reload() }
     }
 
     private var empty: some View {
@@ -350,7 +393,7 @@ private struct FeedbackReviewView: View {
             Image(systemName: "tray")
                 .font(.system(size: 32, weight: .light))
                 .foregroundStyle(FFColor.textTertiary)
-            Text("No feedback yet.")
+            Text(filter == .all ? "No feedback yet." : "Nothing here.")
                 .font(.ffCaption)
                 .foregroundStyle(FFColor.textSecondary)
         }
@@ -363,20 +406,18 @@ private struct FeedbackReviewView: View {
         loaded = true
     }
 
-    private func updateStatus(_ item: FeedbackItem, to status: FeedbackStatus) async {
-        do {
-            _ = try await app.setFeedbackStatus(id: item.id, status: status)
-            await reload()
-        } catch {
-            // Non-fatal; the list reload on next open will reflect server truth.
+    // Patch a single row in place after the detail screen mutates its status,
+    // so returning to the list reflects the change without a full refetch.
+    private func apply(_ updated: FeedbackItem) {
+        if let idx = items.firstIndex(where: { $0.id == updated.id }) {
+            items[idx] = updated
         }
     }
 }
 
-private struct FeedbackCard: View {
+// Compact, tappable summary row for the review list.
+private struct FeedbackRowCard: View {
     let item: FeedbackItem
-    let onStatusChange: (FeedbackStatus) async -> Void
-    @State private var working = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: FFSpace.s) {
@@ -385,9 +426,101 @@ private struct FeedbackCard: View {
                     .font(.ffHeadline)
                     .foregroundStyle(FFColor.textPrimary)
                 Spacer()
-                statusPill
+                FeedbackStatusPill(status: item.status)
             }
             Text(item.createdAt.formatted(.dateTime.month().day().hour().minute()))
+                .font(.ffMicro)
+                .foregroundStyle(FFColor.textTertiary)
+
+            if !item.content.isEmpty {
+                Text(item.content)
+                    .font(.ffBody)
+                    .foregroundStyle(FFColor.textPrimary)
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            HStack(spacing: FFSpace.m) {
+                if !item.imageURLs.isEmpty {
+                    Label("\(item.imageURLs.count)", systemImage: "photo")
+                        .font(.ffMicro)
+                        .foregroundStyle(FFColor.textSecondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FFColor.textTertiary)
+            }
+        }
+        .ffCard()
+    }
+}
+
+private struct FeedbackStatusPill: View {
+    let status: FeedbackStatus
+    var body: some View {
+        FFPill(isFilled: status == .resolved) {
+            Text(status == .open ? "OPEN" : "RESOLVED")
+                .foregroundStyle(status == .open ? FFColor.warning : FFColor.positive)
+        }
+    }
+}
+
+// MARK: - Detail + discussion
+
+private struct FeedbackDetailView: View {
+    @Environment(AppState.self) private var app
+    let item: FeedbackItem
+    let onChange: (FeedbackItem) -> Void
+
+    @State private var status: FeedbackStatus
+    @State private var comments: [FeedbackComment] = []
+    @State private var commentsLoaded = false
+    @State private var draft: String = ""
+    @State private var sending = false
+    @State private var statusWorking = false
+    @State private var gallery: ImageGallery? = nil
+    @State private var error: String? = nil
+
+    init(item: FeedbackItem, onChange: @escaping (FeedbackItem) -> Void) {
+        self.item = item
+        self.onChange = onChange
+        _status = State(initialValue: item.status)
+    }
+
+    var body: some View {
+        ZStack {
+            FFColor.bg.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: FFSpace.l) {
+                    requestCard
+                    statusControl
+                    discussion
+                }
+                .padding(FFSpace.l)
+            }
+        }
+        .navigationTitle("Feedback")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(FFColor.bg, for: .navigationBar)
+        .fullScreenCover(item: $gallery) { g in
+            FullScreenImageViewer(urls: g.urls, startIndex: g.index)
+        }
+        .task { await loadComments() }
+    }
+
+    // MARK: Request
+
+    private var requestCard: some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            HStack {
+                Text(item.username)
+                    .font(.ffHeadline)
+                    .foregroundStyle(FFColor.textPrimary)
+                Spacer()
+                FeedbackStatusPill(status: status)
+            }
+            Text(item.createdAt.formatted(.dateTime.month().day().year().hour().minute()))
                 .font(.ffMicro)
                 .foregroundStyle(FFColor.textTertiary)
 
@@ -401,43 +534,160 @@ private struct FeedbackCard: View {
             if !item.imageURLs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: FFSpace.s) {
-                        ForEach(item.imageURLs, id: \.self) { urlStr in
+                        ForEach(Array(item.imageURLs.enumerated()), id: \.offset) { idx, urlStr in
                             if let url = URL(string: urlStr) {
-                                thumbnail(url)
+                                Button {
+                                    gallery = ImageGallery(urls: item.imageURLs, index: idx)
+                                } label: {
+                                    thumbnail(url)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
                 }
             }
-
-            Button {
-                Task {
-                    working = true
-                    await onStatusChange(item.status == .open ? .resolved : .open)
-                    working = false
-                }
-            } label: {
-                if working {
-                    ProgressView().tint(FFColor.accent)
-                        .frame(maxWidth: .infinity)
-                } else {
-                    Label(
-                        item.status == .open ? "Mark resolved" : "Reopen",
-                        systemImage: item.status == .open ? "checkmark.circle" : "arrow.uturn.backward"
-                    )
-                }
-            }
-            .ffSecondaryButton()
-            .disabled(working)
         }
         .ffCard()
     }
 
-    private var statusPill: some View {
-        FFPill(isFilled: item.status == .resolved) {
-            Text(item.status == .open ? "OPEN" : "RESOLVED")
+    @ViewBuilder
+    private var statusControl: some View {
+        if app.isAdmin {
+            Button {
+                Task { await toggleStatus() }
+            } label: {
+                if statusWorking {
+                    ProgressView().tint(FFColor.accent).frame(maxWidth: .infinity)
+                } else {
+                    Label(
+                        status == .open ? "Mark resolved" : "Reopen",
+                        systemImage: status == .open ? "checkmark.circle" : "arrow.uturn.backward"
+                    )
+                }
+            }
+            .ffSecondaryButton()
+            .disabled(statusWorking)
         }
-        .foregroundStyle(item.status == .open ? FFColor.warning : FFColor.positive)
+    }
+
+    // MARK: Discussion
+
+    private var discussion: some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            HStack { Text("Discussion").ffEyebrow(); Spacer() }
+
+            if !commentsLoaded {
+                ProgressView().tint(FFColor.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, FFSpace.l)
+            } else if comments.isEmpty {
+                Text("No comments yet. Start the conversation below.")
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textSecondary)
+                    .padding(.vertical, FFSpace.s)
+            } else {
+                ForEach(comments) { comment in
+                    CommentBubble(comment: comment, isMine: comment.userID == app.session?.userID)
+                }
+            }
+
+            composer
+
+            if let error {
+                Text(error)
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.warning)
+            }
+        }
+    }
+
+    private var composer: some View {
+        HStack(alignment: .bottom, spacing: FFSpace.s) {
+            ZStack(alignment: .topLeading) {
+                if draft.isEmpty {
+                    Text("Add a comment…")
+                        .font(.ffBody)
+                        .foregroundStyle(FFColor.textTertiary)
+                        .padding(.horizontal, FFSpace.m)
+                        .padding(.vertical, FFSpace.s + 2)
+                }
+                TextField("", text: $draft, axis: .vertical)
+                    .font(.ffBody)
+                    .foregroundStyle(FFColor.textPrimary)
+                    .lineLimit(1...5)
+                    .padding(.horizontal, FFSpace.s)
+                    .padding(.vertical, FFSpace.s)
+            }
+            .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+            .overlay(
+                RoundedRectangle(cornerRadius: FFRadius.m)
+                    .strokeBorder(FFColor.border, lineWidth: 1)
+            )
+
+            Button {
+                Task { await send() }
+            } label: {
+                if sending {
+                    ProgressView().tint(.white)
+                        .frame(width: 38, height: 38)
+                } else {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 38, height: 38)
+                        .background(canSend ? AnyShapeStyle(FFGradient.brand)
+                                            : AnyShapeStyle(FFColor.borderStrong),
+                                    in: Circle())
+                }
+            }
+            .disabled(!canSend || sending)
+        }
+        .padding(.top, FFSpace.xs)
+    }
+
+    private var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    // MARK: Actions
+
+    private func loadComments() async {
+        comments = await app.feedbackComments(feedbackID: item.id)
+        commentsLoaded = true
+    }
+
+    private func send() async {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        sending = true
+        defer { sending = false }
+        do {
+            let comment = try await app.addFeedbackComment(feedbackID: item.id, content: text)
+            comments.append(comment)
+            draft = ""
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func toggleStatus() async {
+        let next: FeedbackStatus = status == .open ? .resolved : .open
+        statusWorking = true
+        defer { statusWorking = false }
+        do {
+            _ = try await app.setFeedbackStatus(id: item.id, status: next)
+            status = next
+            error = nil
+            onChange(FeedbackItem(
+                id: item.id, userID: item.userID, username: item.username,
+                content: item.content, imageURLs: item.imageURLs,
+                status: next, createdAt: item.createdAt
+            ))
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 
     private func thumbnail(_ url: URL) -> some View {
@@ -457,5 +707,44 @@ private struct FeedbackCard: View {
         }
         .frame(width: 110, height: 110)
         .clipShape(RoundedRectangle(cornerRadius: FFRadius.s))
+        .overlay(alignment: .bottomTrailing) {
+            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(5)
+                .background(.black.opacity(0.45), in: Circle())
+                .padding(6)
+        }
+    }
+}
+
+private struct CommentBubble: View {
+    let comment: FeedbackComment
+    let isMine: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: FFSpace.s) {
+                Text(comment.username)
+                    .font(.ffMicro)
+                    .foregroundStyle(FFColor.accent)
+                Text(comment.createdAt.formatted(.dateTime.month().day().hour().minute()))
+                    .font(.ffMicro)
+                    .foregroundStyle(FFColor.textTertiary)
+            }
+            Text(comment.content)
+                .font(.ffBody)
+                .foregroundStyle(FFColor.textPrimary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(FFSpace.m)
+        .background(
+            isMine ? AnyShapeStyle(FFColor.accentSoft) : AnyShapeStyle(FFColor.surface),
+            in: RoundedRectangle(cornerRadius: FFRadius.m)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: FFRadius.m)
+                .strokeBorder(FFColor.border, lineWidth: 1)
+        )
     }
 }

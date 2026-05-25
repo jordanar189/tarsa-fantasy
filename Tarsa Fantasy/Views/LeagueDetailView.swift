@@ -13,6 +13,10 @@ struct LeagueDetailView: View {
     @State private var showingDraftRoom: Bool = false
     @State private var showingDraftSettings: Bool = false
     @State private var customizingTeam: FantasyTeam? = nil
+    // True when this league has at least one archived season (a completed
+    // season, a rolled-over parent, or seasons backfilled from a Sleeper
+    // import). Drives whether the History section is offered.
+    @State private var hasHistory: Bool = false
 
     // Unified section set used for both simulation and standard leagues.
     // Standard leagues additionally surface History (when available).
@@ -42,7 +46,10 @@ struct LeagueDetailView: View {
                     }
                     .padding(.horizontal, FFSpace.l)
                     .padding(.top, FFSpace.s)
-                    .padding(.bottom, 40)
+                    // Clear the tab bar + collapsed league-chat peek that overlay
+                    // the bottom; matches the Lineup/Matchup tabs so the last
+                    // widget (e.g. standings) scrolls fully into view.
+                    .padding(.bottom, 80)
                 }
             } else {
                 ProgressView().tint(FFColor.accent)
@@ -189,7 +196,7 @@ struct LeagueDetailView: View {
         var sections: [SimSection] = [.overview]
         if lg.playoffTeams >= 2 { sections.append(.playoffs) }
         sections.append(contentsOf: [.draft, .manage])
-        if !lg.isTest, lg.seasonCompleted || lg.parentLeagueID != nil {
+        if !lg.isTest, lg.seasonCompleted || lg.parentLeagueID != nil || hasHistory {
             sections.append(.history)
         }
         return sections
@@ -213,6 +220,15 @@ struct LeagueDetailView: View {
         await app.loadSeason(league?.season ?? app.selectedSeason)
         await app.loadLeagueNicknames(leagueID: leagueID)
         draft = await app.draft(leagueID: leagueID)
+        // A Sleeper-promoted league has prior seasons backfilled into history
+        // before any season is completed here. Detect that from the local
+        // import (no extra round-trip) so the History section only appears for
+        // promoted leagues that actually carried over past seasons — the
+        // seasonCompleted / parentLeagueID checks in visibleSections cover the
+        // normal cases.
+        if let imp = app.importedSleeperLeagues.first(where: { $0.activatedLeagueID == leagueID }) {
+            hasHistory = imp.seasons.contains { $0.seasonYear < imp.seasonYear }
+        }
     }
 
     @ViewBuilder
@@ -291,9 +307,8 @@ struct LeagueDetailView: View {
                     showingDraftRoom = true
                 } label: {
                     Text(draft.status == .live ? "Enter draft room" : "Open draft room")
-                        .ffPrimaryButton()
                 }
-                .buttonStyle(.plain)
+                .ffPrimaryButton()
             }
         }
         .ffCard()
