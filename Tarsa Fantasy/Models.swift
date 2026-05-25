@@ -713,6 +713,10 @@ struct League: Codable, Identifiable, Hashable {
     // scoreboard, free agents) to that fantasy week.
     var isTest: Bool
     var simulatedWeek: Int?
+    // Dynasty: when true, rosters are never cleared. Rolling over to the next
+    // season carries every team (owner, branding, and roster) forward instead
+    // of starting fresh the way a standard (redraft) league does.
+    var isDynasty: Bool
     // Multi-season history: parentLeagueID points to the previous season's
     // league (nil for the first season). seasonCompleted flips when the
     // commish runs "Complete season" — that snapshot freezes the standings
@@ -749,6 +753,7 @@ struct League: Codable, Identifiable, Hashable {
          tradeSettings: TradeSettings = .default,
          isTest: Bool = false,
          simulatedWeek: Int? = nil,
+         isDynasty: Bool = false,
          parentLeagueID: String? = nil,
          seasonCompleted: Bool = false,
          seasonCompletedAt: Date? = nil,
@@ -769,6 +774,7 @@ struct League: Codable, Identifiable, Hashable {
         self.tradeSettings = tradeSettings
         self.isTest = isTest
         self.simulatedWeek = simulatedWeek
+        self.isDynasty = isDynasty
         self.parentLeagueID = parentLeagueID
         self.seasonCompleted = seasonCompleted
         self.seasonCompletedAt = seasonCompletedAt
@@ -1057,6 +1063,7 @@ struct LeagueSummary: Identifiable, Hashable {
     let joinCode: String
     let creatorID: String
     let isTest: Bool
+    let isDynasty: Bool
 }
 
 struct Profile: Identifiable, Hashable, Sendable {

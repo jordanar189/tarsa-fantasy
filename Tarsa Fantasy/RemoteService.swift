@@ -165,7 +165,8 @@ actor RemoteService {
                 createdAt: row.createdAt,
                 joinCode: row.joinCode,
                 creatorID: row.creatorId.uuidString,
-                isTest: row.isTest
+                isTest: row.isTest,
+                isDynasty: row.isDynasty
             )
         }
     }
@@ -233,7 +234,8 @@ actor RemoteService {
         playoffTeams: Int = 6,
         playoffReseed: Bool = true,
         divisionNames: [String] = [],
-        scoringSettings: ScoringSettings? = nil
+        scoringSettings: ScoringSettings? = nil,
+        isDynasty: Bool = false
     ) async throws -> League {
         guard let creatorUUID = UUID(uuidString: creatorID) else {
             throw RemoteError.invalidUserID
@@ -282,6 +284,7 @@ actor RemoteService {
             let playoff_reseed: Bool
             let division_names: AnyJSON
             let scoring_settings: AnyJSON?
+            let is_dynasty: Bool
         }
         let leagueID = UUID()
         // Initial priority: reverse-order of team creation (last team picks
@@ -302,7 +305,8 @@ actor RemoteService {
             playoff_teams: cappedPlayoffTeams,
             playoff_reseed: playoffReseed,
             division_names: stringsAsAnyJSON(cleanedDivisions),
-            scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON)
+            scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON),
+            is_dynasty: isDynasty
         )
         let insertedLeague: LeagueRow = try await client.from("leagues")
             .insert(leagueInsert)
@@ -602,6 +606,7 @@ actor RemoteService {
             ),
             isTest: row.isTest,
             simulatedWeek: row.simulatedWeek,
+            isDynasty: row.isDynasty,
             parentLeagueID: row.parentLeagueId?.uuidString,
             seasonCompleted: row.seasonCompleted,
             seasonCompletedAt: row.seasonCompletedAt,
@@ -1849,9 +1854,12 @@ actor RemoteService {
         )).execute()
     }
 
-    // Commish-only. Spawns a new child league for the next season. Returns
-    // the freshly created child League; teams are NOT cloned — callers can
-    // claim teams normally with the new join code.
+    // Commish-only. Spawns a new child league for the next season. For a
+    // standard league teams are NOT cloned — owners re-claim with the new join
+    // code (a fresh redraft). For a dynasty league the RPC carries every team
+    // forward with its owner, branding, and roster intact (so rosters are never
+    // cleared); the child is otherwise scheduleless, so we generate a fresh
+    // round-robin over the carried-over teams here, mirroring createLeague.
     func rolloverLeague(parentID: String, newSeason: Int, newName: String?) async throws -> League? {
         guard let pid = UUID(uuidString: parentID) else { return nil }
         struct Args: Encodable {
@@ -1860,7 +1868,38 @@ actor RemoteService {
         let row: LeagueRow = try await client.rpc("rollover_league", params: Args(
             p_parent_id: pid, p_new_season: newSeason, p_new_name: newName ?? ""
         )).execute().value
+        if row.isDynasty {
+            try await seedDynastySchedule(child: row.id, weeks: row.regularSeasonWeeks)
+        }
         return try await self.league(id: row.id.uuidString)
+    }
+
+    // Generates the regular-season schedule for a freshly rolled-over dynasty
+    // league. The RPC has already cloned the teams forward, so we read them back
+    // and run the same round-robin generator league creation uses.
+    private func seedDynastySchedule(child childID: UUID, weeks: Int?) async throws {
+        let childTeams: [TeamRow] = try await client.from("teams")
+            .select()
+            .eq("league_id", value: childID)
+            .order("sort_index", ascending: true)
+            .execute()
+            .value
+        guard !childTeams.isEmpty else { return }
+
+        let teamIDs = childTeams.map { $0.id.uuidString }
+        let schedule = Fantasy.generateSchedule(teamIDs: teamIDs, weeks: weeks)
+        struct ScheduleUpdate: Encodable {
+            let schedule: AnyJSON
+            let waiver_priority: [String]
+        }
+        _ = try await client.from("leagues")
+            .update(ScheduleUpdate(
+                schedule: scheduleAsAnyJSON(schedule),
+                // Default pre-season priority: reverse team order (last picks first).
+                waiver_priority: Array(teamIDs.reversed())
+            ))
+            .eq("id", value: childID)
+            .execute()
     }
 
     // Walks the parent chain from `leagueID` upward and returns every
@@ -3065,6 +3104,7 @@ struct LeagueRow: Codable, Hashable {
     let tradeVoteHours: Int
     let isTest: Bool
     let simulatedWeek: Int?
+    let isDynasty: Bool
     let parentLeagueId: UUID?
     let seasonCompleted: Bool
     let seasonCompletedAt: Date?
@@ -3093,6 +3133,7 @@ struct LeagueRow: Codable, Hashable {
         case tradeVoteHours       = "trade_vote_hours"
         case isTest               = "is_test"
         case simulatedWeek        = "simulated_week"
+        case isDynasty            = "is_dynasty"
         case parentLeagueId       = "parent_league_id"
         case seasonCompleted      = "season_completed"
         case seasonCompletedAt    = "season_completed_at"
@@ -3129,6 +3170,7 @@ struct LeagueRow: Codable, Hashable {
         tradeVoteHours       = try c.decodeIfPresent(Int.self,     forKey: .tradeVoteHours)       ?? 24
         isTest               = try c.decodeIfPresent(Bool.self,    forKey: .isTest)               ?? false
         simulatedWeek        = try c.decodeIfPresent(Int.self,     forKey: .simulatedWeek)
+        isDynasty            = try c.decodeIfPresent(Bool.self,    forKey: .isDynasty)            ?? false
         parentLeagueId       = try c.decodeIfPresent(UUID.self,    forKey: .parentLeagueId)
         seasonCompleted      = try c.decodeIfPresent(Bool.self,    forKey: .seasonCompleted)      ?? false
         seasonCompletedAt    = try c.decodeIfPresent(Date.self,    forKey: .seasonCompletedAt)

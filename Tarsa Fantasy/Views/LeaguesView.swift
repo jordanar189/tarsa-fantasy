@@ -219,6 +219,9 @@ struct LeagueListRow: View {
                     if summary.isTest {
                         FFPill { Text("SIM").foregroundStyle(FFColor.warning) }
                     }
+                    if summary.isDynasty {
+                        FFPill { Text("DYNASTY").foregroundStyle(FFColor.accent) }
+                    }
                     FFPill { Text(String(summary.season)) }
                     FFPill { Text(summary.scoring.label.uppercased()) }
                     FFPill { Text("\(summary.teamCount) TEAMS") }

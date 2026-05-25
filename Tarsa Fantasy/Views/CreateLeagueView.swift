@@ -5,11 +5,12 @@ struct CreateLeagueView: View {
     @Environment(\.dismiss) private var dismiss
 
     enum LeagueType: String, CaseIterable, Identifiable {
-        case standard, simulation
+        case standard, dynasty, simulation
         var id: String { rawValue }
         var label: String {
             switch self {
             case .standard:   return "Standard"
+            case .dynasty:    return "Dynasty"
             case .simulation: return "Simulation"
             }
         }
@@ -35,16 +36,24 @@ struct CreateLeagueView: View {
     private static let divisionDefaults = ["East", "West", "North", "South"]
     private var teamCount: Int { 1 + otherCount }
 
+    private var typeFooter: String {
+        switch leagueType {
+        case .standard:
+            return "A normal redraft league — rosters clear every season. Other slots open for friends to claim with an invite link."
+        case .dynasty:
+            return "Like Standard, but rosters carry over season to season — nothing clears when you roll into a new year. Other slots open for friends to claim with an invite link."
+        case .simulation:
+            return "A solo league against bot teams. You control every team behind the scenes, can advance through weeks, run bot moves, and reset the simulation at any point."
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
                 ScrollView {
                     VStack(spacing: FFSpace.xxl) {
-                        section("Type",
-                                footer: leagueType == .simulation
-                                    ? "A solo league against bot teams. You control every team behind the scenes, can advance through weeks, run bot moves, and reset the simulation at any point."
-                                    : "A normal league. Other slots open for friends to claim with an invite link.") {
+                        section("Type", footer: typeFooter) {
                             picker("League type", selection: $leagueType, choices: LeagueType.allCases) { $0.label }
                         }
 
@@ -115,7 +124,7 @@ struct CreateLeagueView: View {
                             rosterStepper("IR",    value: $rosterConfig.ir,    range: 0...6)
                         }
 
-                        if leagueType == .standard {
+                        if leagueType != .simulation {
                             section("Season format",
                                     footer: playoffSummaryFooter) {
                                 stepperRow("Regular season", value: $regularSeasonWeeks, range: 6...15) {
@@ -182,7 +191,7 @@ struct CreateLeagueView: View {
     private var canCreate: Bool {
         guard !yourTeamName.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
         switch leagueType {
-        case .standard:
+        case .standard, .dynasty:
             return otherTeamNames.contains(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
         case .simulation:
             return simBotCount >= 1
@@ -318,7 +327,7 @@ struct CreateLeagueView: View {
                 ? (leagueType == .simulation ? "My Simulation" : "My League")
                 : name
             switch leagueType {
-            case .standard:
+            case .standard, .dynasty:
                 let divisions = divisionsEnabled
                     ? Array(Self.divisionDefaults.prefix(min(divisionCount, 4)))
                     : []
@@ -329,7 +338,8 @@ struct CreateLeagueView: View {
                     regularSeasonWeeks: regularSeasonWeeks,
                     playoffTeams: min(playoffTeams, teamCount),
                     playoffReseed: true,
-                    divisionNames: divisions
+                    divisionNames: divisions,
+                    isDynasty: leagueType == .dynasty
                 )
             case .simulation:
                 _ = try await app.createSimulation(

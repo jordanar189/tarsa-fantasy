@@ -677,7 +677,8 @@ final class AppState {
         playoffTeams: Int = 6,
         playoffReseed: Bool = true,
         divisionNames: [String] = [],
-        scoringSettings: ScoringSettings? = nil
+        scoringSettings: ScoringSettings? = nil,
+        isDynasty: Bool = false
     ) async throws -> League {
         guard let session else { throw AppError.notSignedIn }
         let league = try await remote.createLeague(
@@ -689,7 +690,8 @@ final class AppState {
             playoffTeams: playoffTeams,
             playoffReseed: playoffReseed,
             divisionNames: divisionNames,
-            scoringSettings: scoringSettings
+            scoringSettings: scoringSettings,
+            isDynasty: isDynasty
         )
         await reloadLeagues()
         await selectLeague(league.id)
