@@ -88,16 +88,20 @@ begin
         select 1 from public.teams t
          where t.id = p_team_id and p_player_id = any(t.roster)
     ) into v_on_roster;
-    if not v_on_roster then
-        raise exception 'player is not on this team''s roster';
-    end if;
 
     v_clean := nullif(btrim(lower(coalesce(p_value, ''))), '');
 
     if v_clean is null then
+        -- Clears are always safe: if the row exists (e.g. the player was
+        -- just dropped and the trigger already pruned it, or it never
+        -- existed) the delete is a no-op. Skipping the roster check here
+        -- keeps stale-roster save paths from blowing up.
         delete from public.player_values
          where team_id = p_team_id and player_id = p_player_id;
     else
+        if not v_on_roster then
+            raise exception 'player is not on this team''s roster';
+        end if;
         if v_clean not in ('high', 'medium', 'low') then
             raise exception 'value must be one of high, medium, low';
         end if;

@@ -1398,15 +1398,13 @@ final class AppState {
         return out
     }
 
-    @discardableResult
     func setPlayerValue(
         leagueID: String, teamID: String, playerID: String, value: PlayerValue?
-    ) async throws -> League? {
+    ) async throws {
         try await remote.setPlayerValue(
             teamID: teamID, playerID: playerID, value: value
         )
         await loadLeagueValues(leagueID: leagueID)
-        return try await remote.league(id: leagueID)
     }
 
     // Full career injury history for one player, collapsed into distinct events

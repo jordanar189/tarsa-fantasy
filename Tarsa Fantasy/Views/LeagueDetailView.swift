@@ -12,7 +12,7 @@ struct LeagueDetailView: View {
     @State private var showingSettings: Bool = false
     @State private var showingDraftRoom: Bool = false
     @State private var showingDraftSettings: Bool = false
-    @State private var showingProfile: Bool = false
+    @State private var showingProfile: String? = nil
     @State private var customizingTeam: FantasyTeam? = nil
     // True when this league has at least one archived season (a completed
     // season, a rolled-over parent, or seasons backfilled from a Sleeper
@@ -62,9 +62,9 @@ struct LeagueDetailView: View {
         .toolbarBackground(FFColor.bg, for: .navigationBar)
         .toolbar {
             if let lg = league {
-                if app.session?.userID != nil {
+                if app.session != nil {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button { showingProfile = true } label: {
+                        Button { showingProfile = app.session?.userID } label: {
                             Image(systemName: "person.crop.circle")
                                 .foregroundStyle(FFColor.textPrimary)
                         }
@@ -159,10 +159,8 @@ struct LeagueDetailView: View {
         .navigationDestination(isPresented: $showingDraftRoom) {
             DraftRoomView(leagueID: leagueID)
         }
-        .navigationDestination(isPresented: $showingProfile) {
-            if let me = app.session?.userID {
-                ProfileView(userID: me)
-            }
+        .navigationDestination(item: $showingProfile) { userID in
+            ProfileView(userID: userID)
         }
         .sheet(isPresented: $showingDraftSettings) {
             if let league {
