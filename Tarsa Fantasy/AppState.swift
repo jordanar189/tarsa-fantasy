@@ -1386,6 +1386,18 @@ final class AppState {
         return playerValue(teamID: team.id, playerID: playerID)
     }
 
+    // All value ratings in the selected league flattened to playerID → value.
+    // Safe to flatten because a player can only sit on one roster at a time, so
+    // the per-team buckets never collide. Used by the trade calculator to weigh
+    // each side's haul by the owner's subjective rating.
+    func selectedLeagueValueMap() -> [String: PlayerValue] {
+        var out: [String: PlayerValue] = [:]
+        for (_, perPlayer) in leagueValues {
+            for (pid, v) in perPlayer { out[pid] = v }
+        }
+        return out
+    }
+
     @discardableResult
     func setPlayerValue(
         leagueID: String, teamID: String, playerID: String, value: PlayerValue?

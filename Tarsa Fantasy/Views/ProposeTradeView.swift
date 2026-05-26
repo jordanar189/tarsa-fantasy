@@ -105,7 +105,8 @@ struct ProposeTradeView: View {
                 values = Fantasy.tradeValues(
                     players: snapshot, scoring: league.scoring,
                     settings: league.scoringSettings, config: league.rosterConfig,
-                    teamCount: league.teams.count
+                    teamCount: league.teams.count,
+                    valueRatings: app.selectedLeagueValueMap()
                 )
             }
         }
@@ -121,7 +122,8 @@ struct ProposeTradeView: View {
             leftName: "You",
             leftReceives: Array(requestingPlayerIDs),
             rightName: recipientTeam?.name ?? "Them",
-            rightReceives: Array(sendingPlayerIDs)
+            rightReceives: Array(sendingPlayerIDs),
+            valueRatings: app.selectedLeagueValueMap()
         )
     }
 

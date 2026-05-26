@@ -82,7 +82,8 @@ struct TradeDetailView: View {
                 values = Fantasy.tradeValues(
                     players: snapshot, scoring: league.scoring,
                     settings: league.scoringSettings, config: league.rosterConfig,
-                    teamCount: league.teams.count
+                    teamCount: league.teams.count,
+                    valueRatings: app.selectedLeagueValueMap()
                 )
             }
         }
@@ -97,7 +98,8 @@ struct TradeDetailView: View {
             leftName: proposerTeam?.name ?? "Proposer",
             leftReceives: trade.recipientPlayerIDs,
             rightName: recipientTeam?.name ?? "Recipient",
-            rightReceives: trade.proposerPlayerIDs
+            rightReceives: trade.proposerPlayerIDs,
+            valueRatings: app.selectedLeagueValueMap()
         )
     }
 

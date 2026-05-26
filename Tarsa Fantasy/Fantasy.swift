@@ -970,12 +970,18 @@ enum Fantasy {
     // positional scarcity is baked in (an elite RB outranks an equal-scoring QB
     // in a 1-QB league). Scaled so the league's most valuable player ≈ 100.
     // Pure: K and team DEF are valued alongside the offensive positions.
+    //
+    // `valueRatings` overlays each owner's subjective rating on top of the VOR
+    // baseline: HIGH boosts, LOW discounts, MEDIUM and unrated are neutral. The
+    // multiplier is applied after the 0–100 normalization so the displayed
+    // breakdown reads as a direct adjustment to the baseline number.
     static func tradeValues(
         players: [String: Player],
         scoring: Scoring,
         settings: ScoringSettings? = nil,
         config: RosterConfig,
-        teamCount: Int
+        teamCount: Int,
+        valueRatings: [String: PlayerValue] = [:]
     ) -> [String: Double] {
         let teams = max(teamCount, 1)
         var pointsByID: [String: Double] = [:]
@@ -1014,7 +1020,26 @@ enum Fantasy {
             if vor > maxRaw { maxRaw = vor }
         }
         guard maxRaw > 0 else { return raw.mapValues { _ in 0.0 } }
-        return raw.mapValues { round2($0 / maxRaw * 100) }
+        var out: [String: Double] = [:]
+        out.reserveCapacity(raw.count)
+        for (id, vor) in raw {
+            let base = vor / maxRaw * 100
+            let mult = tradeValueRatingMultiplier(valueRatings[id])
+            out[id] = round2(base * mult)
+        }
+        return out
+    }
+
+    // Multiplier the owner's subjective rating applies to a player's VOR-based
+    // trade value. Tuned to swing trades meaningfully without overpowering the
+    // underlying projection.
+    static func tradeValueRatingMultiplier(_ rating: PlayerValue?) -> Double {
+        switch rating {
+        case .high?:   return 1.25
+        case .medium?: return 1.00
+        case .low?:    return 0.75
+        case .none:    return 1.00
+        }
     }
 
     // MARK: - Wins Above Replacement (WAR)
