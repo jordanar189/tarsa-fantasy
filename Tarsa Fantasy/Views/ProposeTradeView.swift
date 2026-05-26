@@ -182,7 +182,7 @@ struct ProposeTradeView: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(team.roster, id: \.self) { pid in
-                        playerRow(pid: pid, players: players,
+                        playerRow(pid: pid, teamID: team.id, players: players,
                                   isSelected: selected.wrappedValue.contains(pid)) {
                             if selected.wrappedValue.contains(pid) {
                                 selected.wrappedValue.remove(pid)
@@ -201,10 +201,11 @@ struct ProposeTradeView: View {
         }
     }
 
-    private func playerRow(pid: String, players: [String: Player],
+    private func playerRow(pid: String, teamID: String, players: [String: Player],
                            isSelected: Bool, toggle: @escaping () -> Void) -> some View {
         let p = players[pid]
         let summary = p.map { Fantasy.summary($0, scoring: league.scoring) }
+        let value = app.playerValue(teamID: teamID, playerID: pid)
         // Row tap toggles selection; tapping the name opens the player profile
         // (descendant tap takes precedence over the row's tap).
         return HStack(spacing: FFSpace.m) {
@@ -218,6 +219,7 @@ struct ProposeTradeView: View {
                     HStack(spacing: 6) {
                         PositionPill(position: summary.position)
                         Text(summary.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                        if let value { PlayerValueBadge(value: value) }
                     }
                 }
                 .playerLink(pid)

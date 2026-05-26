@@ -372,6 +372,9 @@ struct LineupTabView: View {
                     Text(name(pid, player)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                     HStack(spacing: 6) {
                         PositionPill(position: player.position)
+                        if let team, let v = app.playerValue(teamID: team.id, playerID: pid) {
+                            PlayerValueBadge(value: v)
+                        }
                         Text(player.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
                         if let inj = context.injury(pid) { InjuryBadge(injury: inj) }
                     }
@@ -420,6 +423,9 @@ struct LineupTabView: View {
                     Text(name(pid, player)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                     HStack(spacing: 6) {
                         PositionPill(position: player.position)
+                        if let team, let v = app.playerValue(teamID: team.id, playerID: pid) {
+                            PlayerValueBadge(value: v)
+                        }
                         Text(player.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
                         if let exp = player.profile?.experienceDisplay {
                             Text(exp).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
@@ -449,8 +455,10 @@ struct LineupTabView: View {
     private func contextLine(pid: String, player: Player) -> some View {
         let opp = context.opponent(forTeam: player.team)
         let rating = context.rating(position: player.position, opponent: opp)
+        let value = team.flatMap { app.playerValue(teamID: $0.id, playerID: pid) }
         HStack(spacing: 6) {
             PositionPill(position: player.position)
+            if let value { PlayerValueBadge(value: value) }
             if let opp {
                 Text("vs \(opp)").font(.ffMicro).foregroundStyle(FFColor.textTertiary)
             } else {

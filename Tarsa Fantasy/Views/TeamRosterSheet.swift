@@ -145,6 +145,7 @@ struct TeamRosterSheet: View {
         let player = playerID.isEmpty ? nil : players[playerID]
         let summary = player.map { Fantasy.summary($0, scoring: league.scoring) }
         let nickname = app.nickname(teamID: team.id, playerID: playerID)
+        let value = app.playerValue(teamID: team.id, playerID: playerID)
         return HStack(spacing: FFSpace.m) {
             Text(slot.label)
                 .font(.ffMicro)
@@ -162,6 +163,7 @@ struct TeamRosterSheet: View {
                         }
                         PositionPill(position: summary.position)
                         Text(summary.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                        if let value { PlayerValueBadge(value: value) }
                     }
                 }
                 .playerLink(playerID)
