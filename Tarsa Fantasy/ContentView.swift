@@ -100,9 +100,11 @@ struct ContentView: View {
     }
 }
 
-// The league-focused experience: a custom bottom tab bar (League · Lineup ·
-// Matchup · Players) with a Sleeper-style pull-up league chat that peeks above
-// the bar. The chat is a custom panel rather than a sheet so its bottom edge
+// The league-focused experience: a minimal two-tab bottom bar (Lineup ·
+// Players) with a Sleeper-style pull-up league chat that peeks above the bar.
+// League and Matchup screens are reached by drilling in from the Lineup tab
+// (score-banner tap → Matchup, nav pills → League/Matchup), not as their own
+// tabs. The chat is a custom panel rather than a sheet so its bottom edge
 // rests on top of the tab bar — pulling it up grows it upward and never covers
 // the bar.
 struct LeagueShellView: View {
@@ -118,13 +120,13 @@ struct LeagueShellView: View {
     @State private var bottomSafeInset: CGFloat = 0
     // Seeded with the cold-start default so the first tab renders on frame one
     // (onAppear inserts the live value a tick later for any other entry point).
-    @State private var visited: Set<AppTab> = [.league]
+    @State private var visited: Set<AppTab> = [.lineup]
 
     // Chat peek header height; the small gap left above an expanded panel.
     private let peekHeight: CGFloat = 56
     private let topGap: CGFloat = 8
 
-    private static let tabOrder: [AppTab] = [.league, .lineup, .matchup, .players]
+    private static let tabOrder: [AppTab] = [.lineup, .players]
 
     private static func deviceBottomInset() -> CGFloat {
         UIApplication.shared.connectedScenes
@@ -190,9 +192,7 @@ struct LeagueShellView: View {
     @ViewBuilder
     private func tabRoot(_ tab: AppTab) -> some View {
         switch tab {
-        case .league:  LeagueTabView()
         case .lineup:  LineupTabView()
-        case .matchup: MatchupTabView()
         case .players: NFLHubView()
         }
     }
@@ -305,9 +305,7 @@ struct CustomTabBar: View {
     static let height: CGFloat = 56
 
     private static let items: [(tab: AppTab, label: String, icon: String)] = [
-        (.league,  "League",  "trophy.fill"),
         (.lineup,  "Lineup",  "list.bullet.rectangle.portrait.fill"),
-        (.matchup, "Matchup", "person.2.fill"),
         (.players, "Players", "football.fill"),
     ]
 
@@ -347,22 +345,6 @@ struct CustomTabBar: View {
                     Rectangle().fill(FFColor.border).frame(height: 0.5)
                 }
                 .ignoresSafeArea(edges: .bottom)
-        }
-    }
-}
-
-// Hosts the selected league's detail screen as a tab root. The league switcher
-// bubble lives at the top of LeagueDetailView's content.
-struct LeagueTabView: View {
-    @Environment(AppState.self) private var app
-
-    var body: some View {
-        NavigationStack {
-            if let id = app.selectedLeagueID {
-                LeagueDetailView(leagueID: id)
-            } else {
-                Color.clear
-            }
         }
     }
 }

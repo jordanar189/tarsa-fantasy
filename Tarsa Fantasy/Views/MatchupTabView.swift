@@ -1,10 +1,13 @@
 import SwiftUI
 
-// Matchup tab: your weekly head-to-head for the selected league. Score header
+// Matchup screen: your weekly head-to-head for the selected league. Score header
 // with projected final + win probability + players-yet-to-play, slot-by-slot
 // starter comparison with projections and game context, an expandable box score
 // per player, a bench/optimal recap, and head-to-head history vs the opponent.
-// Replaces the old in-league Matchup section.
+//
+// Pushed onto the Lineup tab's navigation stack (via the score-banner tap or
+// the "Matchup" nav pill) — it is no longer a top-level tab, so it relies on
+// the host NavigationStack for back-button chrome rather than wrapping its own.
 struct MatchupTabView: View {
     @Environment(AppState.self) private var app
 
@@ -23,16 +26,14 @@ struct MatchupTabView: View {
     private var contextKey: String { "\(app.selectedLeagueID ?? "")-\(week)" }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                FFColor.bg.ignoresSafeArea()
-                content
-            }
-            .navigationTitle("Matchup")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(FFColor.bg, for: .navigationBar)
-            .leagueSwitcher()
+        ZStack {
+            FFColor.bg.ignoresSafeArea()
+            content
         }
+        .navigationTitle("Matchup")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(FFColor.bg, for: .navigationBar)
+        .leagueSwitcher()
         .onAppear { if !didInit { week = defaultWeek; didInit = true } }
         .task(id: contextKey) { await reload() }
     }
@@ -192,66 +193,55 @@ struct MatchupTabView: View {
             remainingStarters: mine.remaining + opp.remaining
         )
         let leadActual = mine.actual >= opp.actual
+        let anyPlayed = mine.actual > 0 || opp.actual > 0
+        let allDone = anyPlayed && mine.remaining == 0 && opp.remaining == 0
+        let chip: StateChip = {
+            if allDone   { return StateChip(state: .final,     label: "Final · Week \(week)") }
+            if anyPlayed { return StateChip(state: .live,      label: "Live · Week \(week)") }
+            return         StateChip(state: .scheduled, label: "Week \(week)")
+        }()
+
         return VStack(spacing: FFSpace.m) {
-            HStack(alignment: .top, spacing: FFSpace.s) {
-                teamColumn(mine, label: "YOU", winning: leadActual)
-                VStack(spacing: 2) {
-                    Text("VS").ffEyebrow(color: FFColor.textTertiary)
-                }
-                .frame(maxWidth: 40)
-                teamColumn(opp, label: "OPP", winning: !leadActual && opp.actual > mine.actual)
-            }
-            winProbBar(myWin: myWin, myName: mine.team.shortLabel, oppName: opp.team.shortLabel)
             HStack {
-                yetToPlay(mine, align: .leading)
+                chip
                 Spacer()
-                Text("Proj \(mine.projectedFinal.fpString) – \(opp.projectedFinal.fpString)")
-                    .font(.ffCaption).foregroundStyle(FFColor.textSecondary)
-                Spacer()
-                yetToPlay(opp, align: .trailing)
+                if !allDone {
+                    Text("\(mine.remaining + opp.remaining) yet to play".uppercased())
+                        .font(.ffMicro).tracking(1.2)
+                        .foregroundStyle(FFColor.textTertiary)
+                }
             }
+
+            HStack(alignment: .center, spacing: FFSpace.s) {
+                teamColumn(mine, alignment: .leading, winning: leadActual && anyPlayed)
+                Text("VS")
+                    .font(.ffMicro.bold()).tracking(1.2)
+                    .foregroundStyle(FFColor.textTertiary)
+                    .padding(.horizontal, 4)
+                teamColumn(opp, alignment: .trailing, winning: !leadActual && anyPlayed && opp.actual > mine.actual)
+            }
+
+            WinBar(myPercent: myWin)
         }
-        .ffCard()
+        .ffHeroCard(accentStripe: leadActual && anyPlayed)
     }
 
-    private func teamColumn(_ s: SideModel, label: String, winning: Bool) -> some View {
-        VStack(spacing: 4) {
-            Text(label).ffEyebrow(color: winning ? FFColor.accent : FFColor.textTertiary)
-            TeamCrestView(team: s.team, size: 38)
-            Text(s.team.shortLabel).font(.ffCaption).foregroundStyle(FFColor.textPrimary).lineLimit(1)
-            Text(s.actual.fpString)
-                .font(.ffStatLarge)
-                .foregroundStyle(winning ? FFColor.accent : FFColor.textPrimary)
+    private func teamColumn(_ s: SideModel, alignment: HorizontalAlignment, winning: Bool) -> some View {
+        VStack(alignment: alignment, spacing: 6) {
+            TeamCrestView(team: s.team, size: 32)
+                .frame(maxWidth: .infinity,
+                       alignment: alignment == .leading ? .leading
+                                : (alignment == .trailing ? .trailing : .center))
+            BigStat(
+                label: s.team.shortLabel,
+                value: s.actual.fpString,
+                caption: "proj \(s.projectedFinal.fpString)",
+                tint: winning ? FFColor.accent : FFColor.textPrimary,
+                alignment: alignment,
+                size: .large
+            )
         }
         .frame(maxWidth: .infinity)
-    }
-
-    private func winProbBar(myWin: Double, myName: String, oppName: String) -> some View {
-        VStack(spacing: 4) {
-            GeometryReader { geo in
-                HStack(spacing: 0) {
-                    Rectangle().fill(FFColor.accent)
-                        .frame(width: max(0, geo.size.width * myWin))
-                    Rectangle().fill(FFColor.surfaceElevated)
-                }
-                .clipShape(Capsule())
-            }
-            .frame(height: 8)
-            HStack {
-                Text("\(Int((myWin * 100).rounded()))%").font(.ffMicro.bold()).foregroundStyle(FFColor.accent)
-                Spacer()
-                Text("WIN PROBABILITY").font(.ffMicro).foregroundStyle(FFColor.textTertiary)
-                Spacer()
-                Text("\(Int(((1 - myWin) * 100).rounded()))%").font(.ffMicro.bold()).foregroundStyle(FFColor.textSecondary)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func yetToPlay(_ s: SideModel, align: HorizontalAlignment) -> some View {
-        VStack(alignment: align, spacing: 1) {
-            Text("\(s.remaining) yet to play").font(.ffMicro).foregroundStyle(FFColor.textTertiary)
-        }
     }
 
     // MARK: - Comparison

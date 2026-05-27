@@ -216,6 +216,179 @@ extension View {
     func ffScreen() -> some View {
         self.background(FFColor.bg.ignoresSafeArea())
     }
+
+    // Hero card surface — the "scoreboard-grade" container. Reserved for
+    // top-of-screen anchors (matchup banner, week totals, player detail
+    // header, draft on-the-clock). A subtle brand wash under the regular
+    // surface adds depth without noise; the radius is a touch larger than
+    // ffCard so the hero reads as a distinct tier. Pass `accentStripe: true`
+    // for a thin top edge highlight (e.g. "you're winning"). Do NOT apply
+    // this to every card — its punch comes from being used sparingly.
+    func ffHeroCard(
+        padding: CGFloat = FFSpace.l,
+        accentStripe: Bool = false,
+        accentTint: Color = FFColor.accent
+    ) -> some View {
+        self
+            .padding(padding)
+            .background(
+                RoundedRectangle(cornerRadius: FFRadius.l)
+                    .fill(FFColor.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: FFRadius.l)
+                            .fill(FFGradient.brandWash)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: FFRadius.l)
+                    .strokeBorder(FFColor.border, lineWidth: 1)
+            )
+            .overlay(alignment: .top) {
+                if accentStripe {
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(accentTint)
+                        .frame(height: 3)
+                        .padding(.horizontal, FFSpace.xxxl)
+                        .padding(.top, 1)
+                }
+            }
+    }
+}
+
+// MARK: - Hero primitives
+//
+// Small, composable views that reproduce the score-banner recipe across the
+// app's hero surfaces. Each one is intentionally minimal — they layer onto
+// the existing FFColor / FFSpace / FFRadius primitives, so a hero card is
+// always: ffHeroCard { BigStat / WinBar / StateChip / ... }.
+
+// Eyebrow-label + big monospaced value + optional caption. The visual anchor
+// of hero cards. Three sizes match the recipe used by the score banner
+// (.large for headline scores), totals card (.medium), and dense recap grids
+// (.small).
+struct BigStat: View {
+    enum Size {
+        case small, medium, large
+        var pointSize: CGFloat {
+            switch self {
+            case .small:  20
+            case .medium: 28
+            case .large:  36
+            }
+        }
+    }
+
+    let label: String
+    let value: String
+    var caption: String? = nil
+    var tint: Color = FFColor.textPrimary
+    var alignment: HorizontalAlignment = .leading
+    var size: Size = .medium
+
+    private var frameAlignment: Alignment {
+        switch alignment {
+        case .leading:  return .leading
+        case .trailing: return .trailing
+        default:        return .center
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: alignment, spacing: 4) {
+            Text(label.uppercased())
+                .font(.ffMicro.bold()).tracking(1.4)
+                .foregroundStyle(FFColor.textTertiary)
+            Text(value)
+                .font(.system(size: size.pointSize, weight: .bold, design: .monospaced))
+                .foregroundStyle(tint)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+            if let caption {
+                Text(caption)
+                    .font(.ffMicro)
+                    .foregroundStyle(FFColor.textTertiary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: frameAlignment)
+    }
+}
+
+// Status pill used inside hero surfaces. The pulse dot + tracked eyebrow is
+// the same vocabulary as the matchup banner — "live" wherever something is
+// happening now, "final" for completed state, "scheduled" for upcoming.
+// "locked" warns about an irreversible deadline (e.g. lineup lock); "auto"
+// marks an automated agent in control (e.g. auto-pick).
+struct StateChip: View {
+    enum State {
+        case live, final, scheduled, locked, auto
+
+        var color: Color {
+            switch self {
+            case .live:      return FFColor.negative
+            case .final:     return FFColor.textTertiary
+            case .scheduled: return FFColor.textTertiary
+            case .locked:    return FFColor.warning
+            case .auto:      return FFColor.accent
+            }
+        }
+        var showsPulse: Bool { self == .live }
+    }
+
+    let state: State
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if state.showsPulse {
+                Circle().fill(state.color)
+                    .frame(width: 6, height: 6)
+                    .shadow(color: state.color.opacity(0.7), radius: 4)
+            }
+            Text(label.uppercased())
+                .font(.ffMicro.bold()).tracking(1.4)
+                .foregroundStyle(state.color)
+        }
+    }
+}
+
+// Two-sided percentage bar used by the score banner. Extracted as a primitive
+// so any "me vs other" probability surface (matchup, draft pick odds, trade
+// fairness) can drop it in. The fill is the accent and reads left-to-right
+// from the viewer's perspective.
+struct WinBar: View {
+    // 0...1 — fraction of the bar that belongs to "me". 0.5 is even.
+    let myPercent: Double
+    var middleLabel: String? = "WIN PROBABILITY"
+
+    var body: some View {
+        let clamped = max(0, min(1, myPercent))
+        let mePct = Int((clamped * 100).rounded())
+        let oppPct = 100 - mePct
+        VStack(spacing: 4) {
+            GeometryReader { geo in
+                HStack(spacing: 0) {
+                    Rectangle().fill(FFColor.accent)
+                        .frame(width: max(0, geo.size.width * clamped))
+                    Rectangle().fill(FFColor.surfaceElevated)
+                }
+                .clipShape(Capsule())
+            }
+            .frame(height: 6)
+            HStack {
+                Text("\(mePct)%").font(.ffMicro.bold()).foregroundStyle(FFColor.accent)
+                Spacer()
+                if let middleLabel {
+                    Text(middleLabel.uppercased()).font(.ffMicro).tracking(1.2)
+                        .foregroundStyle(FFColor.textTertiary)
+                    Spacer()
+                }
+                Text("\(oppPct)%").font(.ffMicro.bold()).foregroundStyle(FFColor.textSecondary)
+            }
+        }
+    }
 }
 
 // MARK: - Button styles

@@ -773,7 +773,7 @@ private struct Drive: Identifiable {
 
         return groups.compactMap { raw -> Drive? in
             let filtered = raw.filter { !skip.contains(($0.playType ?? "").lowercased()) }
-            guard let first = filtered.first, let last = filtered.last else { return nil }
+            guard let first = filtered.first else { return nil }
             let yards = Int(filtered.reduce(0.0) { $0 + ($1.yardsGained ?? 0) })
             let scoring = filtered.contains(where: {
                 $0.touchdown == true
