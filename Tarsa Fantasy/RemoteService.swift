@@ -559,6 +559,47 @@ actor RemoteService {
         }
     }
 
+    // MARK: - Player values
+
+    // Active player-value ratings for every team in a league, keyed teamID →
+    // (playerID → value). Reads are gated to league members by RLS.
+    func leagueValues(leagueID: String) async -> [String: [String: PlayerValue]] {
+        guard let uuid = UUID(uuidString: leagueID) else { return [:] }
+        struct Row: Decodable {
+            let teamId: UUID
+            let playerId: String
+            let value: String
+            enum CodingKeys: String, CodingKey {
+                case teamId = "team_id", playerId = "player_id", value
+            }
+        }
+        let rows: [Row] = (try? await client.from("player_values")
+            .select("team_id, player_id, value")
+            .eq("league_id", value: uuid)
+            .execute()
+            .value) ?? []
+        var out: [String: [String: PlayerValue]] = [:]
+        for r in rows {
+            guard let v = PlayerValue(rawValue: r.value) else { continue }
+            out[r.teamId.uuidString, default: [:]][r.playerId] = v
+        }
+        return out
+    }
+
+    // Set, update, or (with nil) clear a player's value. The RPC enforces
+    // ownership/commish + roster membership server-side.
+    func setPlayerValue(teamID: String, playerID: String, value: PlayerValue?) async throws {
+        guard let uuid = UUID(uuidString: teamID) else { return }
+        struct Args: Encodable {
+            let p_team_id: UUID
+            let p_player_id: String
+            let p_value: String?
+        }
+        _ = try await client.rpc("set_player_value", params: Args(
+            p_team_id: uuid, p_player_id: playerID, p_value: value?.rawValue
+        )).execute()
+    }
+
     // MARK: - Row → model assembly
 
     private static func assemble(league row: LeagueRow, teams: [TeamRow]) -> League {

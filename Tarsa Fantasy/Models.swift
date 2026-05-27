@@ -513,6 +513,29 @@ struct PlayerSummary: Identifiable, Hashable {
     let pointsPerGame: Double
 }
 
+// A team owner's subjective rating of a player they roster. Stored per
+// (league, team, player); cleared when the player leaves the roster.
+// Visible to everyone in the league but only the owning team can set it.
+enum PlayerValue: String, Codable, CaseIterable, Hashable, Sendable, Identifiable {
+    case high, medium, low
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .high:   return "High"
+        case .medium: return "Medium"
+        case .low:    return "Low"
+        }
+    }
+    // Short tag for compact badges on dense roster/lineup rows.
+    var short: String {
+        switch self {
+        case .high:   return "HIGH"
+        case .medium: return "MED"
+        case .low:    return "LOW"
+        }
+    }
+}
+
 // One entry in a player's nickname history — the nickname a fantasy team gave
 // them, the team/league it came from, and whether it's still active (the
 // player is still on that roster) or was archived when they were dropped.

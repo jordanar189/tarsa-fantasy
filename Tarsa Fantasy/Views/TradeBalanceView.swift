@@ -13,6 +13,10 @@ struct TradeBalanceView: View {
     let rightName: String
     let rightReceives: [String]
     var showBreakdown: Bool = true
+    // Owner-assigned rating per player; the breakdown surfaces these badges so
+    // users can see why a player's value was boosted or discounted. Pass an
+    // empty map (the default) to hide the badges entirely.
+    var valueRatings: [String: PlayerValue] = [:]
 
     private func total(_ ids: [String]) -> Double {
         Fantasy.round2(ids.reduce(0) { $0 + (values[$1] ?? 0) })
@@ -54,7 +58,7 @@ struct TradeBalanceView: View {
                     breakdown(ids: rightReceives, align: .trailing)
                 }
             }
-            Text("Value = projected points above a replaceable starter at the position.")
+            Text("Value = projected points above a replaceable starter at the position, scaled by each owner's rating (HIGH +25%, LOW −25%).")
                 .font(.ffMicro).foregroundStyle(FFColor.textTertiary)
         }
         .ffCard()
@@ -89,16 +93,19 @@ struct TradeBalanceView: View {
                 let p = players[id]
                 let name = p?.name ?? id
                 let v = (values[id] ?? 0).fpString
+                let rating = valueRatings[id]
                 if align == .leading {
                     HStack(spacing: 6) {
                         Text(v).font(.ffMicro.bold()).foregroundStyle(FFColor.accent)
                             .frame(width: 34, alignment: .leading)
                         PlayerAvatar(url: p?.headshotURL ?? "", fallback: name.initialsFromName, size: 20)
                         Text(name).font(.ffMicro).foregroundStyle(FFColor.textSecondary).lineLimit(1)
+                        if let rating { PlayerValueBadge(value: rating) }
                     }
                     .playerLink(id)
                 } else {
                     HStack(spacing: 6) {
+                        if let rating { PlayerValueBadge(value: rating) }
                         Text(name).font(.ffMicro).foregroundStyle(FFColor.textSecondary).lineLimit(1)
                         PlayerAvatar(url: p?.headshotURL ?? "", fallback: name.initialsFromName, size: 20)
                         Text(v).font(.ffMicro.bold()).foregroundStyle(FFColor.accent)

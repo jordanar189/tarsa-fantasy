@@ -338,8 +338,10 @@ struct MatchupTabView: View {
     private func statusAndContext(_ e: LeagueRosterEntry, alignment: HorizontalAlignment) -> some View {
         let opp = context.opponent(forTeam: e.team)
         let rating = context.rating(position: e.position, opponent: opp)
+        let value = playerValue(for: e)
         HStack(spacing: 4) {
             if alignment == .trailing { Spacer(minLength: 0) }
+            if let value { PlayerValueBadge(value: value) }
             if let opp { Text("vs \(opp)").font(.ffMicro).foregroundStyle(FFColor.textTertiary) }
             else { Text("BYE").font(.ffMicro).foregroundStyle(FFColor.warning) }
             if rating != .unknown { MatchupPill(rating: rating, compact: true) }
@@ -351,6 +353,13 @@ struct MatchupTabView: View {
             if alignment == .leading { Spacer(minLength: 0) }
         }
         .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
+    }
+
+    private func playerValue(for e: LeagueRosterEntry) -> PlayerValue? {
+        guard let league,
+              let owner = league.teams.first(where: { $0.roster.contains(e.playerID) })
+        else { return nil }
+        return app.playerValue(teamID: owner.id, playerID: e.playerID)
     }
 
     private func badge(_ text: String, color: Color) -> some View {

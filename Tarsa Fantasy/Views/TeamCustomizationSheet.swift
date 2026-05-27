@@ -29,6 +29,11 @@ struct TeamCustomizationSheet: View {
     @State private var nicknames: [String: String] = [:]
     @State private var originalNicknames: [String: String] = [:]
 
+    // Per-player value edits, keyed by player ID. Seeded from leagueValues on
+    // appear; `originalValues` lets save() push only what changed.
+    @State private var values: [String: PlayerValue] = [:]
+    @State private var originalValues: [String: PlayerValue] = [:]
+
     // Curated accent palette (kept readable on the dark surfaces).
     private static let palette: [String] = [
         "#FF5A5F", "#FF8C42", "#FFC300", "#3DDC97",
@@ -86,9 +91,13 @@ struct TeamCustomizationSheet: View {
             }
             .task {
                 await app.loadLeagueNicknames(leagueID: league.id)
-                let current = app.leagueNicknames[team.id] ?? [:]
-                nicknames = current
-                originalNicknames = current
+                await app.loadLeagueValues(leagueID: league.id)
+                let currentNicks = app.leagueNicknames[team.id] ?? [:]
+                nicknames = currentNicks
+                originalNicknames = currentNicks
+                let currentValues = app.leagueValues[team.id] ?? [:]
+                values = currentValues
+                originalValues = currentValues
             }
         }
     }
@@ -225,14 +234,14 @@ struct TeamCustomizationSheet: View {
     @ViewBuilder
     private var nicknamesCard: some View {
         VStack(alignment: .leading, spacing: FFSpace.s) {
-            Text("PLAYER NICKNAMES").ffEyebrow()
+            Text("PLAYER NICKNAMES & VALUES").ffEyebrow()
             if team.roster.isEmpty {
-                Text("Draft or add players to give them nicknames.")
+                Text("Draft or add players to give them nicknames and values.")
                     .font(.ffCaption)
                     .foregroundStyle(FFColor.textTertiary)
                     .padding(.vertical, FFSpace.s)
             } else {
-                Text("Nicknames show across the league and reset if you drop the player (their history is kept).")
+                Text("Nicknames and value ratings show across the league. Both reset if you drop the player (nickname history is kept).")
                     .font(.ffMicro)
                     .foregroundStyle(FFColor.textTertiary)
                 VStack(spacing: 0) {
@@ -250,30 +259,72 @@ struct TeamCustomizationSheet: View {
             get: { nicknames[p.id] ?? "" },
             set: { nicknames[p.id] = $0 }
         )
-        return HStack(spacing: FFSpace.m) {
-            PlayerAvatar(url: p.headshotURL, fallback: p.name.initialsFromName, size: 34)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(p.name).font(.ffCaption).foregroundStyle(FFColor.textPrimary).lineLimit(1)
-                TextField("", text: binding,
-                          prompt: Text("Add a nickname").foregroundColor(FFColor.textTertiary))
-                    .font(.ffBody)
-                    .foregroundStyle(FFColor.accent)
-                    .autocorrectionDisabled()
-            }
-            Spacer()
-            if !(nicknames[p.id] ?? "").isEmpty {
-                Button {
-                    nicknames[p.id] = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(FFColor.textTertiary)
+        return VStack(spacing: FFSpace.s) {
+            HStack(spacing: FFSpace.m) {
+                PlayerAvatar(url: p.headshotURL, fallback: p.name.initialsFromName, size: 34)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(p.name).font(.ffCaption).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                    TextField("", text: binding,
+                              prompt: Text("Add a nickname").foregroundColor(FFColor.textTertiary))
+                        .font(.ffBody)
+                        .foregroundStyle(FFColor.accent)
+                        .autocorrectionDisabled()
                 }
-                .buttonStyle(.plain)
+                Spacer()
+                if !(nicknames[p.id] ?? "").isEmpty {
+                    Button {
+                        nicknames[p.id] = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(FFColor.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
+            valuePicker(for: p)
+                .padding(.leading, 34 + FFSpace.m)
         }
         .padding(.vertical, FFSpace.s)
         .ffHairlineBottom()
+    }
+
+    private func valuePicker(for p: Player) -> some View {
+        HStack(spacing: 6) {
+            ForEach(PlayerValue.allCases) { v in
+                let selected = values[p.id] == v
+                Button {
+                    values[p.id] = selected ? nil : v
+                } label: {
+                    Text(v.short)
+                        .font(.ffMicro.bold())
+                        .tracking(0.8)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(
+                            selected ? valueColor(v).opacity(0.22) : FFColor.surfaceElevated,
+                            in: RoundedRectangle(cornerRadius: 4)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .strokeBorder(
+                                    selected ? valueColor(v).opacity(0.6) : FFColor.border,
+                                    lineWidth: 1
+                                )
+                        )
+                        .foregroundStyle(selected ? valueColor(v) : FFColor.textSecondary)
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+        }
+    }
+
+    private func valueColor(_ v: PlayerValue) -> Color {
+        switch v {
+        case .high:   return FFColor.positive
+        case .medium: return FFColor.warning
+        case .low:    return FFColor.negative
+        }
     }
 
     // MARK: - Upload + save
@@ -301,14 +352,21 @@ struct TeamCustomizationSheet: View {
     private func save() async {
         saving = true; defer { saving = false }
         do {
-            // Push nickname changes first so the refetched league reflects
-            // them; only send the ones that actually changed.
+            // Push nickname + value changes first so the refetched league
+            // reflects them; only send the ones that actually changed.
             for p in team.roster {
                 let new = (nicknames[p] ?? "").trimmingCharacters(in: .whitespaces)
                 let old = (originalNicknames[p] ?? "").trimmingCharacters(in: .whitespaces)
                 if new != old {
                     try await app.setPlayerNickname(
                         leagueID: league.id, teamID: team.id, playerID: p, nickname: new
+                    )
+                }
+                let newV = values[p]
+                let oldV = originalValues[p]
+                if newV != oldV {
+                    try await app.setPlayerValue(
+                        leagueID: league.id, teamID: team.id, playerID: p, value: newV
                     )
                 }
             }

@@ -78,6 +78,7 @@ struct PlayerDetailView: View {
                             if let injury = app.injuries[player.id] {
                                 injuryCard(injury)
                             }
+                            valueCard(for: player)
                             sectionPicker
                             switch section {
                             case .overview: overviewSection(for: player)
@@ -277,6 +278,9 @@ struct PlayerDetailView: View {
                         if let status = p.profile?.status,
                            status.uppercased() != "ACT" && !status.isEmpty {
                             Text("· \(status)").font(.ffMicro).foregroundStyle(FFColor.warning)
+                        }
+                        if let value = app.playerValue(playerID: p.id) {
+                            PlayerValueBadge(value: value)
                         }
                     }
                     if let strip = bioStrip(p) {
@@ -506,6 +510,106 @@ struct PlayerDetailView: View {
         .overlay(
             RoundedRectangle(cornerRadius: FFRadius.s)
                 .strokeBorder(color.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    // MARK: - Value (high/medium/low) — owner-set, league-visible
+
+    // The team in the selected league that currently rosters this player,
+    // if any. Nil for free agents or when no league is selected.
+    private func owningTeam(for p: Player) -> FantasyTeam? {
+        guard let lg = app.selectedLeague else { return nil }
+        return lg.teams.first { $0.roster.contains(p.id) }
+    }
+
+    private func canEditValue(for p: Player) -> Bool {
+        guard let owner = owningTeam(for: p) else { return false }
+        return owner.id == myLeagueTeam?.id
+    }
+
+    @ViewBuilder
+    private func valueCard(for p: Player) -> some View {
+        let owner = owningTeam(for: p)
+        let editable = canEditValue(for: p)
+        if editable, let team = owner {
+            ownerValueCard(player: p, team: team)
+        } else if let owner, let value = app.playerValue(teamID: owner.id, playerID: p.id) {
+            spectatorValueCard(owner: owner, value: value)
+        }
+    }
+
+    private func ownerValueCard(player p: Player, team: FantasyTeam) -> some View {
+        let current = app.playerValue(teamID: team.id, playerID: p.id)
+        return VStack(alignment: .leading, spacing: FFSpace.s) {
+            HStack {
+                Text("MY VALUE").ffEyebrow()
+                Spacer()
+                if current != nil {
+                    Button {
+                        Task { await applyValue(nil, for: p, team: team) }
+                    } label: {
+                        Text("Clear")
+                            .font(.ffMicro.bold())
+                            .foregroundStyle(FFColor.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            HStack(spacing: 6) {
+                ForEach(PlayerValue.allCases) { v in
+                    let selected = current == v
+                    Button {
+                        Task { await applyValue(selected ? nil : v, for: p, team: team) }
+                    } label: {
+                        Text(v.label)
+                            .font(.ffCaption.bold())
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(
+                                selected ? valueColor(v).opacity(0.22) : FFColor.surfaceElevated,
+                                in: RoundedRectangle(cornerRadius: FFRadius.s)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: FFRadius.s)
+                                    .strokeBorder(
+                                        selected ? valueColor(v).opacity(0.6) : FFColor.border,
+                                        lineWidth: 1
+                                    )
+                            )
+                            .foregroundStyle(selected ? valueColor(v) : FFColor.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .ffCard()
+    }
+
+    private func spectatorValueCard(owner: FantasyTeam, value: PlayerValue) -> some View {
+        HStack(spacing: FFSpace.s) {
+            Text("\(owner.name.uppercased()) VALUES")
+                .ffEyebrow()
+            PlayerValueBadge(value: value)
+            Spacer()
+        }
+        .ffCard()
+    }
+
+    private func valueColor(_ v: PlayerValue) -> Color {
+        switch v {
+        case .high:   return FFColor.positive
+        case .medium: return FFColor.warning
+        case .low:    return FFColor.negative
+        }
+    }
+
+    private func applyValue(_ v: PlayerValue?, for p: Player, team: FantasyTeam) async {
+        guard let lg = app.selectedLeague else { return }
+        // On failure the picker snaps back to server state via the cache
+        // refresh inside setPlayerValue; surfacing inline isn't worth the
+        // wiring for what's essentially a one-tap rating control.
+        try? await app.setPlayerValue(
+            leagueID: lg.id, teamID: team.id, playerID: p.id, value: v
         )
     }
 

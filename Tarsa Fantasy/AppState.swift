@@ -184,6 +184,7 @@ final class AppState {
         if selectedSeason != lg.season { selectedSeason = lg.season }
         await loadSeason(lg.season)
         await loadLeagueNicknames(leagueID: id)
+        await loadLeagueValues(leagueID: id)
     }
 
     // Re-pull the selected league after a mutation so the switcher, NFL tab,
@@ -192,6 +193,7 @@ final class AppState {
         guard let id = selectedLeagueID else { return }
         if let lg = await league(id) { selectedLeague = lg }
         await loadLeagueNicknames(leagueID: id)
+        await loadLeagueValues(leagueID: id)
     }
 
     // The team the signed-in user controls in a league (the sim's primary team
@@ -1315,14 +1317,16 @@ final class AppState {
         leagueNicknames = await remote.leagueNicknames(leagueID: leagueID)
     }
 
-    // Refresh the nickname cache for the focused league after a roster change.
-    // The DB trigger archives a nickname server-side the moment its player
-    // leaves a roster, so without this the cache would keep serving a stale
-    // nickname for a dropped (and possibly re-added) player until the next
-    // full league load — breaking the "reset on drop" behavior in-session.
+    // Refresh the per-roster team-meta caches (nicknames + values) for the
+    // focused league after a roster change. The DB triggers reconcile both
+    // server-side the moment a player leaves a roster, so without this the
+    // caches would keep serving stale entries for dropped (and possibly
+    // re-added) players until the next full league load — breaking the
+    // "reset on drop" behavior in-session.
     func refreshSelectedNicknames() async {
         guard let id = selectedLeagueID else { return }
         await loadLeagueNicknames(leagueID: id)
+        await loadLeagueValues(leagueID: id)
     }
 
     // The nickname a team has given a player on its roster, or nil.
@@ -1349,6 +1353,58 @@ final class AppState {
 
     func playerNicknameHistory(playerID: String) async -> [NicknameHistoryEntry] {
         await remote.playerNicknameHistory(playerID: playerID)
+    }
+
+    // MARK: - Player values
+
+    // Owner-assigned player value ratings for the currently-viewed league,
+    // keyed teamID → (playerID → value). Loaded alongside nicknames when a
+    // league is focused; refreshed on every roster change so a dropped
+    // player's value isn't served stale.
+    var leagueValues: [String: [String: PlayerValue]] = [:]
+
+    func loadLeagueValues(leagueID: String) async {
+        leagueValues = await remote.leagueValues(leagueID: leagueID)
+    }
+
+    func refreshSelectedValues() async {
+        guard let id = selectedLeagueID else { return }
+        await loadLeagueValues(leagueID: id)
+    }
+
+    // The value a team has set on a player on its roster, or nil.
+    func playerValue(teamID: String, playerID: String) -> PlayerValue? {
+        leagueValues[teamID]?[playerID]
+    }
+
+    // The owning team's value for a player in the selected league (whichever
+    // team rosters them). Nil when the player is unrostered or unrated.
+    func playerValue(playerID: String) -> PlayerValue? {
+        guard let lg = selectedLeague,
+              let team = lg.teams.first(where: { $0.roster.contains(playerID) })
+        else { return nil }
+        return playerValue(teamID: team.id, playerID: playerID)
+    }
+
+    // All value ratings in the selected league flattened to playerID → value.
+    // Safe to flatten because a player can only sit on one roster at a time, so
+    // the per-team buckets never collide. Used by the trade calculator to weigh
+    // each side's haul by the owner's subjective rating.
+    func selectedLeagueValueMap() -> [String: PlayerValue] {
+        var out: [String: PlayerValue] = [:]
+        for (_, perPlayer) in leagueValues {
+            for (pid, v) in perPlayer { out[pid] = v }
+        }
+        return out
+    }
+
+    func setPlayerValue(
+        leagueID: String, teamID: String, playerID: String, value: PlayerValue?
+    ) async throws {
+        try await remote.setPlayerValue(
+            teamID: teamID, playerID: playerID, value: value
+        )
+        await loadLeagueValues(leagueID: leagueID)
     }
 
     // Full career injury history for one player, collapsed into distinct events

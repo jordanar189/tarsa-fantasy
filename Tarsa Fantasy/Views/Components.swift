@@ -247,6 +247,35 @@ struct InjuryBadge: View {
     }
 }
 
+// Compact owner-assigned value rating chip (HIGH / MED / LOW). Rendered next
+// to PositionPill / InjuryBadge on dense player rows. Color-coded so the
+// rating reads at a glance: high = positive, medium = warning, low = negative.
+struct PlayerValueBadge: View {
+    let value: PlayerValue
+
+    private var color: Color {
+        switch value {
+        case .high:   return FFColor.positive
+        case .medium: return FFColor.warning
+        case .low:    return FFColor.negative
+        }
+    }
+
+    var body: some View {
+        Text(value.short)
+            .font(.ffMicro.bold())
+            .tracking(0.8)
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(color.opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .strokeBorder(color.opacity(0.45), lineWidth: 1)
+            )
+            .foregroundStyle(color)
+            .accessibilityLabel("Value: \(value.label)")
+    }
+}
+
 struct ChipRow<Item: Hashable & Identifiable, Label: View>: View {
     let items: [Item]
     @Binding var selection: Item
