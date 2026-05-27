@@ -46,6 +46,16 @@ struct LineupTabView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
             .leagueSwitcher()
+            // League and Matchup are no longer tabs — they're drill-ins from
+            // the Lineup hero. We declare the typed destinations once so any
+            // NavigationLink in this screen (score banner, nav pills, future
+            // contextual links) routes here.
+            .navigationDestination(for: LineupDestination.self) { dest in
+                switch dest {
+                case .matchup:           MatchupTabView()
+                case .league(let id):    LeagueDetailView(leagueID: id)
+                }
+            }
         }
         .onAppear {
             if !didInit { week = defaultWeek; didInit = true }
@@ -61,6 +71,14 @@ struct LineupTabView: View {
 
     private struct SlotRef: Identifiable { let index: Int; var id: Int { index } }
 
+    // Typed destinations for the Lineup tab's navigation stack. Keeps the call
+    // sites (NavigationLink(value:)) free of view-construction boilerplate and
+    // lets us route from anywhere in the lineup screen without threading state.
+    enum LineupDestination: Hashable {
+        case matchup
+        case league(String)
+    }
+
     @ViewBuilder
     private var content: some View {
         if league == nil {
@@ -70,6 +88,8 @@ struct LineupTabView: View {
         } else {
             ScrollView {
                 VStack(spacing: FFSpace.l) {
+                    scoreBanner
+                    navPills
                     weekPicker
                     totalsCard
                     if let error {
@@ -81,6 +101,7 @@ struct LineupTabView: View {
                     benchCard
                     if config.ir > 0 { irCard }
                     if config.taxi > 0 { taxiCard }
+                    lineupLocksFooter
                 }
                 .padding(.horizontal, FFSpace.l)
                 .padding(.top, FFSpace.s)
@@ -102,6 +123,98 @@ struct LineupTabView: View {
             Spacer(); Spacer()
         }
         .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Score banner (me vs opp hero)
+
+    // Mirror the math used by MatchupTabView's SideModel so the two screens
+    // never disagree on score, projection, or remaining starters. Returns nil
+    // for weeks the viewer isn't playing (off weeks, bye, playoff TBD).
+    private func bannerSide(_ t: FantasyTeam, label: String) -> BannerSideRender {
+        guard let league else {
+            return BannerSideRender(shortName: label, actual: 0, projectedFinal: 0,
+                                    remaining: 0, played: false)
+        }
+        let score = Fantasy.teamWeekScore(
+            players: leaguePlayers, team: t, config: league.rosterConfig,
+            week: week, scoring: league.scoring, settings: league.scoringSettings
+        )
+        let starters = score.roster.filter { $0.slot.isStarter }
+        var projFinal = 0.0
+        var remaining = 0
+        var anyPlayed = false
+        for e in starters where !e.playerID.isEmpty {
+            projFinal += context.liveOrProjected(e.playerID)
+            if context.hasPlayed(e.playerID) { anyPlayed = true }
+            if !context.hasPlayed(e.playerID), context.opponent(forTeam: e.team) != nil { remaining += 1 }
+        }
+        return BannerSideRender(
+            shortName: t.shortLabel,
+            actual: score.total,
+            projectedFinal: Fantasy.round2(projFinal),
+            remaining: remaining,
+            played: anyPlayed
+        )
+    }
+
+    private func resolveBannerSides() -> (mine: BannerSideRender, opp: BannerSideRender)? {
+        guard let league, let mine = team else { return nil }
+        let oppTeam: FantasyTeam?
+        if week > league.regularSeasonWeeks {
+            let bracket = Fantasy.playoffBracket(league: league, players: leaguePlayers)
+            let round = bracket.rounds.first { week >= $0.week && week <= $0.endWeek }
+            let game = round?.games.first { $0.top.teamID == mine.id || $0.bottom.teamID == mine.id }
+            let oppID = game.flatMap { $0.top.teamID == mine.id ? $0.bottom.teamID : $0.top.teamID }
+            oppTeam = oppID.flatMap { id in league.teams.first { $0.id == id } }
+        } else {
+            let result = Fantasy.scoreboard(league: league, players: leaguePlayers, week: week)
+            let m = result.matchups.first { $0.home.teamID == mine.id || $0.away.teamID == mine.id }
+            let oppID = m.flatMap { $0.home.teamID == mine.id ? $0.away.teamID : $0.home.teamID }
+            oppTeam = league.teams.first { $0.id == oppID }
+        }
+        guard let oppTeam else { return nil }
+        return (bannerSide(mine, label: "YOU"), bannerSide(oppTeam, label: "OPP"))
+    }
+
+    @ViewBuilder
+    private var scoreBanner: some View {
+        if let sides = resolveBannerSides() {
+            NavigationLink(value: LineupDestination.matchup) {
+                ScoreBannerCard(mine: sides.mine, opp: sides.opp, week: week)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    // MARK: - Nav pills (League · Matchup)
+
+    @ViewBuilder
+    private var navPills: some View {
+        if let league {
+            HStack(spacing: FFSpace.s) {
+                NavigationLink(value: LineupDestination.league(league.id)) {
+                    LineupNavPill(label: "League", accent: false)
+                }
+                .buttonStyle(.plain)
+                NavigationLink(value: LineupDestination.matchup) {
+                    LineupNavPill(label: "Matchup", accent: true)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: - Footer caption
+
+    @ViewBuilder
+    private var lineupLocksFooter: some View {
+        if canEdit {
+            Text("Lineups lock at each player's kickoff.")
+                .font(.ffMicro).tracking(0.6)
+                .foregroundStyle(FFColor.textTertiary)
+                .frame(maxWidth: .infinity)
+                .padding(.top, FFSpace.s)
+        }
     }
 
     // MARK: - Week picker
@@ -714,5 +827,197 @@ struct LineupTabView: View {
             }
             saving = false
         }
+    }
+}
+
+// MARK: - Score banner + nav pill view components
+
+// Hero card at the top of the Lineup tab: this week's matchup at a glance.
+// Big tabular scores for both sides, win-probability bar, "X yet to play"
+// summary, and a live/final state chip. Tapping pushes the full Matchup
+// screen onto the lineup stack. Sized to read at a glance from across the
+// room (the score numbers are the visual anchor of the lineup screen).
+private struct ScoreBannerCard: View {
+    let mine: LineupTabView.BannerSideRender
+    let opp: LineupTabView.BannerSideRender
+    let week: Int
+
+    private var leading: Bool { mine.actual >= opp.actual }
+    private var anyPlayed: Bool { mine.played || opp.played }
+    private var allDone: Bool {
+        mine.played && opp.played && mine.remaining == 0 && opp.remaining == 0
+    }
+    private var stateLabel: String {
+        if allDone { return "FINAL · WEEK \(week)" }
+        if anyPlayed { return "LIVE · WEEK \(week)" }
+        return "WEEK \(week)"
+    }
+    private var isLive: Bool { anyPlayed && !allDone }
+    private var winProb: Double {
+        MatchupMath.winProbability(
+            myFinal: mine.projectedFinal,
+            oppFinal: opp.projectedFinal,
+            remainingStarters: mine.remaining + opp.remaining
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: FFSpace.m) {
+            stateHeader
+            scoreRow
+            winBar
+        }
+        .padding(.horizontal, FFSpace.l)
+        .padding(.vertical, FFSpace.m)
+        .background(
+            RoundedRectangle(cornerRadius: FFRadius.l)
+                .fill(FFColor.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: FFRadius.l)
+                        .fill(FFGradient.brandWash)
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: FFRadius.l)
+                .strokeBorder(FFColor.border, lineWidth: 1)
+        )
+        .overlay(alignment: .top) {
+            if leading && anyPlayed {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(FFColor.accent)
+                    .frame(height: 3)
+                    .padding(.horizontal, FFSpace.xxxl)
+                    .padding(.top, 1)
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: FFRadius.l))
+    }
+
+    private var stateHeader: some View {
+        HStack {
+            HStack(spacing: 6) {
+                if isLive {
+                    Circle().fill(FFColor.negative)
+                        .frame(width: 6, height: 6)
+                        .shadow(color: FFColor.negative.opacity(0.7), radius: 4)
+                }
+                Text(stateLabel)
+                    .ffEyebrow(color: isLive ? FFColor.negative : FFColor.textTertiary)
+            }
+            Spacer()
+            if anyPlayed && !allDone {
+                Text("\(mine.remaining + opp.remaining) yet to play")
+                    .ffEyebrow(color: FFColor.textTertiary)
+            } else if !anyPlayed {
+                Text("Tap to view matchup")
+                    .ffEyebrow(color: FFColor.textTertiary)
+            } else {
+                Text("FINAL")
+                    .ffEyebrow(color: FFColor.textTertiary)
+            }
+        }
+    }
+
+    private var scoreRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: FFSpace.s) {
+            sideColumn(mine, alignment: .leading, winning: leading && anyPlayed)
+            Text("VS")
+                .font(.ffMicro.bold()).tracking(1.2)
+                .foregroundStyle(FFColor.textTertiary)
+                .padding(.horizontal, 4)
+            sideColumn(opp, alignment: .trailing, winning: !leading && anyPlayed && opp.actual > mine.actual)
+        }
+    }
+
+    private func sideColumn(_ s: LineupTabView.BannerSideRender, alignment: HorizontalAlignment, winning: Bool) -> some View {
+        VStack(alignment: alignment, spacing: 3) {
+            Text(s.shortName)
+                .font(.ffCaption.bold())
+                .foregroundStyle(FFColor.textSecondary)
+                .lineLimit(1)
+            Text(s.actual.fpString)
+                .font(.system(size: 36, weight: .bold, design: .monospaced))
+                .foregroundStyle(winning ? FFColor.accent : FFColor.textPrimary)
+                .monospacedDigit()
+            Text("proj \(s.projectedFinal.fpString)")
+                .font(.ffMicro)
+                .foregroundStyle(FFColor.textTertiary)
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
+    }
+
+    private var winBar: some View {
+        let mePct = Int((winProb * 100).rounded())
+        let oppPct = 100 - mePct
+        return VStack(spacing: 4) {
+            GeometryReader { geo in
+                HStack(spacing: 0) {
+                    Rectangle().fill(FFColor.accent)
+                        .frame(width: max(0, geo.size.width * winProb))
+                    Rectangle().fill(FFColor.surfaceElevated)
+                }
+                .clipShape(Capsule())
+            }
+            .frame(height: 6)
+            HStack {
+                Text("\(mePct)%").font(.ffMicro.bold()).foregroundStyle(FFColor.accent)
+                Spacer()
+                Text("WIN PROBABILITY").font(.ffMicro).foregroundStyle(FFColor.textTertiary)
+                Spacer()
+                Text("\(oppPct)%").font(.ffMicro.bold()).foregroundStyle(FFColor.textSecondary)
+            }
+        }
+    }
+}
+
+// Side-by-side drill-in pills for League and Matchup. One is accented (the
+// primary call-to-action — your weekly matchup); the other is a quiet surface
+// for the broader league context.
+private struct LineupNavPill: View {
+    let label: String
+    let accent: Bool
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("GO TO")
+                    .font(.ffMicro.bold()).tracking(1.4)
+                    .foregroundStyle(accent ? Color.white.opacity(0.75) : FFColor.textTertiary)
+                Text(label)
+                    .font(.ffHeadline)
+                    .foregroundStyle(accent ? Color.white : FFColor.textPrimary)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(accent ? Color.white.opacity(0.85) : FFColor.textTertiary)
+        }
+        .padding(.horizontal, FFSpace.m)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: FFRadius.m)
+                .fill(accent ? AnyShapeStyle(FFGradient.brand) : AnyShapeStyle(FFColor.surface))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: FFRadius.m)
+                .strokeBorder(accent ? Color.clear : FFColor.border, lineWidth: 1)
+        )
+        .shadow(color: accent ? FFBrand.violet.opacity(0.25) : .clear, radius: 10, y: 4)
+        .frame(maxWidth: .infinity)
+        .contentShape(RoundedRectangle(cornerRadius: FFRadius.m))
+    }
+}
+
+// Render-only DTO consumed by ScoreBannerCard. Kept on the parent type so
+// the private banner struct above can reach it without re-exporting the
+// internal BannerSide.
+extension LineupTabView {
+    struct BannerSideRender {
+        let shortName: String
+        let actual: Double
+        let projectedFinal: Double
+        let remaining: Int
+        let played: Bool
     }
 }

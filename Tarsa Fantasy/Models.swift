@@ -1,6 +1,10 @@
 import Foundation
 
-enum AppTab: String, Hashable { case league, lineup, matchup, players }
+// Bottom-tab destinations. League and Matchup are reached as push navigation
+// from inside Lineup, not as their own tabs — the bottom bar is intentionally
+// minimal so the most-used screens (your lineup and the player pool) are one
+// tap away and league/matchup come along as drill-ins from the lineup hero.
+enum AppTab: String, Hashable { case lineup, players }
 
 // Persisted UI theme. `system` follows the device setting; `light`/`dark`
 // force the app into that scheme regardless of the device. Default is

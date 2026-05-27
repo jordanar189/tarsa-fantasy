@@ -1,10 +1,13 @@
 import SwiftUI
 
-// Matchup tab: your weekly head-to-head for the selected league. Score header
+// Matchup screen: your weekly head-to-head for the selected league. Score header
 // with projected final + win probability + players-yet-to-play, slot-by-slot
 // starter comparison with projections and game context, an expandable box score
 // per player, a bench/optimal recap, and head-to-head history vs the opponent.
-// Replaces the old in-league Matchup section.
+//
+// Pushed onto the Lineup tab's navigation stack (via the score-banner tap or
+// the "Matchup" nav pill) — it is no longer a top-level tab, so it relies on
+// the host NavigationStack for back-button chrome rather than wrapping its own.
 struct MatchupTabView: View {
     @Environment(AppState.self) private var app
 
@@ -23,16 +26,14 @@ struct MatchupTabView: View {
     private var contextKey: String { "\(app.selectedLeagueID ?? "")-\(week)" }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                FFColor.bg.ignoresSafeArea()
-                content
-            }
-            .navigationTitle("Matchup")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(FFColor.bg, for: .navigationBar)
-            .leagueSwitcher()
+        ZStack {
+            FFColor.bg.ignoresSafeArea()
+            content
         }
+        .navigationTitle("Matchup")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(FFColor.bg, for: .navigationBar)
+        .leagueSwitcher()
         .onAppear { if !didInit { week = defaultWeek; didInit = true } }
         .task(id: contextKey) { await reload() }
     }
