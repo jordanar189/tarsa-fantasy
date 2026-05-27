@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="GeoDuel — two-player geography duel for iMessage. Privacy policy and support contact.">
+  <title>GeoDuel</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 88 88'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%231FB4A8'/%3E%3Cstop offset='1' stop-color='%23363A8A'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='88' height='88' rx='22' fill='url(%23g)'/%3E%3Ccircle cx='44' cy='44' r='22' fill='none' stroke='white' stroke-width='5'/%3E%3Ccircle cx='44' cy='44' r='5.5' fill='white'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      --teal: #1FB4A8;
+      --indigo: #363A8A;
+      --ink: #1a1a2e;
+      --soft: #6b6b80;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif;
+      background: linear-gradient(to bottom, var(--teal), var(--indigo));
+      background-attachment: fixed;
+      color: var(--ink);
+      min-height: 100vh;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 56px 22px 80px;
+    }
+    header {
+      text-align: center;
+      color: white;
+      margin-bottom: 40px;
+    }
+    .logo {
+      width: 96px;
+      height: 96px;
+      margin: 0 auto 18px;
+      filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.28));
+    }
+    h1 {
+      font-size: 40px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+    }
+    .tag {
+      margin-top: 6px;
+      opacity: 0.9;
+      font-size: 17px;
+      font-weight: 500;
+    }
+    .card {
+      background: white;
+      border-radius: 18px;
+      padding: 30px 30px 28px;
+      margin-bottom: 18px;
+      box-shadow: 0 10px 32px rgba(0, 0, 0, 0.14);
+    }
+    h2 {
+      font-size: 22px;
+      font-weight: 700;
+      margin-bottom: 14px;
+      color: var(--indigo);
+    }
+    p {
+      font-size: 16px;
+      color: var(--ink);
+      margin-bottom: 12px;
+    }
+    p:last-child { margin-bottom: 0; }
+    a {
+      color: var(--teal);
+      text-decoration: none;
+      font-weight: 600;
+    }
+    a:hover { text-decoration: underline; }
+    .email-btn {
+      display: inline-block;
+      margin-top: 6px;
+      background: linear-gradient(135deg, var(--teal), var(--indigo));
+      color: white;
+      padding: 13px 24px;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 16px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+    }
+    .email-btn:hover {
+      text-decoration: none;
+      transform: translateY(-1px);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+    }
+    .email-row { text-align: center; margin-top: 10px; }
+    .meta {
+      color: rgba(255, 255, 255, 0.72);
+      font-size: 13px;
+      margin-top: 28px;
+      text-align: center;
+    }
+    @media (max-width: 480px) {
+      .wrap { padding: 40px 16px 60px; }
+      h1 { font-size: 32px; }
+      .card { padding: 24px 22px 22px; border-radius: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <svg class="logo" viewBox="0 0 88 88" xmlns="http://www.w3.org/2000/svg" aria-label="GeoDuel logo">
+        <defs>
+          <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#1FB4A8"/>
+            <stop offset="1" stop-color="#363A8A"/>
+          </linearGradient>
+        </defs>
+        <rect width="88" height="88" rx="22" fill="url(#bg)"/>
+        <circle cx="44" cy="44" r="22" fill="none" stroke="white" stroke-width="5"/>
+        <circle cx="44" cy="44" r="5.5" fill="white"/>
+      </svg>
+      <h1>GeoDuel</h1>
+      <p class="tag">Two-player geography duel for iMessage</p>
+    </header>
+
+    <section class="card" id="privacy">
+      <h2>Privacy Policy</h2>
+      <p>GeoDuel does not collect, store, transmit, or share any user data.</p>
+      <p>The app has no accounts, no logins, no analytics, no tracking, no advertising, and no backend servers of its own. Every game runs entirely on your device and is exchanged between players as standard iMessage messages — we have no access to those messages.</p>
+      <p>Map imagery is provided by Apple Maps Look Around. Apple's privacy policy governs that imagery and any related on-device requests. GeoDuel sends Apple no information beyond what iOS itself uses to render maps and reverse-geocode coordinates.</p>
+      <p>The optional "GeoDuel Pro" in-app purchase is processed entirely by Apple's App Store. We never see your payment details, billing address, or Apple ID.</p>
+    </section>
+
+    <section class="card" id="support">
+      <h2>Support</h2>
+      <p>Questions, bug reports, or feature ideas? Send us an email and we'll get back to you within a few days.</p>
+      <p class="email-row">
+        <a href="mailto:GeoDuelSupport@gmail.com" class="email-btn">GeoDuelSupport@gmail.com</a>
+      </p>
+    </section>
+
+    <p class="meta">Last updated May 2026</p>
+  </div>
+</body>
+</html>
