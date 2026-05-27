@@ -38,3 +38,6 @@ verify_jwt = false
 
 [functions.send_push]
 verify_jwt = false   # cron invokes via service_role; app invokes with the user JWT
+
+[functions.sync_sim_history]
+verify_jwt = false   # invoked from pg_cron via service_role; default-on caused 401s and left injury_history empty

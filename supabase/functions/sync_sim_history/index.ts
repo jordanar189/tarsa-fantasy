@@ -93,22 +93,48 @@ async function syncInjuries(year: number) {
     };
     if (ix.gsis < 0) return { error: "missing gsis_id" };
 
-    const out: Array<Record<string, unknown>> = [];
+    // nflverse injuries CSV can have multiple rows per (season, week, player_id)
+    // when a player has more than one reported body part. The DB has that triple
+    // as PK, so the bulk-upsert batch was getting "ON CONFLICT DO UPDATE command
+    // cannot affect row a second time" errors. Dedupe by key here, keeping the
+    // most-severe status seen for that key (per Fantasy.injurySeverity below);
+    // ties keep the row that first surfaced a non-empty details string.
+    const severity = (s: string): number => {
+        const u = s.toUpperCase();
+        if (u === "IR" || u === "INJURED RESERVE" || u === "PUP" || u === "NFI"
+            || u === "SUSPENDED" || u === "SUS") return 4;
+        if (u === "OUT") return 3;
+        if (u === "DOUBTFUL") return 2;
+        if (u === "QUESTIONABLE") return 1;
+        return 1;
+    };
+    const byKey = new Map<string, Record<string, unknown>>();
     for (const r of rows) {
         const pid = r[ix.gsis]?.trim();
         if (!pid || pid === "NA") continue;
         const status = (ix.status >= 0 ? r[ix.status] : "")?.trim();
         if (!status || status === "NA") continue;
-        out.push({
-            season: Math.trunc(num(r[ix.season])),
-            week:   Math.trunc(num(r[ix.week])),
-            player_id: pid,
-            status,
-            details: ix.details >= 0 ? nullable(r[ix.details]) : null,
-            practice_status: ix.practice >= 0 ? nullable(r[ix.practice]) : null,
-            expected_return: null,
-        });
+        const season = Math.trunc(num(r[ix.season]));
+        const week   = Math.trunc(num(r[ix.week]));
+        const details = ix.details >= 0 ? nullable(r[ix.details]) : null;
+        const practice_status = ix.practice >= 0 ? nullable(r[ix.practice]) : null;
+        const key = `${season}|${week}|${pid}`;
+        const incoming = {
+            season, week, player_id: pid, status,
+            details, practice_status, expected_return: null,
+        };
+        const prev = byKey.get(key);
+        if (!prev) { byKey.set(key, incoming); continue; }
+        // Keep the worse status; on a tie, prefer the one with non-null details
+        // (so a localized body part beats "undisclosed").
+        const psev = severity(prev.status as string);
+        const isev = severity(status);
+        if (isev > psev
+            || (isev === psev && prev.details == null && details != null)) {
+            byKey.set(key, incoming);
+        }
     }
+    const out = [...byKey.values()];
     // Wipe + insert for this season (idempotent per-season backfill).
     await supa.from("injury_history").delete().eq("season", year);
     await upsertChunks("injury_history", out, 500, "season,week,player_id");
