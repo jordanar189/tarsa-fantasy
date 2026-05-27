@@ -263,7 +263,11 @@ struct PlayerDetailView: View {
     // MARK: - Header
 
     private func header(_ p: Player) -> some View {
-        VStack(alignment: .leading, spacing: FFSpace.s) {
+        let nonActiveStatus: String? = {
+            guard let s = p.profile?.status, !s.isEmpty, s.uppercased() != "ACT" else { return nil }
+            return s
+        }()
+        return VStack(alignment: .leading, spacing: FFSpace.m) {
             HStack(alignment: .top, spacing: FFSpace.l) {
                 PlayerAvatar(url: p.headshotURL, fallback: p.name.initialsFromName, size: 88)
                 VStack(alignment: .leading, spacing: 6) {
@@ -273,10 +277,11 @@ struct PlayerDetailView: View {
                     HStack(spacing: 6) {
                         PositionPill(position: p.position)
                         Text(p.team).font(.ffCaption).foregroundStyle(FFColor.textSecondary)
-                        if let n = p.profile?.jerseyNumber { Text("· #\(n)").font(.ffCaption).foregroundStyle(FFColor.textTertiary) }
-                        if let status = p.profile?.status,
-                           status.uppercased() != "ACT" && !status.isEmpty {
-                            Text("· \(status)").font(.ffMicro).foregroundStyle(FFColor.warning)
+                        if let n = p.profile?.jerseyNumber {
+                            Text("· #\(n)").font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                        }
+                        if let nonActiveStatus {
+                            StateChip(state: .locked, label: nonActiveStatus)
                         }
                     }
                     if let strip = bioStrip(p) {
@@ -290,7 +295,7 @@ struct PlayerDetailView: View {
             }
             heroStats(for: p)
         }
-        .ffCard()
+        .ffHeroCard()
     }
 
     private func bioStrip(_ p: Player) -> String? {

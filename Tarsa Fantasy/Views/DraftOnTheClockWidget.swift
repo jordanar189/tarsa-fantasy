@@ -51,25 +51,25 @@ struct DraftOnTheClockWidget: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: FFSpace.s) {
+        VStack(alignment: .leading, spacing: FFSpace.m) {
             HStack(alignment: .top, spacing: FFSpace.l) {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: FFSpace.s) {
-                        Text("ON THE CLOCK").ffEyebrow(color: FFColor.textTertiary)
+                        StateChip(
+                            state: isMyTurn ? .live : .scheduled,
+                            label: "On the clock"
+                        )
                         if teamIsOnAuto {
-                            Text("AUTO")
-                                .font(.ffMicro).tracking(0.8)
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(FFColor.accentSoft, in: Capsule())
-                                .foregroundStyle(FFColor.accent)
+                            StateChip(state: .auto, label: "Auto")
                         }
                     }
                     Text(onClockTeam?.name ?? "—")
-                        .font(.ffTitle)
+                        .font(.system(size: 26, weight: .bold))
                         .foregroundStyle(isMyTurn ? FFColor.accent : FFColor.textPrimary)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.6)
                     Text(pickLabel)
-                        .font(.ffCaption)
+                        .font(.ffMicro).tracking(1.2)
                         .foregroundStyle(FFColor.textTertiary)
                 }
                 Spacer()
@@ -83,6 +83,7 @@ struct DraftOnTheClockWidget: View {
 
             controls
         }
+        .ffHeroCard(accentStripe: isMyTurn)
     }
 
     private var pickLabel: String {

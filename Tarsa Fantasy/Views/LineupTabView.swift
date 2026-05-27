@@ -270,19 +270,24 @@ struct LineupTabView: View {
     private var anyPlayed: Bool { starters.contains { !$0.isEmpty && context.hasPlayed($0) } }
 
     private var totalsCard: some View {
-        HStack(spacing: FFSpace.l) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("PROJECTED").ffEyebrow(color: FFColor.textTertiary)
-                Text(projectedTotal.fpString).font(.ffStatLarge).foregroundStyle(FFColor.accent)
-            }
+        HStack(alignment: .center, spacing: FFSpace.l) {
+            BigStat(
+                label: "Projected",
+                value: projectedTotal.fpString,
+                tint: FFColor.accent,
+                alignment: .leading,
+                size: .medium
+            )
             if anyPlayed {
-                Rectangle().fill(FFColor.border).frame(width: 1, height: 36)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("ACTUAL").ffEyebrow(color: FFColor.textTertiary)
-                    Text(actualTotal.fpString).font(.ffStatLarge).foregroundStyle(FFColor.textPrimary)
-                }
+                Rectangle().fill(FFColor.border).frame(width: 1, height: 44)
+                BigStat(
+                    label: "Actual",
+                    value: actualTotal.fpString,
+                    tint: FFColor.textPrimary,
+                    alignment: .leading,
+                    size: .medium
+                )
             }
-            Spacer()
             Button { optimize() } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "wand.and.stars")
@@ -295,8 +300,9 @@ struct LineupTabView: View {
             }
             .buttonStyle(.plain)
             .disabled(!canEdit)
+            .fixedSize()
         }
-        .ffCard()
+        .ffHeroCard()
     }
 
     // MARK: - Start/sit advice
@@ -837,6 +843,9 @@ struct LineupTabView: View {
 // summary, and a live/final state chip. Tapping pushes the full Matchup
 // screen onto the lineup stack. Sized to read at a glance from across the
 // room (the score numbers are the visual anchor of the lineup screen).
+//
+// Built entirely from shared hero primitives — same recipe everywhere a
+// scoreboard-grade surface appears in the app.
 private struct ScoreBannerCard: View {
     let mine: LineupTabView.BannerSideRender
     let opp: LineupTabView.BannerSideRender
@@ -847,12 +856,16 @@ private struct ScoreBannerCard: View {
     private var allDone: Bool {
         mine.played && opp.played && mine.remaining == 0 && opp.remaining == 0
     }
-    private var stateLabel: String {
-        if allDone { return "FINAL · WEEK \(week)" }
-        if anyPlayed { return "LIVE · WEEK \(week)" }
-        return "WEEK \(week)"
+    private var stateChip: StateChip {
+        if allDone        { return StateChip(state: .final,     label: "Final · Week \(week)") }
+        if anyPlayed      { return StateChip(state: .live,      label: "Live · Week \(week)") }
+        return                       StateChip(state: .scheduled, label: "Week \(week)")
     }
-    private var isLive: Bool { anyPlayed && !allDone }
+    private var trailingNote: String {
+        if anyPlayed && !allDone { return "\(mine.remaining + opp.remaining) yet to play" }
+        if !anyPlayed            { return "Tap to view matchup" }
+        return "Final"
+    }
     private var winProb: Double {
         MatchupMath.winProbability(
             myFinal: mine.projectedFinal,
@@ -863,111 +876,41 @@ private struct ScoreBannerCard: View {
 
     var body: some View {
         VStack(spacing: FFSpace.m) {
-            stateHeader
-            scoreRow
-            winBar
-        }
-        .padding(.horizontal, FFSpace.l)
-        .padding(.vertical, FFSpace.m)
-        .background(
-            RoundedRectangle(cornerRadius: FFRadius.l)
-                .fill(FFColor.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: FFRadius.l)
-                        .fill(FFGradient.brandWash)
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: FFRadius.l)
-                .strokeBorder(FFColor.border, lineWidth: 1)
-        )
-        .overlay(alignment: .top) {
-            if leading && anyPlayed {
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(FFColor.accent)
-                    .frame(height: 3)
-                    .padding(.horizontal, FFSpace.xxxl)
-                    .padding(.top, 1)
-            }
-        }
-        .contentShape(RoundedRectangle(cornerRadius: FFRadius.l))
-    }
-
-    private var stateHeader: some View {
-        HStack {
-            HStack(spacing: 6) {
-                if isLive {
-                    Circle().fill(FFColor.negative)
-                        .frame(width: 6, height: 6)
-                        .shadow(color: FFColor.negative.opacity(0.7), radius: 4)
-                }
-                Text(stateLabel)
-                    .ffEyebrow(color: isLive ? FFColor.negative : FFColor.textTertiary)
-            }
-            Spacer()
-            if anyPlayed && !allDone {
-                Text("\(mine.remaining + opp.remaining) yet to play")
-                    .ffEyebrow(color: FFColor.textTertiary)
-            } else if !anyPlayed {
-                Text("Tap to view matchup")
-                    .ffEyebrow(color: FFColor.textTertiary)
-            } else {
-                Text("FINAL")
-                    .ffEyebrow(color: FFColor.textTertiary)
-            }
-        }
-    }
-
-    private var scoreRow: some View {
-        HStack(alignment: .firstTextBaseline, spacing: FFSpace.s) {
-            sideColumn(mine, alignment: .leading, winning: leading && anyPlayed)
-            Text("VS")
-                .font(.ffMicro.bold()).tracking(1.2)
-                .foregroundStyle(FFColor.textTertiary)
-                .padding(.horizontal, 4)
-            sideColumn(opp, alignment: .trailing, winning: !leading && anyPlayed && opp.actual > mine.actual)
-        }
-    }
-
-    private func sideColumn(_ s: LineupTabView.BannerSideRender, alignment: HorizontalAlignment, winning: Bool) -> some View {
-        VStack(alignment: alignment, spacing: 3) {
-            Text(s.shortName)
-                .font(.ffCaption.bold())
-                .foregroundStyle(FFColor.textSecondary)
-                .lineLimit(1)
-            Text(s.actual.fpString)
-                .font(.system(size: 36, weight: .bold, design: .monospaced))
-                .foregroundStyle(winning ? FFColor.accent : FFColor.textPrimary)
-                .monospacedDigit()
-            Text("proj \(s.projectedFinal.fpString)")
-                .font(.ffMicro)
-                .foregroundStyle(FFColor.textTertiary)
-                .monospacedDigit()
-        }
-        .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
-    }
-
-    private var winBar: some View {
-        let mePct = Int((winProb * 100).rounded())
-        let oppPct = 100 - mePct
-        return VStack(spacing: 4) {
-            GeometryReader { geo in
-                HStack(spacing: 0) {
-                    Rectangle().fill(FFColor.accent)
-                        .frame(width: max(0, geo.size.width * winProb))
-                    Rectangle().fill(FFColor.surfaceElevated)
-                }
-                .clipShape(Capsule())
-            }
-            .frame(height: 6)
             HStack {
-                Text("\(mePct)%").font(.ffMicro.bold()).foregroundStyle(FFColor.accent)
+                stateChip
                 Spacer()
-                Text("WIN PROBABILITY").font(.ffMicro).foregroundStyle(FFColor.textTertiary)
-                Spacer()
-                Text("\(oppPct)%").font(.ffMicro.bold()).foregroundStyle(FFColor.textSecondary)
+                Text(trailingNote.uppercased())
+                    .font(.ffMicro).tracking(1.2)
+                    .foregroundStyle(FFColor.textTertiary)
             }
+
+            HStack(alignment: .firstTextBaseline, spacing: FFSpace.s) {
+                BigStat(
+                    label: mine.shortName,
+                    value: mine.actual.fpString,
+                    caption: "proj \(mine.projectedFinal.fpString)",
+                    tint: leading && anyPlayed ? FFColor.accent : FFColor.textPrimary,
+                    alignment: .leading,
+                    size: .large
+                )
+                Text("VS")
+                    .font(.ffMicro.bold()).tracking(1.2)
+                    .foregroundStyle(FFColor.textTertiary)
+                    .padding(.horizontal, 4)
+                BigStat(
+                    label: opp.shortName,
+                    value: opp.actual.fpString,
+                    caption: "proj \(opp.projectedFinal.fpString)",
+                    tint: !leading && anyPlayed && opp.actual > mine.actual ? FFColor.accent : FFColor.textPrimary,
+                    alignment: .trailing,
+                    size: .large
+                )
+            }
+
+            WinBar(myPercent: winProb)
         }
+        .ffHeroCard(accentStripe: leading && anyPlayed)
+        .contentShape(RoundedRectangle(cornerRadius: FFRadius.l))
     }
 }
 
