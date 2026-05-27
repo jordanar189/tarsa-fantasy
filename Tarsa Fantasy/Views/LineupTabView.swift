@@ -344,16 +344,26 @@ struct LineupTabView: View {
                 }
                 ForEach(suggestions, id: \.benchID) { s in
                     if let p = leaguePlayers[s.benchID] {
-                        (Text("Start \(name(s.benchID, p)) (\(p.position)) — projected ")
-                            .foregroundColor(FFColor.textSecondary)
-                         + Text("+\(s.gain.fpString)")
-                            .foregroundColor(FFColor.positive).bold())
+                        Text(adviceLine(for: s, player: p))
                             .font(.ffCaption)
                     }
                 }
             }
             .ffCard()
         }
+    }
+
+    // Composes the muted prefix + bold positive gain into a single AttributedString.
+    // Replaces the deprecated Text + Text concatenation (iOS 26+).
+    private func adviceLine(for s: (slot: Int, benchID: String, gain: Double),
+                            player: Player) -> AttributedString {
+        var prefix = AttributedString("Start \(name(s.benchID, player)) (\(player.position)) — projected ")
+        prefix.foregroundColor = FFColor.textSecondary
+        var gain = AttributedString("+\(s.gain.fpString)")
+        gain.foregroundColor = FFColor.positive
+        gain.inlinePresentationIntent = .stronglyEmphasized
+        prefix.append(gain)
+        return prefix
     }
 
     // MARK: - Starters
