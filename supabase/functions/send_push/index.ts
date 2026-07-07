@@ -44,6 +44,10 @@ interface NotificationRow {
     target_user_ids: string[] | null;
 }
 interface TokenRow { token: string; environment: string }
+interface EventRow {
+    id: string; user_id: string; title: string; body: string;
+    deep_link: string | null;
+}
 
 Deno.serve(async (req: Request) => {
     try {
@@ -66,11 +70,60 @@ Deno.serve(async (req: Request) => {
         for (const n of rows) {
             await deliver(n);
         }
-        return json({ ok: true, processed: rows.length });
+
+        // Per-user event outbox (trade offers, waiver results, draft clock —
+        // rows queued by the push_events triggers). Same cron cadence.
+        const events = await drainEvents();
+
+        return json({ ok: true, processed: rows.length, events });
     } catch (err) {
         return json({ error: String(err) }, 500);
     }
 });
+
+// Claims a batch of queued per-user events and pushes each to that user's
+// devices. Claiming (claim_push_events) marks rows sent up front, so a crash
+// mid-batch drops those alerts rather than duplicating them.
+async function drainEvents(): Promise<number> {
+    const { data, error } = await supa.rpc("claim_push_events", { p_limit: 200 });
+    if (error) { console.error("claim_push_events:", error.message); return 0; }
+    const events = (data ?? []) as EventRow[];
+    if (events.length === 0) return 0;
+
+    const userIDs = [...new Set(events.map(e => e.user_id))];
+    const { data: tokenData } = await supa.from("device_tokens")
+        .select("token, environment, user_id")
+        .in("user_id", userIDs);
+    const tokensByUser = new Map<string, TokenRow[]>();
+    for (const t of (tokenData ?? []) as (TokenRow & { user_id: string })[]) {
+        if (!tokensByUser.has(t.user_id)) tokensByUser.set(t.user_id, []);
+        tokensByUser.get(t.user_id)!.push({ token: t.token, environment: t.environment });
+    }
+
+    const authToken = await apnsAuthToken();
+    const dead: string[] = [];
+    for (const e of events) {
+        const tokens = tokensByUser.get(e.user_id) ?? [];
+        if (tokens.length === 0) continue;   // no registered devices — drop silently
+        const asNotification: NotificationRow = {
+            id: e.id, title: e.title, body: e.body,
+            image_url: null, deep_link: e.deep_link,
+            target: "users", target_user_ids: null,
+        };
+        for (const t of tokens) {
+            try {
+                const r = await sendToToken(authToken, t, asNotification);
+                if (!r.ok && r.remove) dead.push(t.token);
+            } catch {
+                // Per-token failure — keep delivering to the user's other devices.
+            }
+        }
+    }
+    if (dead.length) {
+        await supa.from("device_tokens").delete().in("token", dead);
+    }
+    return events.length;
+}
 
 // Resolves an already-claimed notification's target tokens, pushes to each,
 // prunes dead tokens, then records the outcome. Re-delivering a reclaimed row is

@@ -1749,6 +1749,14 @@ final class AppState {
         if url.host == "lineup", selectedLeagueID != nil {
             tab = .lineup
         }
+        // tarsafantasy://league/<id>[/...] → focus that league (trade offers,
+        // waiver results, and draft alerts all land here).
+        if url.host == "league" {
+            let parts = url.pathComponents.filter { $0 != "/" }
+            if let id = parts.first {
+                Task { await selectLeague(id) }
+            }
+        }
     }
 
     func uploadNotificationImage(data: Data, contentType: String) async throws -> String {
