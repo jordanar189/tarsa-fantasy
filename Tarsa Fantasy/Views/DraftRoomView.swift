@@ -30,6 +30,7 @@ struct DraftRoomView: View {
     @State private var pickingForTeam: FantasyTeam? = nil
     @State private var lastSeenPick: Int = 0
     @State private var showingTeamManager: Bool = false
+    @State private var showingKeeperPicker: Bool = false
     @State private var adp: [String: Double] = [:]
     // Per-user, per-draft queue. Strictly overrides the auto-pick loop:
     // if a queued player is still available when the user's auto-pick
@@ -82,6 +83,7 @@ struct DraftRoomView: View {
                 CommishPickerSheet(
                     league: league, team: team,
                     pickedPlayerIDs: Set(picks.map(\.playerID))
+                        .union(league.teams.flatMap(\.keepers))
                 ) { player in
                     Task { await pickOnBehalf(of: team, player: player) }
                 }
@@ -94,6 +96,14 @@ struct DraftRoomView: View {
                     onChanged: { updated in self.draft = updated },
                     onPickForTeam: { team in pickingForTeam = team }
                 )
+            }
+        }
+        .sheet(isPresented: $showingKeeperPicker) {
+            if let league,
+               let myTeam = league.teams.first(where: { $0.ownerID == app.session?.userID }) {
+                KeeperSelectionSheet(league: league, team: myTeam) { updated in
+                    self.league = updated
+                }
             }
         }
         // Auto-mode trigger — when current_pick changes (via realtime or
@@ -212,6 +222,7 @@ struct DraftRoomView: View {
     private func scheduledHeader(draft: Draft, league: League, isCommish: Bool) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
             let remaining = draft.startsAt.timeIntervalSinceNow
+            let myTeam = league.teams.first(where: { $0.ownerID == app.session?.userID })
             VStack(alignment: .leading, spacing: FFSpace.s) {
                 Text("Starts in").ffEyebrow()
                 Text(formatCountdown(remaining))
@@ -220,6 +231,16 @@ struct DraftRoomView: View {
                 Text(draft.startsAt.formatted(date: .abbreviated, time: .shortened))
                     .font(.ffCaption)
                     .foregroundStyle(FFColor.textTertiary)
+                // Keeper-lite: owners lock keepers in before the draft starts.
+                if league.keeperCount > 0, let myTeam, !myTeam.roster.isEmpty {
+                    Button {
+                        showingKeeperPicker = true
+                    } label: {
+                        Text("Keepers: \(myTeam.keepers.count)/\(league.keeperCount) selected")
+                    }
+                    .ffSecondaryButton()
+                    .padding(.top, FFSpace.s)
+                }
                 if isCommish && remaining <= 0 {
                     Button {
                         Task {
@@ -366,7 +387,9 @@ struct DraftRoomView: View {
         // pick/auto-pick RPCs run on the real snapshot, so projections never
         // affect what gets drafted or scored.
         let players = Fantasy.playersFor(league: league, snapshot: app.displayPlayers(season: league.season))
+        // Kept players never enter the pool alongside the already-picked.
         let pickedIDs = Set(picks.map(\.playerID))
+            .union(league.teams.flatMap(\.keepers))
         let myTeam = league.teams.first(where: { $0.ownerID == app.session?.userID })
         let onClock = draft.teamOnClock(forPick: draft.currentPick)
         let isMyTurn = (myTeam?.id == onClock) && draft.status == .live
@@ -376,8 +399,11 @@ struct DraftRoomView: View {
         // startable positions — so limit the list to those (bench/IR excluded).
         let teamCount = max(draft.pickOrder.count, 1)
         let totalRounds = draft.totalPicks / teamCount
-        let myRoster = myTeam.map { t in picks.filter { $0.teamID == t.id }.map(\.playerID) } ?? []
-        let remainingPicks = max(0, totalRounds - myRoster.count)
+        let myPicks = myTeam.map { t in picks.filter { $0.teamID == t.id }.map(\.playerID) } ?? []
+        // Keepers count toward filled starter slots but not toward the
+        // (already keeper-reduced) remaining pick budget.
+        let myRoster = (myTeam?.keepers ?? []) + myPicks
+        let remainingPicks = max(0, totalRounds - myPicks.count)
         let needs = myTeam == nil
             ? (positions: Set<String>(), unfilledCount: 0)
             : Fantasy.starterNeeds(
@@ -501,6 +527,7 @@ struct DraftRoomView: View {
     private func queueView(draft: Draft, league: League) -> some View {
         let players = Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
         let pickedIDs = Set(picks.map(\.playerID))
+            .union(league.teams.flatMap(\.keepers))
         let myTeam = league.teams.first(where: { $0.ownerID == app.session?.userID })
         VStack(alignment: .leading, spacing: FFSpace.s) {
             HStack {

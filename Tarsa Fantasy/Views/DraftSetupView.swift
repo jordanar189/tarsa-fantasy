@@ -43,7 +43,9 @@ struct DraftSetupView: View {
 
     private var locked: Bool { (existing?.status ?? .scheduled) != .scheduled }
 
-    private var rosterSize: Int { league.rosterConfig.totalSize }
+    // Keeper leagues draft fewer rounds — keepers already occupy roster
+    // slots, so the draft fills only what's left.
+    private var rosterSize: Int { max(1, league.rosterConfig.totalSize - league.keeperCount) }
     private var totalPicks: Int { rosterSize * pickOrder.count }
 
     var body: some View {

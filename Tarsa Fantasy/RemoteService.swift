@@ -237,7 +237,8 @@ actor RemoteService {
         divisionNames: [String] = [],
         scoringSettings: ScoringSettings? = nil,
         isDynasty: Bool = false,
-        waiverSettings: WaiverSettings = .default
+        waiverSettings: WaiverSettings = .default,
+        keeperCount: Int = 0
     ) async throws -> League {
         guard let creatorUUID = UUID(uuidString: creatorID) else {
             throw RemoteError.invalidUserID
@@ -290,6 +291,7 @@ actor RemoteService {
             let is_dynasty: Bool
             let waiver_mode: String
             let faab_budget: Int
+            let keeper_count: Int
         }
         let leagueID = UUID()
         // Initial priority: reverse-order of team creation (last team picks
@@ -314,7 +316,8 @@ actor RemoteService {
             scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON),
             is_dynasty: isDynasty,
             waiver_mode: waiverSettings.mode.rawValue,
-            faab_budget: waiverSettings.faabBudget
+            faab_budget: waiverSettings.faabBudget,
+            keeper_count: max(0, keeperCount)
         )
         let insertedLeague: LeagueRow = try await client.from("leagues")
             .insert(leagueInsert)
@@ -636,7 +639,8 @@ actor RemoteService {
                     logoURL: t.logoUrl,
                     colorHex: t.colorHex,
                     abbreviation: t.abbreviation,
-                    faabSpent: t.faabSpent ?? 0
+                    faabSpent: t.faabSpent ?? 0,
+                    keepers: t.keepers ?? []
                 )
             },
             schedule: row.schedule,
@@ -671,7 +675,8 @@ actor RemoteService {
             scoringSettings: row.scoringSettings,
             divisionNames: row.divisionNames,
             championTeamID: row.championTeamId?.uuidString,
-            championTeamName: row.championTeamName
+            championTeamName: row.championTeamName,
+            keeperCount: row.keeperCount ?? 0
         )
     }
 
@@ -1124,7 +1129,8 @@ actor RemoteService {
         divisionNames: [String],
         regularSeasonWeeks: Int,
         weeksPerRound: Int,
-        schedule: [ScheduleWeek]
+        schedule: [ScheduleWeek],
+        keeperCount: Int
     ) async throws -> League? {
         guard let uuid = UUID(uuidString: leagueID) else { return nil }
         let cleaned = name.trimmingCharacters(in: .whitespaces)
@@ -1142,6 +1148,7 @@ actor RemoteService {
             let division_names: AnyJSON
             let regular_season_weeks: Int
             let weeks_per_round: Int
+            let keeper_count: Int
             // Regenerated to match the regular-season length when the playoff
             // start week changes. The round-robin is prefix-stable, so already
             // played weeks keep their matchups.
@@ -1158,6 +1165,7 @@ actor RemoteService {
                 division_names: stringsAsAnyJSON(cleanedDivisions),
                 regular_season_weeks: max(1, regularSeasonWeeks),
                 weeks_per_round: min(max(weeksPerRound, 1), 2),
+                keeper_count: max(0, keeperCount),
                 schedule: scheduleAsAnyJSON(schedule)
             ))
             .eq("id", value: uuid)
@@ -1241,6 +1249,24 @@ actor RemoteService {
             ))
             .eq("id", value: uuid)
             .execute()
+        return try await self.league(id: leagueID)
+    }
+
+    // Keeper-lite: owner (or commish) locks in up to keeper_count players
+    // from the team's roster before the draft. Validation is server-side
+    // (set_keepers RPC): count, roster membership, and draft-not-started.
+    @discardableResult
+    func setKeepers(leagueID: String, teamID: String, playerIDs: [String]) async throws -> League? {
+        guard let lid = UUID(uuidString: leagueID),
+              let tid = UUID(uuidString: teamID) else { return nil }
+        struct Args: Encodable {
+            let p_league_id: UUID
+            let p_team_id: UUID
+            let p_keepers: [String]
+        }
+        try await client.rpc("set_keepers", params: Args(
+            p_league_id: lid, p_team_id: tid, p_keepers: playerIDs
+        )).execute()
         return try await self.league(id: leagueID)
     }
 
@@ -2064,9 +2090,12 @@ actor RemoteService {
             scheduleJSON = scheduleAsAnyJSON(schedule)
             // Default pre-season priority: reverse team order (last picks first).
             waiverPriority = Array(newIDs.reversed())
+            // Keeper leagues carry rosters forward like dynasty: owners pick
+            // keepers off last season's team, then start_draft trims to them.
+            let carryRosters = parent.isDynasty || parent.keeperCount > 0
             teamsJSON = .array(zip(parent.teams, newIDs).enumerated().map { idx, pair in
                 rolloverTeamJSON(newID: pair.1, team: pair.0, sortIndex: idx,
-                                 carryRosters: parent.isDynasty)
+                                 carryRosters: carryRosters)
             })
         }
 
@@ -3484,6 +3513,7 @@ struct LeagueRow: Codable, Hashable {
     let divisionNames: [String]
     let championTeamId: UUID?
     let championTeamName: String?
+    let keeperCount: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, name, season, scoring, schedule
@@ -3516,6 +3546,7 @@ struct LeagueRow: Codable, Hashable {
         case divisionNames        = "division_names"
         case championTeamId       = "champion_team_id"
         case championTeamName     = "champion_team_name"
+        case keeperCount          = "keeper_count"
     }
 
     init(from decoder: Decoder) throws {
@@ -3556,6 +3587,7 @@ struct LeagueRow: Codable, Hashable {
         divisionNames        = try c.decodeIfPresent([String].self, forKey: .divisionNames)       ?? []
         championTeamId       = try c.decodeIfPresent(UUID.self,    forKey: .championTeamId)
         championTeamName     = try c.decodeIfPresent(String.self,  forKey: .championTeamName)
+        keeperCount          = try c.decodeIfPresent(Int.self,     forKey: .keeperCount)
     }
 }
 
@@ -3574,11 +3606,13 @@ struct TeamRow: Codable, Hashable {
     let logoUrl: String?
     let colorHex: String?
     let abbreviation: String?
-    // Optional: column lands with the FAAB migration; older rows decode nil.
+    // Optional: columns land with the FAAB / keeper migrations; older rows
+    // decode nil.
     let faabSpent: Int?
+    let keepers: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ir, taxi, division, abbreviation
+        case id, name, roster, starters, ir, taxi, division, abbreviation, keepers
         case leagueId      = "league_id"
         case ownerId       = "owner_id"
         case sortIndex     = "sort_index"
@@ -3604,6 +3638,11 @@ struct TeamRow: Codable, Hashable {
         logoUrl   = try c.decodeIfPresent(String.self, forKey: .logoUrl)
         colorHex  = try c.decodeIfPresent(String.self, forKey: .colorHex)
         abbreviation = try c.decodeIfPresent(String.self, forKey: .abbreviation)
+        // This assignment was missing — faabSpent silently decoded as nil,
+        // so remaining-budget displays and the read-modify-write FAAB
+        // updates all computed from 0.
+        faabSpent = try c.decodeIfPresent(Int.self, forKey: .faabSpent)
+        keepers   = try c.decodeIfPresent([String].self, forKey: .keepers)
     }
 }
 
