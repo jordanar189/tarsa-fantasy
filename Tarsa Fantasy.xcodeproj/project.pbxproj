@@ -12,12 +12,28 @@
 		9A0FF0030000000000000005 /* NukeUI in Frameworks */ = {isa = PBXBuildFile; productRef = 9A0FF0020000000000000003 /* NukeUI */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		178ED7762FFD55350090D21F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 179D0A742FB7E88B00771606 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 179D0A7B2FB7E88B00771606;
+			remoteInfo = "Tarsa Fantasy";
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		178ED7722FFD55350090D21F /* TarsaFantasyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TarsaFantasyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		179D0A7C2FB7E88B00771606 /* Tarsa Fantasy.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Tarsa Fantasy.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		C04F16C0000000000000A001 /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Config/App.xcconfig"; sourceTree = "<group>"; };
+		C04F16C0000000000000A001 /* Config/App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/App.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		178ED7732FFD55350090D21F /* TarsaFantasyTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = TarsaFantasyTests;
+			sourceTree = "<group>";
+		};
 		179D0A7E2FB7E88B00771606 /* Tarsa Fantasy */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = "Tarsa Fantasy";
@@ -26,6 +42,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		178ED76F2FFD55350090D21F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		179D0A792FB7E88B00771606 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -42,8 +65,9 @@
 		179D0A732FB7E88B00771606 = {
 			isa = PBXGroup;
 			children = (
-				C04F16C0000000000000A001 /* App.xcconfig */,
+				C04F16C0000000000000A001 /* Config/App.xcconfig */,
 				179D0A7E2FB7E88B00771606 /* Tarsa Fantasy */,
+				178ED7732FFD55350090D21F /* TarsaFantasyTests */,
 				179D0A7D2FB7E88B00771606 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -52,6 +76,7 @@
 			isa = PBXGroup;
 			children = (
 				179D0A7C2FB7E88B00771606 /* Tarsa Fantasy.app */,
+				178ED7722FFD55350090D21F /* TarsaFantasyTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -59,6 +84,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		178ED7712FFD55350090D21F /* TarsaFantasyTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 178ED77A2FFD55350090D21F /* Build configuration list for PBXNativeTarget "TarsaFantasyTests" */;
+			buildPhases = (
+				178ED76E2FFD55350090D21F /* Sources */,
+				178ED76F2FFD55350090D21F /* Frameworks */,
+				178ED7702FFD55350090D21F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				178ED7772FFD55350090D21F /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				178ED7732FFD55350090D21F /* TarsaFantasyTests */,
+			);
+			name = TarsaFantasyTests;
+			packageProductDependencies = (
+			);
+			productName = TarsaFantasyTests;
+			productReference = 178ED7722FFD55350090D21F /* TarsaFantasyTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		179D0A7B2FB7E88B00771606 /* Tarsa Fantasy */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 179D0A892FB7E89000771606 /* Build configuration list for PBXNativeTarget "Tarsa Fantasy" */;
@@ -91,9 +139,13 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2640;
+				LastSwiftUpdateCheck = 2650;
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
+					178ED7712FFD55350090D21F = {
+						CreatedOnToolsVersion = 26.5;
+						TestTargetID = 179D0A7B2FB7E88B00771606;
+					};
 					179D0A7B2FB7E88B00771606 = {
 						CreatedOnToolsVersion = 26.4.1;
 					};
@@ -118,11 +170,19 @@
 			projectRoot = "";
 			targets = (
 				179D0A7B2FB7E88B00771606 /* Tarsa Fantasy */,
+				178ED7712FFD55350090D21F /* TarsaFantasyTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		178ED7702FFD55350090D21F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		179D0A7A2FB7E88B00771606 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -133,6 +193,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		178ED76E2FFD55350090D21F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		179D0A782FB7E88B00771606 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -142,7 +209,59 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		178ED7772FFD55350090D21F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 179D0A7B2FB7E88B00771606 /* Tarsa Fantasy */;
+			targetProxy = 178ED7762FFD55350090D21F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		178ED7782FFD55350090D21F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = VQHSK86XP2;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.personal.TarsaFantasyTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Tarsa Fantasy.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Tarsa Fantasy";
+			};
+			name = Debug;
+		};
+		178ED7792FFD55350090D21F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = VQHSK86XP2;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.personal.TarsaFantasyTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Tarsa Fantasy.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Tarsa Fantasy";
+			};
+			name = Release;
+		};
 		179D0A872FB7E89000771606 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -264,7 +383,7 @@
 		};
 		179D0A8A2FB7E89000771606 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = C04F16C0000000000000A001 /* App.xcconfig */;
+			baseConfigurationReference = C04F16C0000000000000A001 /* Config/App.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -303,7 +422,7 @@
 		};
 		179D0A8B2FB7E89000771606 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = C04F16C0000000000000A001 /* App.xcconfig */;
+			baseConfigurationReference = C04F16C0000000000000A001 /* Config/App.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -343,6 +462,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		178ED77A2FFD55350090D21F /* Build configuration list for PBXNativeTarget "TarsaFantasyTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				178ED7782FFD55350090D21F /* Debug */,
+				178ED7792FFD55350090D21F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		179D0A772FB7E88B00771606 /* Build configuration list for PBXProject "Tarsa Fantasy" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
