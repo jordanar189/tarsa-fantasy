@@ -174,11 +174,25 @@ final class AppState {
     // plus its season + nicknames so league-specific numbers are ready. Keeps
     // the user wherever they are — only the surrounding data changes.
     func selectLeague(_ id: String?) async {
+        // Restore point: the last *confirmed* selection. Derived from
+        // selectedLeague (not selectedLeagueID, which may be an optimistic
+        // in-flight id whose load never finished — restoring that would
+        // re-create the very id/league mismatch this guards against).
+        let previousLeague = selectedLeague
+        let previousID = previousLeague?.id
         selectedLeagueID = id
         guard let id else { selectedLeague = nil; return }
         selectLeagueToken &+= 1
         let token = selectLeagueToken
-        guard let lg = await league(id) else { return }
+        guard let lg = await league(id) else {
+            // Load failed — fall back to the previous consistent pair rather
+            // than leaving the ID pointing at a league whose data never arrived.
+            if token == selectLeagueToken {
+                selectedLeagueID = previousID
+                selectedLeague = previousLeague
+            }
+            return
+        }
         guard token == selectLeagueToken else { return }
         selectedLeague = lg
         if selectedSeason != lg.season { selectedSeason = lg.season }

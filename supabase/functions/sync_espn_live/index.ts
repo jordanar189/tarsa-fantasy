@@ -39,9 +39,19 @@ Deno.serve(async (_req: Request) => {
 
         const scoreboard = await fetchScoreboard();
         const events = (scoreboard?.events ?? []) as Array<EspnEvent>;
-        const liveOrFinal = events.filter(isLiveOrRecentFinal);
+        // Regular season only. Preseason (type 1) and postseason (type 3) both
+        // restart week.number at 1 — writing those rows would poison the real
+        // Week 1 stats in live_scores AND player_games. The app only scores
+        // REG weeks (nflverse REG rows), so anything else is skipped outright.
+        const scoreboardType = scoreboard?.season?.type;
+        const liveOrFinal = events.filter(ev =>
+            isRegularSeason(ev, scoreboardType) && isLiveOrRecentFinal(ev)
+        );
         if (liveOrFinal.length === 0) {
-            return ok({ note: "no live games right now", checked: events.length });
+            return ok({
+                note: "no live regular-season games right now",
+                checked: events.length, seasonType: scoreboardType ?? null
+            });
         }
 
         const season = scoreboard?.season?.year ?? new Date().getUTCFullYear();
@@ -154,6 +164,15 @@ async function fetchSummary(eventID: string): Promise<EspnSummary> {
     return await resp.json();
 }
 
+// ESPN season types: 1 = preseason, 2 = regular season, 3 = postseason.
+// Prefer the event's own season.type; fall back to the scoreboard-level type.
+// If neither is present (unexpected), skip the game — a missed minute of live
+// scores is recoverable, corrupted Week 1 rows are not.
+function isRegularSeason(ev: EspnEvent, scoreboardType: number | undefined): boolean {
+    const t = ev.season?.type ?? scoreboardType;
+    return t === 2;
+}
+
 function isLiveOrRecentFinal(ev: EspnEvent): boolean {
     const state = ev.status?.type?.state;       // pre | in | post
     const completed = ev.status?.type?.completed === true;
@@ -252,11 +271,12 @@ function round2(x: number): number { return Math.round(x * 100) / 100; }
 
 interface EspnScoreboard {
     events?: EspnEvent[];
-    season?: { year?: number };
+    season?: { year?: number; type?: number };
     week?:   { number?: number };
 }
 interface EspnEvent {
     id: string;
+    season?: { year?: number; type?: number };
     status?: { type?: { state?: string; completed?: boolean; description?: string } };
 }
 interface EspnSummary {
