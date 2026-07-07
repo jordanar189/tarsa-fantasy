@@ -525,19 +525,30 @@ enum Fantasy {
         // players to the active roster instead of leaving them as unscorable ghosts.
         let reservedSet = Set(team.ir).union(config.taxi > 0 ? Set(team.taxi) : Set<String>())
         // Prefer the frozen lineup for the requested week, then the live
-        // lineup, then an auto-fill.
+        // lineup, then an auto-fill. A frozen lineup whose length doesn't
+        // match the current slot layout (the commissioner changed roster
+        // slots mid-season) is padded/truncated rather than discarded —
+        // discarding silently re-auto-filled every past week and rewrote
+        // history. Entries that no longer fit their slot's position blank
+        // out instead of scoring in an impossible spot.
         let chosen: [String]? = {
             if let week, let frozen = team.weeklyLineups[week],
-               frozen.count == config.starterCount,
                frozen.contains(where: { !$0.isEmpty }) {
-                return frozen
+                if frozen.count == config.starterCount { return frozen }
+                return Array((frozen + Array(repeating: "", count: max(0, config.starterCount - frozen.count)))
+                    .prefix(config.starterCount))
             }
             return nil
         }()
         let starters: [String]
         if let chosen {
             let onRoster = Set(team.roster)
-            starters = chosen.map { onRoster.contains($0) ? $0 : "" }
+            let slots = config.starterSlots
+            starters = chosen.enumerated().map { i, pid in
+                guard onRoster.contains(pid) else { return "" }
+                if let pos = players[pid]?.position, !slots[i].accepts(position: pos) { return "" }
+                return pid
+            }
         } else if team.starters.count == config.starterCount
             && team.starters.contains(where: { !$0.isEmpty }) {
             // Drop starter IDs no longer on the roster (or moved to IR/taxi).

@@ -283,6 +283,27 @@ struct LineupTests {
         #expect(starters == ["", "q2"], "dropped starter blanks its own slot only")
     }
 
+    /// A frozen weekly lineup survives a mid-season slot-layout change:
+    /// it's padded/truncated to the new starter count instead of being
+    /// discarded and re-auto-filled (which silently rewrote past weeks).
+    @Test func frozenLineupPadsWhenSlotLayoutGrows() {
+        // Frozen under a 1-QB layout; config later grew to QB + SFLX.
+        let grown = RosterConfig(qb: 1, rb: 0, wr: 0, te: 0, flex: 0,
+                                 superflex: 1, k: 0, def: 0, bench: 0)
+        let players = [
+            "q1": qb("q1", weekPoints: [1: 10]),
+            "q2": qb("q2", weekPoints: [1: 20])
+        ]
+        let team = FantasyTeam(
+            id: "A", name: "A", roster: ["q1", "q2"],
+            weeklyLineups: [1: ["q1"]]      // frozen when there was one slot
+        )
+        let (starters, _) = Fantasy.resolveLineup(
+            team: team, players: players, config: grown,
+            scoring: .standard, week: 1)
+        #expect(starters == ["q1", ""], "frozen starter kept, new slot padded empty")
+    }
+
     /// No saved lineup at all → auto-fill from the roster.
     @Test func emptyLineupAutoFills() {
         let players = ["q1": qb("q1", weekPoints: [1: 10])]

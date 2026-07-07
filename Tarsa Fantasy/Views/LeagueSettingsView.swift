@@ -48,6 +48,7 @@ struct LeagueSettingsView: View {
     @State private var rollingOver: Bool = false
     @State private var rolloverSeason: Int = Calendar.current.component(.year, from: Date())
     @State private var confirmingComplete: Bool = false
+    @State private var confirmingRetroactive: Bool = false
     // Members
     @State private var editingTeamID: String? = nil
     @State private var editingTeamName: String = ""
@@ -130,10 +131,24 @@ struct LeagueSettingsView: View {
                         .foregroundStyle(FFColor.textSecondary)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save") { Task { await save() } }
-                        .foregroundStyle(FFColor.accent)
-                        .disabled(saving)
+                    Button("Save") {
+                        if retroactiveChangePending {
+                            confirmingRetroactive = true
+                        } else {
+                            Task { await save() }
+                        }
+                    }
+                    .foregroundStyle(FFColor.accent)
+                    .disabled(saving)
                 }
+            }
+            .alert("Rewrite past weeks?", isPresented: $confirmingRetroactive) {
+                Button("Cancel", role: .cancel) {}
+                Button("Save anyway", role: .destructive) {
+                    Task { await save() }
+                }
+            } message: {
+                Text("Games have already been played. Roster-slot and scoring changes apply to every week, including finished ones — past scores, standings, and playoff seeding will be recomputed under the new rules.")
             }
             .alert(item: $teamToKick) { ref in
                 Alert(
@@ -311,6 +326,24 @@ struct LeagueSettingsView: View {
             }
         }
         .tint(FFColor.accent)
+    }
+
+    // Roster-slot and scoring edits recompute every week retroactively
+    // (standings/scores derive from the current config). Once any rostered
+    // player has a recorded game, warn before saving such a change.
+    private var retroactiveChangePending: Bool {
+        let effectiveConfig: RosterConfig = {
+            var cfg = rosterConfig
+            cfg.taxi = taxiEnabled ? max(1, cfg.taxi) : 0
+            return cfg
+        }()
+        let rosterChanged = effectiveConfig != league.rosterConfig
+        let scoringChanged = scoring != league.scoring
+            || (useCustomScoring ? scoringSettings : nil) != league.scoringSettings
+        guard rosterChanged || scoringChanged else { return false }
+        let players = Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
+        let rostered = Set(league.teams.flatMap(\.roster))
+        return players.values.contains { rostered.contains($0.id) && !$0.games.isEmpty }
     }
 
     private func rosterWarning() -> String? {
