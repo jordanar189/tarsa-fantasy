@@ -1936,7 +1936,9 @@ final class AppState {
         let pending = await waiverClaims(leagueID: league.id)
             .filter { $0.status == .pending }
         guard !pending.isEmpty else { return }
-        guard let fresh = try? await remote.league(id: league.id), let lg = fresh else { return }
+        // try? flattens the League?? from the optional-returning throwing
+        // call, so a single binding fully unwraps.
+        guard let lg = try? await remote.league(id: league.id) else { return }
 
         let isFaab = lg.waiverSettings.mode == .faab
         var taken: Set<String> = []
