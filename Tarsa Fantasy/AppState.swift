@@ -835,6 +835,14 @@ final class AppState {
         let scoring = SleeperPromotion.scoring(fromLabel: latest.scoringLabel)
         let rosterConfig = SleeperPromotion.rosterConfig(from: latest.rosterPositions)
         let regularSeasonWeeks = SleeperPromotion.regularSeasonWeeks(from: latest)
+        // High-fidelity carryover: exact scoring weights, dynasty flag, and
+        // FAAB waivers (older archives without the raw config fall back to
+        // preset scoring + priority waivers).
+        let customScoring = SleeperPromotion.scoringSettings(
+            from: latest.scoringSettings, fallback: scoring)
+        let isDynasty = SleeperPromotion.isDynasty(leagueType: latest.leagueType)
+        let waiverSettings = SleeperPromotion.waiverSettings(
+            waiverType: latest.waiverType, waiverBudget: latest.waiverBudget)
         let leagueName: String
         if let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
             leagueName = trimmed
@@ -863,7 +871,10 @@ final class AppState {
             rosterConfig: rosterConfig,
             yourTeamName: teamName(myTeam),
             otherTeamNames: others.map(teamName),
-            regularSeasonWeeks: regularSeasonWeeks
+            regularSeasonWeeks: regularSeasonWeeks,
+            scoringSettings: customScoring,
+            isDynasty: isDynasty,
+            waiverSettings: waiverSettings
         )
 
         // Populating rosters is the core promise, so a failure here is fatal:

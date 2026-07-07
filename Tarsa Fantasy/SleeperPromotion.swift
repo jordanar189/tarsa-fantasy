@@ -38,15 +38,72 @@ enum SleeperPromotion {
         )
     }
 
-    // Sleeper's derived scoring label → our preset. "Custom" (and anything we
-    // don't recognise) maps to standard; custom per-stat weights aren't carried
-    // over because the import only captured a coarse label.
+    // Sleeper's derived scoring label → our preset. Used as the base carrier;
+    // exact per-stat weights come from `scoringSettings(from:fallback:)` when
+    // the import captured them.
     static func scoring(fromLabel label: String) -> Scoring {
         switch label.lowercased() {
         case "ppr":                          return .ppr
         case "half-ppr", "half ppr", "half": return .half
         default:                             return .standard
         }
+    }
+
+    // Sleeper settings.type — only true dynasty (2) promotes with roster
+    // carryover. Keeper leagues (1) promote as redraft: per-player keeper
+    // rules aren't modeled yet, and carrying every roster forward would be
+    // further from the league's actual rules than keeping none.
+    static func isDynasty(leagueType: Int?) -> Bool { leagueType == 2 }
+
+    // Sleeper waiver_type 2 = FAAB with a season budget; everything else maps
+    // onto rolling priority (Sleeper's "reverse standings" re-sorts weekly,
+    // which we don't model — rolling is the closest behavior).
+    static func waiverSettings(waiverType: Int?, waiverBudget: Int?) -> WaiverSettings {
+        var s = WaiverSettings.default
+        if waiverType == 2 {
+            s.mode = .faab
+            s.faabBudget = waiverBudget ?? 100
+        }
+        return s
+    }
+
+    // Sleeper's raw per-stat weights → our ScoringSettings. Sleeper stores
+    // yardage as points-per-yard (0.04) while our knobs are yards-per-point
+    // (25), so those invert. Stats our engine doesn't score (2-pt, return
+    // TDs, bonuses, IDP) are ignored. Returns nil when the result matches the
+    // fallback preset exactly — the precomputed-fields fast path is both
+    // cheaper and slightly more accurate (it includes 2-pt / return TDs).
+    static func scoringSettings(from raw: [String: Double]?, fallback: Scoring) -> ScoringSettings? {
+        guard let raw, !raw.isEmpty else { return nil }
+        var s = ScoringSettings.preset(fallback)
+        func setYardsPerPoint(_ key: String, _ apply: (Double) -> Void) {
+            guard let perYard = raw[key] else { return }
+            apply(perYard > 0 ? 1.0 / perYard : 0)
+        }
+        setYardsPerPoint("pass_yd") { s.passingYardsPerPoint = $0 }
+        setYardsPerPoint("rush_yd") { s.rushingYardsPerPoint = $0 }
+        setYardsPerPoint("rec_yd")  { s.receivingYardsPerPoint = $0 }
+        if let v = raw["pass_td"]  { s.passingTD = v }
+        if let v = raw["pass_int"] { s.interception = v }
+        if let v = raw["rush_td"]  { s.rushingTD = v }
+        if let v = raw["rec_td"]   { s.receivingTD = v }
+        if let v = raw["rec"]      { s.reception = v }
+        if let v = raw["fum_lost"] { s.fumbleLost = v }
+        // Kicking: Sleeper buckets FG makes finer than our three tiers —
+        // average its sub-40 buckets into the under-40 knob.
+        let under40 = ["fgm_0_19", "fgm_20_29", "fgm_30_39"].compactMap { raw[$0] }
+        if !under40.isEmpty { s.fgUnder40 = under40.reduce(0, +) / Double(under40.count) }
+        if let v = raw["fgm_40_49"] { s.fg40to49 = v }
+        if let v = raw["fgm_50p"] ?? raw["fgm_50_59"] { s.fg50plus = v }
+        if let v = raw["xpm"]    { s.patMade = v }
+        if let v = raw["fgmiss"] { s.fgMissed = v }
+        if let v = raw["xpmiss"] { s.patMissed = v }
+        if let v = raw["sack"]    { s.defSack = v }
+        if let v = raw["int"]     { s.defInterception = v }
+        if let v = raw["fum_rec"] { s.defFumbleRecovery = v }
+        if let v = raw["def_td"]  { s.defTouchdown = v }
+        if let v = raw["safe"]    { s.defSafety = v }
+        return s.matchesPreset(fallback) ? nil : s
     }
 
     // Regular-season length implied by Sleeper's playoff start week (weeks

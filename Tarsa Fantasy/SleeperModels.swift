@@ -116,6 +116,13 @@ struct ImportedSeason: Codable, Hashable, Identifiable {
     let season: String          // "2023"
     let status: String          // "complete" | "in_season" | "pre_draft" | ...
     let scoringLabel: String    // "PPR" | "Half-PPR" | "Standard" | "Custom"
+    // Raw Sleeper league config, kept for high-fidelity promotion. All
+    // optional so archives imported before these fields existed still
+    // decode (they fall back to label/preset mapping on promotion).
+    let scoringSettings: [String: Double]?  // Sleeper's per-stat weights
+    let leagueType: Int?                    // 0 redraft, 1 keeper, 2 dynasty
+    let waiverType: Int?                    // 0 rolling, 1 reverse standings, 2 FAAB
+    let waiverBudget: Int?
     let avatar: String?
     let rosterPositions: [String]
     let playoffWeekStart: Int?

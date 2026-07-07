@@ -217,6 +217,10 @@ actor SleeperService {
             season: league.season ?? "",
             status: league.status ?? "",
             scoringLabel: Self.scoringLabel(league.scoringSettings),
+            scoringSettings: league.scoringSettings,
+            leagueType: league.settings?.type,
+            waiverType: league.settings?.waiverType,
+            waiverBudget: league.settings?.waiverBudget,
             avatar: league.avatar,
             rosterPositions: league.rosterPositions ?? [],
             playoffWeekStart: league.settings?.playoffWeekStart,
@@ -556,6 +560,11 @@ private struct SLLeagueSettings: Decodable {
     let playoffWeekStart: Int?
     let playoffTeams: Int?
     let numTeams: Int?
+    // 0 = redraft, 1 = keeper, 2 = dynasty.
+    let type: Int?
+    // 0 = rolling priority, 1 = reverse standings, 2 = FAAB.
+    let waiverType: Int?
+    let waiverBudget: Int?
 }
 
 private struct SLRoster: Decodable {
