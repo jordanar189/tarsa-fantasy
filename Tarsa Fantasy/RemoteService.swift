@@ -853,7 +853,8 @@ actor RemoteService {
         league: League,
         team: FantasyTeam,
         addPlayerID: String,
-        dropPlayerID: String?
+        dropPlayerID: String?,
+        bid: Int? = nil
     ) async throws -> League? {
         // Build updated roster.
         var roster = team.roster
@@ -872,12 +873,13 @@ actor RemoteService {
         }
 
         if league.waiverSettings.commissionerApproval && league.creatorID != team.ownerID {
-            // Hold the transaction pending — do not mutate roster yet.
+            // Hold the transaction pending — do not mutate roster yet. A FAAB
+            // bid rides along so a later reject can refund it.
             try await insertTransaction(
                 leagueID: league.id, teamID: team.id,
                 kind: dropPlayerID == nil ? .add : .addDrop,
                 addPlayerID: addPlayerID, dropPlayerID: dropPlayerID,
-                status: .pendingApproval, note: nil
+                status: .pendingApproval, note: nil, bid: bid
             )
             return try await self.league(id: league.id)
         }
@@ -3315,7 +3317,8 @@ actor RemoteService {
     private func insertTransaction(
         leagueID: String, teamID: String,
         kind: TransactionKind, addPlayerID: String?, dropPlayerID: String?,
-        status: TransactionStatus, note: String?
+        status: TransactionStatus, note: String?,
+        bid: Int? = nil
     ) async throws {
         guard let lid = UUID(uuidString: leagueID),
               let tid = UUID(uuidString: teamID) else { return }
@@ -3327,6 +3330,7 @@ actor RemoteService {
             let drop_player_id: String?
             let status: String
             let note: String?
+            let bid: Int?
         }
         _ = try await client.from("transactions")
             .insert(TxInsert(
@@ -3335,7 +3339,8 @@ actor RemoteService {
                 add_player_id: addPlayerID,
                 drop_player_id: dropPlayerID,
                 status: status.rawValue,
-                note: note
+                note: note,
+                bid: bid
             ))
             .execute()
     }

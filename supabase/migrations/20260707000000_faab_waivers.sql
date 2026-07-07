@@ -40,6 +40,98 @@ alter table public.waiver_claims
 alter table public.transactions
     add column if not exists bid integer;
 
+-- Blind bids must actually be blind: the original waiver_claims_read policy
+-- let any signed-in user select every row, which would expose competitors'
+-- pending bids (and claim targets) before the process tick. Pending claims
+-- are now visible only to their own team's owner; resolved claims stay
+-- readable league-wide for the activity feed.
+drop policy if exists "waiver_claims_read" on public.waiver_claims;
+create policy "waiver_claims_read" on public.waiver_claims
+    for select using (
+        status <> 'pending'
+        or exists (select 1 from public.teams t
+                   where t.id = waiver_claims.team_id
+                     and t.owner_id = auth.uid())
+    );
+
+-- Defense in depth: the RPC below validates bids, but the owner-scoped
+-- waiver_claims_write policy still allows direct table writes, which could
+-- otherwise smuggle in null/over-budget bids or duplicate pending claims.
+-- This trigger enforces the same invariants on every path. Status
+-- transitions away from 'pending' (the worker/sim resolving claims) pass
+-- through untouched.
+create or replace function public.validate_waiver_claim() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+    lg        public.leagues;
+    tm        public.teams;
+    committed integer;
+begin
+    if new.status <> 'pending' then return new; end if;
+
+    select * into lg from public.leagues where id = new.league_id;
+    if not found then raise exception 'league not found'; end if;
+    select * into tm from public.teams where id = new.team_id;
+    if not found then raise exception 'team not found'; end if;
+    if tm.league_id <> new.league_id then
+        raise exception 'team is not in this league';
+    end if;
+
+    if exists (select 1 from public.waiver_claims c
+               where c.team_id = new.team_id
+                 and c.status = 'pending'
+                 and c.add_player_id = new.add_player_id
+                 and c.id <> new.id) then
+        raise exception 'a pending claim for this player already exists';
+    end if;
+
+    if lg.waiver_mode = 'faab' then
+        if new.bid is null or new.bid < 0 then
+            raise exception 'FAAB claims need a bid of 0 or more';
+        end if;
+        select coalesce(sum(c.bid), 0) into committed
+          from public.waiver_claims c
+         where c.team_id = new.team_id
+           and c.status = 'pending'
+           and c.id <> new.id;
+        if new.bid + committed > lg.faab_budget - tm.faab_spent then
+            raise exception 'bid exceeds your remaining FAAB budget';
+        end if;
+    else
+        new.bid := null;
+    end if;
+    return new;
+end$$;
+
+drop trigger if exists waiver_claims_validate on public.waiver_claims;
+create trigger waiver_claims_validate
+    before insert or update on public.waiver_claims
+    for each row execute function public.validate_waiver_claim();
+
+-- faab_spent is the budget ledger the RPC's guard trusts, but the broad
+-- teams_update_owner policy would let any owner PATCH it directly and mint
+-- budget. Only the process worker (service role), the league commissioner
+-- (client-side refund-on-reject, sim accounting), or no-JWT contexts may
+-- change it. Full column-tightening of the teams policy is tracked as the
+-- roster-RPC follow-up; this closes the FAAB-specific hole now.
+create or replace function public.guard_faab_spent() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+    if new.faab_spent is distinct from old.faab_spent
+       and auth.role() = 'authenticated'
+       and not exists (select 1 from public.leagues l
+                       where l.id = new.league_id
+                         and l.creator_id = auth.uid()) then
+        raise exception 'FAAB budget accounting is managed by the league';
+    end if;
+    return new;
+end$$;
+
+drop trigger if exists teams_guard_faab_spent on public.teams;
+create trigger teams_guard_faab_spent
+    before update on public.teams
+    for each row execute function public.guard_faab_spent();
+
 create or replace function public.submit_waiver_claim(
     p_league_id      uuid,
     p_team_id        uuid,

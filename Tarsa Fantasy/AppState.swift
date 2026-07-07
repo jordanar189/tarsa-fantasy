@@ -1939,49 +1939,33 @@ final class AppState {
         guard let fresh = try? await remote.league(id: league.id), let lg = fresh else { return }
 
         let isFaab = lg.waiverSettings.mode == .faab
-        let position = Dictionary(uniqueKeysWithValues:
-            lg.waiverPriority.enumerated().map { ($0.element, $0.offset) })
-        let ordered: [WaiverClaim]
-        if isFaab {
-            ordered = pending.sorted { a, b in
-                if (a.bid ?? 0) != (b.bid ?? 0) { return (a.bid ?? 0) > (b.bid ?? 0) }
-                let pa = position[a.teamID] ?? .max, pb = position[b.teamID] ?? .max
-                if pa != pb { return pa < pb }
-                return a.createdAt < b.createdAt
-            }
-        } else {
-            ordered = pending.sorted { a, b in
-                let pa = position[a.teamID] ?? .max, pb = position[b.teamID] ?? .max
-                if pa != pb { return pa < pb }
-                return a.teamPriority < b.teamPriority
-            }
-        }
-
         var taken: Set<String> = []
         var faabRemaining: [String: Int] = Dictionary(uniqueKeysWithValues:
             lg.teams.map { ($0.id, lg.waiverSettings.faabBudget - $0.faabSpent) })
-        var winners: [String] = []
         var current = lg
-        for claim in ordered {
-            guard let team = current.teams.first(where: { $0.id == claim.teamID }) else { continue }
+
+        // Attempts one claim; returns true when it won.
+        func attempt(_ claim: WaiverClaim) async -> Bool {
+            guard let team = current.teams.first(where: { $0.id == claim.teamID }) else { return false }
             if taken.contains(claim.addPlayerID) {
                 try? await remote.markWaiverClaim(
                     id: claim.id, status: "failed",
                     reason: isFaab ? "Outbid — another team won this player."
                                    : "Higher-priority team won this player.")
-                continue
+                return false
             }
             let bid = claim.bid ?? 0
             if isFaab, bid > (faabRemaining[team.id] ?? 0) {
                 try? await remote.markWaiverClaim(
                     id: claim.id, status: "failed",
                     reason: "Bid exceeds your remaining FAAB budget.")
-                continue
+                return false
             }
             do {
                 let updated = try await remote.addFreeAgent(
                     league: current, team: team,
-                    addPlayerID: claim.addPlayerID, dropPlayerID: claim.dropPlayerID
+                    addPlayerID: claim.addPlayerID, dropPlayerID: claim.dropPlayerID,
+                    bid: isFaab ? bid : nil
                 )
                 try? await remote.markWaiverClaim(id: claim.id, status: "processed", reason: nil)
                 taken.insert(claim.addPlayerID)
@@ -1989,19 +1973,53 @@ final class AppState {
                     faabRemaining[team.id, default: 0] -= bid
                     try? await remote.addFaabSpent(teamID: team.id, amount: bid)
                 }
-                if !winners.contains(team.id) { winners.append(team.id) }
                 if let updated { current = updated }
+                return true
             } catch {
                 try? await remote.markWaiverClaim(
                     id: claim.id, status: "failed",
                     reason: error.localizedDescription)
+                return false
             }
         }
-        // Rolling priority: winners rotate to the back.
-        if !isFaab, !winners.isEmpty {
-            let newOrder = current.waiverPriority.filter { !winners.contains($0) } + winners
-            _ = try? await remote.updateWaiverSettings(
-                leagueID: current.id, settings: current.waiverSettings, priority: newOrder)
+
+        let position = Dictionary(uniqueKeysWithValues:
+            lg.waiverPriority.enumerated().map { ($0.element, $0.offset) })
+        if isFaab {
+            // League-wide bid order; teams may win multiple players.
+            let ordered = pending.sorted { a, b in
+                if (a.bid ?? 0) != (b.bid ?? 0) { return (a.bid ?? 0) > (b.bid ?? 0) }
+                let pa = position[a.teamID] ?? .max, pb = position[b.teamID] ?? .max
+                if pa != pb { return pa < pb }
+                return a.createdAt < b.createdAt
+            }
+            for claim in ordered { _ = await attempt(claim) }
+        } else {
+            // Mirror the server worker: repeated one-win-per-team rounds over
+            // the priority order, rotating each round's winners to the back,
+            // so a high-priority team with several claims can't sweep.
+            var working = lg.waiverPriority
+            for team in lg.teams where !working.contains(team.id) { working.append(team.id) }
+            var resolved: Set<String> = []
+            while true {
+                var roundWinners: [String] = []
+                for teamID in working {
+                    let teamClaims = pending
+                        .filter { $0.teamID == teamID && !resolved.contains($0.id) }
+                        .sorted { $0.teamPriority < $1.teamPriority }
+                    for claim in teamClaims {
+                        let won = await attempt(claim)
+                        resolved.insert(claim.id)
+                        if won { roundWinners.append(teamID); break }
+                    }
+                }
+                if roundWinners.isEmpty { break }
+                working = working.filter { !roundWinners.contains($0) } + roundWinners
+            }
+            if working != lg.waiverPriority {
+                _ = try? await remote.updateWaiverSettings(
+                    leagueID: current.id, settings: current.waiverSettings, priority: working)
+            }
         }
     }
 
