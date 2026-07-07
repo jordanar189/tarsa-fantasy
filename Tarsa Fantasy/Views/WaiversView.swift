@@ -121,7 +121,9 @@ struct WaiversView: View {
                             .strokeBorder(FFColor.border, lineWidth: 1)
                     )
                     .padding(.bottom, FFSpace.xs)
-                    Text("Higher-priority claims are processed first. Long-press to reorder soon.")
+                    Text(league.waiverSettings.mode == .faab
+                        ? "Highest bid wins each player; ties go to the better waiver position."
+                        : "Higher-priority claims are processed first.")
                         .font(.ffCaption)
                         .foregroundStyle(FFColor.textTertiary)
                 }
@@ -156,11 +158,20 @@ struct WaiversView: View {
             + String(format: "%02d:00 UTC", league.waiverSettings.processHour)
 
         HStack(spacing: FFSpace.l) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("YOUR PRIORITY").ffEyebrow(color: FFColor.textTertiary)
-                Text(idx.map { "#\($0 + 1) of \(league.waiverPriority.count)" } ?? "—")
-                    .font(.ffStatMedium)
-                    .foregroundStyle(FFColor.textPrimary)
+            if league.waiverSettings.mode == .faab {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("FAAB LEFT").ffEyebrow(color: FFColor.textTertiary)
+                    Text("$\(max(0, league.waiverSettings.faabBudget - (myTeam?.faabSpent ?? 0)))")
+                        .font(.ffStatMedium)
+                        .foregroundStyle(FFColor.textPrimary)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("YOUR PRIORITY").ffEyebrow(color: FFColor.textTertiary)
+                    Text(idx.map { "#\($0 + 1) of \(league.waiverPriority.count)" } ?? "—")
+                        .font(.ffStatMedium)
+                        .foregroundStyle(FFColor.textPrimary)
+                }
             }
             divider
             VStack(alignment: .leading, spacing: 4) {
@@ -202,6 +213,11 @@ struct WaiversView: View {
             }
             .playerLink(claim.addPlayerID)
             Spacer()
+            if let bid = claim.bid {
+                Text("$\(bid)")
+                    .font(.ffStatSmall)
+                    .foregroundStyle(FFColor.accent)
+            }
             Button {
                 Task {
                     try? await app.cancelWaiverClaim(claim.id)

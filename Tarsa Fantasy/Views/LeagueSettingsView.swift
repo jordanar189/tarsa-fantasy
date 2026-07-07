@@ -535,6 +535,22 @@ struct LeagueSettingsView: View {
 
     private var waiversSection: some View {
         Section {
+            Picker("Claim resolution", selection: $waiverSettings.mode) {
+                ForEach(WaiverMode.allCases) { m in
+                    Text(m.label).tag(m)
+                }
+            }
+            if waiverSettings.mode == .faab {
+                Stepper(value: $waiverSettings.faabBudget, in: 10...1000, step: 10) {
+                    HStack {
+                        Text("FAAB budget").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                        Spacer()
+                        Text("$\(waiverSettings.faabBudget)")
+                            .font(.ffStatSmall)
+                            .foregroundStyle(FFColor.accent)
+                    }
+                }
+            }
             Toggle("Commissioner approval", isOn: $waiverSettings.commissionerApproval)
                 .tint(FFColor.accent)
             Picker("Process day", selection: $waiverSettings.processDay) {
@@ -579,7 +595,9 @@ struct LeagueSettingsView: View {
         } header: {
             Text("Waivers").ffEyebrow()
         } footer: {
-            Text("When approval is on, every add/drop and waiver claim by another manager waits for you in Activity. Priority #1 wins contested claims first; winners roll to the back automatically.")
+            Text(waiverSettings.mode == .faab
+                ? "FAAB: every claim carries a blind bid from each team's season budget; the highest bid wins (ties go to the better waiver position). When approval is on, every add/drop and waiver claim by another manager waits for you in Activity."
+                : "When approval is on, every add/drop and waiver claim by another manager waits for you in Activity. Priority #1 wins contested claims first; winners roll to the back automatically.")
                 .foregroundStyle(FFColor.textTertiary)
         }
         .listRowBackground(FFColor.surface)

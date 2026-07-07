@@ -698,22 +698,25 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
     var logoURL: String?
     var colorHex: String?
     var abbreviation: String?
+    // FAAB dollars already spent on won claims this season (0 in
+    // priority-mode leagues).
+    var faabSpent: Int
 
     init(id: String, name: String, roster: [String] = [],
          starters: [String] = [], ownerID: String? = nil,
          ir: [String] = [], taxi: [String] = [], weeklyLineups: [Int: [String]] = [:],
          division: Int? = nil,
          logoURL: String? = nil, colorHex: String? = nil,
-         abbreviation: String? = nil) {
+         abbreviation: String? = nil, faabSpent: Int = 0) {
         self.id = id; self.name = name; self.roster = roster
         self.starters = starters; self.ownerID = ownerID
         self.ir = ir; self.taxi = taxi; self.weeklyLineups = weeklyLineups; self.division = division
         self.logoURL = logoURL; self.colorHex = colorHex
-        self.abbreviation = abbreviation
+        self.abbreviation = abbreviation; self.faabSpent = faabSpent
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ownerID, ir, taxi, weeklyLineups, division, logoURL, colorHex, abbreviation
+        case id, name, roster, starters, ownerID, ir, taxi, weeklyLineups, division, logoURL, colorHex, abbreviation, faabSpent
     }
 
     init(from decoder: Decoder) throws {
@@ -730,6 +733,7 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
         logoURL  = try c.decodeIfPresent(String.self, forKey: .logoURL)
         colorHex = try c.decodeIfPresent(String.self, forKey: .colorHex)
         abbreviation = try c.decodeIfPresent(String.self, forKey: .abbreviation)
+        faabSpent = try c.decodeIfPresent(Int.self, forKey: .faabSpent) ?? 0
     }
 
     // The short tag for compact contexts (scoreboard, bracket), or nil when
@@ -751,16 +755,57 @@ struct ScheduleWeek: Codable, Hashable, Identifiable {
     var id: Int { week }
 }
 
+// How waiver claims resolve: rolling priority (winner moves to the back of
+// the order) or FAAB (blind bids from a season budget; highest bid wins).
+enum WaiverMode: String, Codable, Hashable, CaseIterable, Identifiable {
+    case priority, faab
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .priority: return "Rolling priority"
+        case .faab:     return "FAAB budget"
+        }
+    }
+}
+
 struct WaiverSettings: Codable, Hashable {
     // 0 = Sunday … 6 = Saturday, UTC. Matches Postgres date_part('dow').
     var processDay: Int
     var processHour: Int     // UTC hour, 0–23
     var periodHours: Int
     var commissionerApproval: Bool
+    var mode: WaiverMode
+    // Season-long FAAB budget per team (only meaningful when mode == .faab).
+    var faabBudget: Int
 
     static let `default` = WaiverSettings(
         processDay: 3, processHour: 8, periodHours: 24, commissionerApproval: false
     )
+
+    init(processDay: Int, processHour: Int, periodHours: Int,
+         commissionerApproval: Bool,
+         mode: WaiverMode = .priority, faabBudget: Int = 100) {
+        self.processDay = processDay; self.processHour = processHour
+        self.periodHours = periodHours
+        self.commissionerApproval = commissionerApproval
+        self.mode = mode; self.faabBudget = faabBudget
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case processDay, processHour, periodHours, commissionerApproval, mode, faabBudget
+    }
+
+    // Defaulted decoding so locally-persisted leagues from before FAAB
+    // existed still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        processDay  = try c.decodeIfPresent(Int.self, forKey: .processDay)  ?? 3
+        processHour = try c.decodeIfPresent(Int.self, forKey: .processHour) ?? 8
+        periodHours = try c.decodeIfPresent(Int.self, forKey: .periodHours) ?? 24
+        commissionerApproval = try c.decodeIfPresent(Bool.self, forKey: .commissionerApproval) ?? false
+        mode = try c.decodeIfPresent(WaiverMode.self, forKey: .mode) ?? .priority
+        faabBudget = try c.decodeIfPresent(Int.self, forKey: .faabBudget) ?? 100
+    }
 
     var processDayLabel: String {
         ["Sunday", "Monday", "Tuesday", "Wednesday",
@@ -1431,6 +1476,8 @@ struct WaiverClaim: Identifiable, Hashable {
     let failureReason: String?
     let createdAt: Date
     let processedAt: Date?
+    // FAAB bid; nil on priority-mode claims.
+    let bid: Int?
 }
 
 struct DroppedPlayer: Identifiable, Hashable {

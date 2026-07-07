@@ -236,7 +236,8 @@ actor RemoteService {
         weeksPerRound: Int = 1,
         divisionNames: [String] = [],
         scoringSettings: ScoringSettings? = nil,
-        isDynasty: Bool = false
+        isDynasty: Bool = false,
+        waiverSettings: WaiverSettings = .default
     ) async throws -> League {
         guard let creatorUUID = UUID(uuidString: creatorID) else {
             throw RemoteError.invalidUserID
@@ -287,6 +288,8 @@ actor RemoteService {
             let division_names: AnyJSON
             let scoring_settings: AnyJSON?
             let is_dynasty: Bool
+            let waiver_mode: String
+            let faab_budget: Int
         }
         let leagueID = UUID()
         // Initial priority: reverse-order of team creation (last team picks
@@ -309,7 +312,9 @@ actor RemoteService {
             weeks_per_round: min(max(weeksPerRound, 1), 2),
             division_names: stringsAsAnyJSON(cleanedDivisions),
             scoring_settings: scoringSettings.map(scoringSettingsAsAnyJSON),
-            is_dynasty: isDynasty
+            is_dynasty: isDynasty,
+            waiver_mode: waiverSettings.mode.rawValue,
+            faab_budget: waiverSettings.faabBudget
         )
         let insertedLeague: LeagueRow = try await client.from("leagues")
             .insert(leagueInsert)
@@ -630,7 +635,8 @@ actor RemoteService {
                     division: t.division,
                     logoURL: t.logoUrl,
                     colorHex: t.colorHex,
-                    abbreviation: t.abbreviation
+                    abbreviation: t.abbreviation,
+                    faabSpent: t.faabSpent ?? 0
                 )
             },
             schedule: row.schedule,
@@ -641,7 +647,9 @@ actor RemoteService {
                 processDay: row.waiverProcessDay,
                 processHour: row.waiverProcessHour,
                 periodHours: row.waiverPeriodHours,
-                commissionerApproval: row.commissionerApproval
+                commissionerApproval: row.commissionerApproval,
+                mode: row.waiverMode.flatMap(WaiverMode.init(rawValue:)) ?? .priority,
+                faabBudget: row.faabBudget ?? 100
             ),
             waiverPriority: priority,
             lastWaiversRunAt: row.lastWaiversRunAt,
@@ -792,7 +800,8 @@ actor RemoteService {
                 status: WaiverClaimStatus(rawValue: r.status) ?? .pending,
                 failureReason: r.failureReason,
                 createdAt: r.createdAt,
-                processedAt: r.processedAt
+                processedAt: r.processedAt,
+                bid: r.bid
             )
         }
     }
@@ -912,36 +921,29 @@ actor RemoteService {
     @discardableResult
     func submitWaiverClaim(
         leagueID: String, teamID: String,
-        addPlayerID: String, dropPlayerID: String?
+        addPlayerID: String, dropPlayerID: String?,
+        bid: Int? = nil
     ) async throws -> WaiverClaim? {
         guard let lid = UUID(uuidString: leagueID),
               let tid = UUID(uuidString: teamID) else { return nil }
-        // Auto-assign team priority as (current pending count + 1).
-        let existing: [WaiverClaimRow] = (try? await client.from("waiver_claims")
-            .select()
-            .eq("team_id", value: tid)
-            .eq("status", value: "pending")
-            .execute()
-            .value) ?? []
-        let nextPriority = existing.count + 1
-
-        struct ClaimInsert: Encodable {
-            let league_id: UUID
-            let team_id: UUID
-            let add_player_id: String
-            let drop_player_id: String?
-            let team_priority: Int
+        // Server-side RPC: assigns team_priority under a row lock (two
+        // concurrent submissions used to collide on the same priority) and
+        // validates FAAB bids against the remaining budget.
+        struct Args: Encodable {
+            let p_league_id: UUID
+            let p_team_id: UUID
+            let p_add_player_id: String
+            let p_drop_player_id: String?
+            let p_bid: Int?
         }
-        let inserted: WaiverClaimRow = try await client.from("waiver_claims")
-            .insert(ClaimInsert(
-                league_id: lid, team_id: tid,
-                add_player_id: addPlayerID, drop_player_id: dropPlayerID,
-                team_priority: nextPriority
-            ))
-            .select()
-            .single()
-            .execute()
-            .value
+        let inserted: WaiverClaimRow = try await client.rpc(
+            "submit_waiver_claim",
+            params: Args(
+                p_league_id: lid, p_team_id: tid,
+                p_add_player_id: addPlayerID, p_drop_player_id: dropPlayerID,
+                p_bid: bid
+            )
+        ).execute().value
         return WaiverClaim(
             id: inserted.id.uuidString,
             leagueID: inserted.leagueId.uuidString,
@@ -953,7 +955,8 @@ actor RemoteService {
             status: WaiverClaimStatus(rawValue: inserted.status) ?? .pending,
             failureReason: inserted.failureReason,
             createdAt: inserted.createdAt,
-            processedAt: inserted.processedAt
+            processedAt: inserted.processedAt,
+            bid: inserted.bid
         )
     }
 
@@ -962,6 +965,36 @@ actor RemoteService {
         try await client.from("waiver_claims")
             .delete()
             .eq("id", value: cid)
+            .execute()
+    }
+
+    // Sim-league waiver resolution (AppState.resolveSimWaivers) marks claims
+    // directly — the server worker deliberately skips is_test leagues.
+    func markWaiverClaim(id: String, status: String, reason: String?) async throws {
+        guard let cid = UUID(uuidString: id) else { return }
+        struct Update: Encodable {
+            let status: String
+            let failure_reason: String?
+            let processed_at: Date
+        }
+        try await client.from("waiver_claims")
+            .update(Update(status: status, failure_reason: reason, processed_at: Date()))
+            .eq("id", value: cid)
+            .execute()
+    }
+
+    func addFaabSpent(teamID: String, amount: Int) async throws {
+        guard amount > 0, let tid = UUID(uuidString: teamID) else { return }
+        let team: TeamRow = try await client.from("teams")
+            .select()
+            .eq("id", value: tid)
+            .single()
+            .execute()
+            .value
+        struct Update: Encodable { let faab_spent: Int }
+        try await client.from("teams")
+            .update(Update(faab_spent: (team.faabSpent ?? 0) + amount))
+            .eq("id", value: tid)
             .execute()
     }
 
@@ -1029,6 +1062,12 @@ actor RemoteService {
     func rejectTransaction(_ txID: String, commissionerID: String, note: String?) async throws {
         guard let tid = UUID(uuidString: txID),
               let cuid = UUID(uuidString: commissionerID) else { return }
+        let tx: TransactionRow = try await client.from("transactions")
+            .select()
+            .eq("id", value: tid)
+            .single()
+            .execute()
+            .value
         struct StatusUpdate: Encodable {
             let status: String
             let resolved_at: Date
@@ -1041,6 +1080,20 @@ actor RemoteService {
                                  note: note))
             .eq("id", value: tid)
             .execute()
+        // A rejected FAAB waiver win refunds its bid to the team's budget.
+        if let bid = tx.bid, bid > 0 {
+            let team: TeamRow = try await client.from("teams")
+                .select()
+                .eq("id", value: tx.teamId)
+                .single()
+                .execute()
+                .value
+            struct SpentUpdate: Encodable { let faab_spent: Int }
+            _ = try await client.from("teams")
+                .update(SpentUpdate(faab_spent: max(0, (team.faabSpent ?? 0) - bid)))
+                .eq("id", value: tx.teamId)
+                .execute()
+        }
     }
 
     @discardableResult
@@ -1156,6 +1209,8 @@ actor RemoteService {
             let waiver_process_hour: Int
             let waiver_period_hours: Int
             let commissioner_approval: Bool
+            let waiver_mode: String
+            let faab_budget: Int
             let waiver_priority: [String]
         }
         _ = try await client.from("leagues")
@@ -1164,6 +1219,8 @@ actor RemoteService {
                 waiver_process_hour: settings.processHour,
                 waiver_period_hours: settings.periodHours,
                 commissioner_approval: settings.commissionerApproval,
+                waiver_mode: settings.mode.rawValue,
+                faab_budget: settings.faabBudget,
                 waiver_priority: priority
             ))
             .eq("id", value: uuid)
@@ -3386,6 +3443,9 @@ struct LeagueRow: Codable, Hashable {
     let waiverProcessHour: Int
     let waiverPeriodHours: Int
     let commissionerApproval: Bool
+    // Optional: columns land with the FAAB migration; older rows decode nil.
+    let waiverMode: String?
+    let faabBudget: Int?
     let waiverPriority: [String]
     let lastWaiversRunAt: Date?
     let tradeApproval: String
@@ -3416,6 +3476,8 @@ struct LeagueRow: Codable, Hashable {
         case waiverProcessHour    = "waiver_process_hour"
         case waiverPeriodHours    = "waiver_period_hours"
         case commissionerApproval = "commissioner_approval"
+        case waiverMode           = "waiver_mode"
+        case faabBudget           = "faab_budget"
         case waiverPriority       = "waiver_priority"
         case lastWaiversRunAt     = "last_waivers_run_at"
         case tradeApproval        = "trade_approval"
@@ -3454,6 +3516,8 @@ struct LeagueRow: Codable, Hashable {
         waiverProcessHour    = try c.decodeIfPresent(Int.self,     forKey: .waiverProcessHour)    ?? WaiverSettings.default.processHour
         waiverPeriodHours    = try c.decodeIfPresent(Int.self,     forKey: .waiverPeriodHours)    ?? WaiverSettings.default.periodHours
         commissionerApproval = try c.decodeIfPresent(Bool.self,    forKey: .commissionerApproval) ?? false
+        waiverMode           = try c.decodeIfPresent(String.self,  forKey: .waiverMode)
+        faabBudget           = try c.decodeIfPresent(Int.self,     forKey: .faabBudget)
         waiverPriority       = try c.decodeIfPresent([String].self, forKey: .waiverPriority)      ?? []
         lastWaiversRunAt     = try c.decodeIfPresent(Date.self,    forKey: .lastWaiversRunAt)
         tradeApproval        = try c.decodeIfPresent(String.self,  forKey: .tradeApproval)        ?? TradeApprovalMode.none.rawValue
@@ -3491,6 +3555,8 @@ struct TeamRow: Codable, Hashable {
     let logoUrl: String?
     let colorHex: String?
     let abbreviation: String?
+    // Optional: column lands with the FAAB migration; older rows decode nil.
+    let faabSpent: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, name, roster, starters, ir, taxi, division, abbreviation
@@ -3500,6 +3566,7 @@ struct TeamRow: Codable, Hashable {
         case weeklyLineups = "weekly_lineups"
         case logoUrl       = "logo_url"
         case colorHex      = "color_hex"
+        case faabSpent     = "faab_spent"
     }
 
     init(from decoder: Decoder) throws {
@@ -3532,9 +3599,10 @@ struct WaiverClaimRow: Codable, Hashable {
     let failureReason: String?
     let createdAt: Date
     let processedAt: Date?
+    let bid: Int?
 
     enum CodingKeys: String, CodingKey {
-        case id, status
+        case id, status, bid
         case leagueId      = "league_id"
         case teamId        = "team_id"
         case addPlayerId   = "add_player_id"
@@ -3558,9 +3626,11 @@ struct TransactionRow: Codable, Hashable {
     let createdAt: Date
     let resolvedAt: Date?
     let resolvedBy: UUID?
+    // Winning FAAB bid riding along for refund-on-reject; nil otherwise.
+    let bid: Int?
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, status, note
+        case id, kind, status, note, bid
         case leagueId     = "league_id"
         case teamId       = "team_id"
         case addPlayerId  = "add_player_id"

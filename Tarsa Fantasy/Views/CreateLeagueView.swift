@@ -33,6 +33,8 @@ struct CreateLeagueView: View {
     @State private var weeksPerRound: Int = 1
     @State private var divisionsEnabled: Bool = false
     @State private var divisionCount: Int = 2
+    @State private var waiverMode: WaiverMode = .priority
+    @State private var faabBudget: Int = 100
     @State private var error: String? = nil
     @State private var saving: Bool = false
 
@@ -149,6 +151,19 @@ struct CreateLeagueView: View {
                             }
                             .onChange(of: weeksPerRound) { _, _ in clampRegularSeason() }
                             .onChange(of: playoffTeams) { _, _ in clampRegularSeason() }
+
+                            section("Waivers",
+                                    footer: waiverMode == .faab
+                                        ? "Each team gets a season-long budget for blind bids on waiver players; the highest bid wins. Schedule and approval settings live in league settings."
+                                        : "Contested claims go to the best waiver position; winners roll to the back. Switchable to a FAAB bid budget here or later in settings.") {
+                                picker("Claim resolution", selection: $waiverMode,
+                                       choices: WaiverMode.allCases) { $0.label }
+                                if waiverMode == .faab {
+                                    stepperRow("FAAB budget", value: $faabBudget, range: 10...1000) {
+                                        "$\($0)"
+                                    }
+                                }
+                            }
 
                             section("Divisions",
                                     footer: "Division winners are seeded ahead of wildcards in the playoffs. You can rename divisions and reassign teams later in settings.") {
@@ -444,7 +459,14 @@ struct CreateLeagueView: View {
                     weeksPerRound: playoffTeams >= 2 ? weeksPerRound : 1,
                     divisionNames: divisions,
                     scoringSettings: customScoring,
-                    isDynasty: leagueType == .dynasty
+                    isDynasty: leagueType == .dynasty,
+                    waiverSettings: WaiverSettings(
+                        processDay: WaiverSettings.default.processDay,
+                        processHour: WaiverSettings.default.processHour,
+                        periodHours: WaiverSettings.default.periodHours,
+                        commissionerApproval: false,
+                        mode: waiverMode, faabBudget: faabBudget
+                    )
                 )
             case .simulation:
                 _ = try await app.createSimulation(
