@@ -67,6 +67,10 @@ struct LeagueChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: .leagueChatResponseDeleted)) { note in
             handleResponseDeleted(note)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .leagueChatResync)) { note in
+            guard note.userInfo?["leagueID"] as? String == league.id else { return }
+            Task { await resyncTranscript() }
+        }
         .onChange(of: pickerItem) { _, item in
             Task { await loadPickedImage(item) }
         }
@@ -589,6 +593,18 @@ struct LeagueChatView: View {
         cacheUsernames(from: messages)
         loaded = true
         await LeagueChatListener.shared.start(leagueID: league.id)
+    }
+
+    // Full transcript re-fetch after a foreground catch-up — realtime deltas
+    // delivered while backgrounded are lost, and the transcript is built
+    // incrementally from them. Quieter than initialLoad: no loading flash,
+    // and the listener was already re-established by the foreground hook.
+    private func resyncTranscript() async {
+        let load = await app.leagueChat(leagueID: league.id)
+        messages = load.messages
+        reactions = load.reactions
+        responses = load.responses
+        cacheUsernames(from: messages)
     }
 
     private func loadPickedImage(_ item: PhotosPickerItem?) async {
