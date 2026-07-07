@@ -56,4 +56,4 @@ jobs:
             (P1/P2/P3). If the PR looks good, say so briefly without inventing
             issues.
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*)"
+            --allowedTools "Task,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*)"
