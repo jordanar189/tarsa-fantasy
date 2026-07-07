@@ -1749,6 +1749,14 @@ final class AppState {
         if url.host == "lineup", selectedLeagueID != nil {
             tab = .lineup
         }
+        // tarsafantasy://league/<id>[/...] → focus that league (trade offers,
+        // waiver results, and draft alerts all land here).
+        if url.host == "league" {
+            let parts = url.pathComponents.filter { $0 != "/" }
+            if let id = parts.first {
+                Task { await selectLeague(id) }
+            }
+        }
     }
 
     func uploadNotificationImage(data: Data, contentType: String) async throws -> String {
@@ -1964,6 +1972,11 @@ final class AppState {
                 return false
             }
             do {
+                // The won player comes off waivers before the add — the
+                // add_free_agent RPC (correctly) refuses players still
+                // inside a waiver window.
+                try? await remote.clearWaiverWindow(
+                    leagueID: current.id, playerID: claim.addPlayerID)
                 let updated = try await remote.addFreeAgent(
                     league: current, team: team,
                     addPlayerID: claim.addPlayerID, dropPlayerID: claim.dropPlayerID,
