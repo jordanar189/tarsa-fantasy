@@ -11,7 +11,12 @@ actor NFLDataService {
     static let shared = NFLDataService()
 
     private let client: SupabaseClient
+    // Season list is cached with a TTL: a session that stays alive across a
+    // season transition (new schedule synced, or the opener's first stats)
+    // must eventually see the new season without an app relaunch.
     private var seasonsCache: [Int]? = nil
+    private var seasonsCachedAt: Date? = nil
+    private let seasonsTTL: TimeInterval = 6 * 3600
     private var playersBySeason: [Int: [String: Player]] = [:]
     private var schedulesBySeason: [Int: [NFLGame]] = [:]
     private var snapsBySeason: [Int: [String: [Int: SnapCount]]] = [:]
@@ -41,7 +46,10 @@ actor NFLDataService {
     // MARK: - Public API (preserves the surface AppState already uses)
 
     func availableSeasons() async -> [Int] {
-        if let cached = seasonsCache { return cached }
+        if let cached = seasonsCache, let at = seasonsCachedAt,
+           Date().timeIntervalSince(at) < seasonsTTL {
+            return cached
+        }
         do {
             struct Row: Decodable { let season: Int }
             // `available_seasons` is a view: the union of seasons that have
@@ -55,9 +63,11 @@ actor NFLDataService {
                 .execute().value
             let seasons = rows.map(\.season)
             seasonsCache = seasons
+            seasonsCachedAt = Date()
             return seasons
         } catch {
-            return []
+            // Refresh failed — serve the stale list (if any) over nothing.
+            return seasonsCache ?? []
         }
     }
 

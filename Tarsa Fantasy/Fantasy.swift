@@ -196,8 +196,10 @@ enum Fantasy {
     // cannot be picked again that loop — even if the per-round template
     // still permits it.
     //
-    // Final two rounds (rounds totalRounds-1 and totalRounds) are the K/DEF
-    // phase.
+    // The final (k + def starter slots) rounds are the K/DEF phase — one
+    // reserved round per required K/DEF starter, none when the league
+    // rosters neither. Inside the phase only the still-unfilled of K/DEF
+    // are picked; once both are covered the normal template resumes.
     //
     // If no allowed-pool candidate is available we fall back to the
     // highest-ADP player overall.
@@ -223,17 +225,28 @@ enum Fantasy {
     }
 
     // Positions the bot is allowed to pick at a given round, given the
-    // positions it has already taken in the current loop. Returns nil
-    // when the caller should fall back to the overall best-available
-    // ADP player (e.g. partial-loop or exhausted positions).
+    // positions it has already taken in the current loop. `kSlots`/`defSlots`
+    // are the league's K/DEF starter counts and size the end-of-draft K/DEF
+    // phase; `kOwned`/`defOwned` are how many the team already rostered, so
+    // the phase only asks for what's still missing.
     static func autoPickAllowedPositions(
         round: Int,
         totalRounds: Int,
-        currentLoopPicks: [String]
+        currentLoopPicks: [String],
+        kSlots: Int = 1,
+        defSlots: Int = 1,
+        kOwned: Int = 0,
+        defOwned: Int = 0
     ) -> Set<String> {
-        // Final two rounds = K / DEF phase.
-        if totalRounds >= 2 && round >= totalRounds - 1 {
-            return ["K", "DEF"]
+        // Final (kSlots + defSlots) rounds = K / DEF phase. A league that
+        // starts neither has no phase at all — no wasted end-of-draft picks.
+        let kdefReserve = kSlots + defSlots
+        if kdefReserve > 0 && round > totalRounds - kdefReserve {
+            var need: Set<String> = []
+            if kOwned < kSlots { need.insert("K") }
+            if defOwned < defSlots { need.insert("DEF") }
+            if !need.isEmpty { return need }
+            // K/DEF already covered — resume the normal template below.
         }
         let loopOffset = (round - 1) % loopRoundCount
         let template = roundTemplate(loopOffset: loopOffset)
@@ -264,22 +277,24 @@ enum Fantasy {
     }
 
     // Returns the positions of the picks the team made within the loop
-    // containing `round`. K-phase picks (final two rounds) are excluded.
+    // containing `round`. K-phase picks (final `kdefReserve` rounds) are
+    // excluded.
     static func positionsInCurrentLoop(
         team: FantasyTeam,
         players: [String: Player],
         round: Int,
-        totalRounds: Int
+        totalRounds: Int,
+        kdefReserve: Int = 2
     ) -> [String] {
-        let kPhaseStart = totalRounds - 1   // 1-indexed round number
+        let kPhaseStart = totalRounds - kdefReserve + 1   // 1-indexed round number
         // Loop the upcoming pick belongs to (0-indexed). Out-of-K picks only.
-        let upcomingIsKPhase = totalRounds >= 2 && round >= kPhaseStart
+        let upcomingIsKPhase = kdefReserve > 0 && round >= kPhaseStart
         if upcomingIsKPhase { return [] }
         let upcomingLoop = (round - 1) / loopRoundCount
         var out: [String] = []
         for (idx, pid) in team.roster.enumerated() {
             let pickRound = idx + 1
-            if totalRounds >= 2 && pickRound >= kPhaseStart { continue }
+            if kdefReserve > 0 && pickRound >= kPhaseStart { continue }
             let pickLoop = (pickRound - 1) / loopRoundCount
             if pickLoop != upcomingLoop { continue }
             if let p = players[pid] {
@@ -321,11 +336,22 @@ enum Fantasy {
         let totalRounds = config.totalSize
         let loopPicks = positionsInCurrentLoop(
             team: team, players: players,
-            round: round, totalRounds: totalRounds
+            round: round, totalRounds: totalRounds,
+            kdefReserve: config.k + config.def
         )
+        var kOwned = 0, defOwned = 0
+        for pid in team.roster {
+            switch players[pid]?.position.uppercased() {
+            case "K":   kOwned += 1
+            case "DEF": defOwned += 1
+            default:    break
+            }
+        }
         let allowed = autoPickAllowedPositions(
             round: round, totalRounds: totalRounds,
-            currentLoopPicks: loopPicks
+            currentLoopPicks: loopPicks,
+            kSlots: config.k, defSlots: config.def,
+            kOwned: kOwned, defOwned: defOwned
         )
         if let pick = ranked.first(where: { allowed.contains($0.position.uppercased()) }) {
             return pick.id
@@ -1214,11 +1240,21 @@ enum Fantasy {
                 }
             }
         }
-        // Overall order: win% then points-for. (Ties in record broken by PF.)
+        // Overall order: win% (a tie counts as half a win) then points-for,
+        // then team id so fully tied teams don't jitter across reloads.
+        // Percentage — not raw wins — so 7-2-1 (.750) outranks 7-3-0 (.700)
+        // and teams with uneven games played compare fairly.
+        func winPct(_ acc: Acc) -> Double {
+            let games = acc.w + acc.l + acc.t
+            guard games > 0 else { return 0 }
+            return (Double(acc.w) + 0.5 * Double(acc.t)) / Double(games)
+        }
         let sorted = rows.map { (id: $0.key, acc: $0.value) }
             .sorted { lhs, rhs in
-                if lhs.acc.w != rhs.acc.w { return lhs.acc.w > rhs.acc.w }
-                return lhs.acc.pf > rhs.acc.pf
+                let lp = winPct(lhs.acc), rp = winPct(rhs.acc)
+                if lp != rp { return lp > rp }
+                if lhs.acc.pf != rhs.acc.pf { return lhs.acc.pf > rhs.acc.pf }
+                return lhs.id < rhs.id
             }
         let orderedIDs = sorted.map(\.id)
 

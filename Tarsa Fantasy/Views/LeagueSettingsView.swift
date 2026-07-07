@@ -820,7 +820,7 @@ struct LeagueSettingsView: View {
             Text(league.seasonCompleted
                 ? (league.isDynasty
                     ? "Rolling over carries every team and roster into the new season with the same settings; the join code is regenerated."
-                    : "Rolling over creates a fresh league for the new season with the same settings; the join code is regenerated.")
+                    : "Rolling over carries every team and manager into the new season with the same settings; rosters are cleared for a fresh draft and the join code is regenerated.")
                 : "Completing a season is permanent — the standings snapshot is the source of truth going forward.")
                 .foregroundStyle(FFColor.textTertiary)
         }

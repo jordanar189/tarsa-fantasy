@@ -871,8 +871,11 @@ actor RemoteService {
         }
 
         // Apply roster mutation + log transaction + (if a drop) start waiver
-        // period for the dropped player.
-        _ = try await setRoster(teamID: team.id, roster: roster, starters: [])
+        // period for the dropped player. Starters are slot-positional, so the
+        // dropped player's slot is blanked in place — the rest of the lineup
+        // must survive an add/drop untouched.
+        let starters = team.starters.map { $0 == dropPlayerID ? "" : $0 }
+        _ = try await setRoster(teamID: team.id, roster: roster, starters: starters)
         if let drop = dropPlayerID {
             try await registerDrop(leagueID: league.id, playerID: drop,
                                    periodHours: league.waiverSettings.periodHours)
@@ -890,7 +893,9 @@ actor RemoteService {
     func dropPlayer(league: League, team: FantasyTeam, playerID: String) async throws -> League? {
         var roster = team.roster
         roster.removeAll { $0 == playerID }
-        _ = try await setRoster(teamID: team.id, roster: roster, starters: [])
+        // Blank the dropped player's slot in place; keep the rest of the lineup.
+        let starters = team.starters.map { $0 == playerID ? "" : $0 }
+        _ = try await setRoster(teamID: team.id, roster: roster, starters: starters)
         try await registerDrop(leagueID: league.id, playerID: playerID,
                                periodHours: league.waiverSettings.periodHours)
         try await insertTransaction(
@@ -997,7 +1002,9 @@ actor RemoteService {
         var roster = team.roster
         if let drop = tx.dropPlayerId { roster.removeAll { $0 == drop } }
         if let add = tx.addPlayerId, !roster.contains(add) { roster.append(add) }
-        _ = try await setRoster(teamID: team.id.uuidString, roster: roster, starters: [])
+        // Blank the dropped player's slot in place; keep the rest of the lineup.
+        let starters = team.starters.map { $0 == tx.dropPlayerId ? "" : $0 }
+        _ = try await setRoster(teamID: team.id.uuidString, roster: roster, starters: starters)
         if let drop = tx.dropPlayerId {
             try await registerDrop(leagueID: league.id.uuidString, playerID: drop,
                                    periodHours: league.waiverPeriodHours)
@@ -1950,28 +1957,30 @@ actor RemoteService {
         )).execute()
     }
 
-    // Commish-only. Spawns a new child league for the next season. For a
-    // standard league teams are NOT cloned — owners re-claim with the new join
-    // code (a fresh redraft). For a dynasty league every team is carried forward
-    // with its owner, branding, and roster intact (so rosters are never
-    // cleared). The whole rollover is atomic: we generate the new team IDs and a
-    // round-robin schedule over them up front and hand both to the RPC, which
-    // writes the league row, schedule, waiver priority, and cloned teams in a
-    // single transaction. That avoids a half-initialized child (and duplicate
+    // Commish-only. Spawns a new child league for the next season. Every team
+    // is carried forward with its owner, branding, division, and order — a
+    // league is unusable without teams (joining works by claiming an existing
+    // team row, and the schedule is generated over team IDs at creation). For
+    // a standard league the rosters are cleared for a fresh redraft; for a
+    // dynasty league rosters (incl. IR/taxi) come forward intact. The whole
+    // rollover is atomic: we generate the new team IDs and a round-robin
+    // schedule over them up front and hand both to the RPC, which writes the
+    // league row, schedule, waiver priority, and cloned teams in a single
+    // transaction. That avoids a half-initialized child (and duplicate
     // children on retry) if anything fails mid-rollover.
     func rolloverLeague(parentID: String, newSeason: Int, newName: String?) async throws -> League? {
         guard let pid = UUID(uuidString: parentID) else { return nil }
 
-        // Dynasty needs the parent's teams + flag before the call so the
-        // schedule can reference the carried-over team IDs. Fail loudly rather
-        // than silently rolling a dynasty league over with an empty payload.
+        // The schedule must reference the carried-over team IDs, so the
+        // parent's teams are needed before the call. Fail loudly rather than
+        // silently rolling over with an empty payload.
         guard let parent = try await self.league(id: parentID) else {
             throw RemoteError.parentLeagueNotFound
         }
         var teamsJSON: AnyJSON = .array([])
         var scheduleJSON: AnyJSON = .array([])
         var waiverPriority: [String] = []
-        if parent.isDynasty, !parent.teams.isEmpty {
+        if !parent.teams.isEmpty {
             let newIDs = parent.teams.map { _ in UUID().uuidString }
             let schedule = Fantasy.generateSchedule(
                 teamIDs: newIDs, weeks: parent.regularSeasonWeeks
@@ -1980,7 +1989,8 @@ actor RemoteService {
             // Default pre-season priority: reverse team order (last picks first).
             waiverPriority = Array(newIDs.reversed())
             teamsJSON = .array(zip(parent.teams, newIDs).enumerated().map { idx, pair in
-                dynastyTeamJSON(newID: pair.1, team: pair.0, sortIndex: idx)
+                rolloverTeamJSON(newID: pair.1, team: pair.0, sortIndex: idx,
+                                 carryRosters: parent.isDynasty)
             })
         }
 
@@ -1999,20 +2009,22 @@ actor RemoteService {
         return try await self.league(id: row.id.uuidString)
     }
 
-    // Serializes a carried-over dynasty team for the rollover RPC. Roster, IR,
-    // owner, division, and branding come forward; the new season's lineups and
-    // weekly snapshots reset (omitted here).
-    private func dynastyTeamJSON(newID: String, team: FantasyTeam, sortIndex: Int) -> AnyJSON {
+    // Serializes a carried-over team for the rollover RPC. Owner, division,
+    // and branding always come forward; roster/starters/IR/taxi only for
+    // dynasty (`carryRosters`) — a standard league redrafts from scratch. The
+    // new season's lineups and weekly snapshots reset (omitted here).
+    private func rolloverTeamJSON(newID: String, team: FantasyTeam, sortIndex: Int,
+                                  carryRosters: Bool) -> AnyJSON {
         .object([
             "id":           .string(newID),
             "name":         .string(team.name),
             "owner_id":     team.ownerID.map { AnyJSON.string($0) } ?? .null,
             "sort_index":   .integer(sortIndex),
             "division":     team.division.map { AnyJSON.integer($0) } ?? .null,
-            "roster":       stringsAsAnyJSON(team.roster),
-            "starters":     stringsAsAnyJSON(team.starters),
-            "ir":           stringsAsAnyJSON(team.ir),
-            "taxi":         stringsAsAnyJSON(team.taxi),
+            "roster":       stringsAsAnyJSON(carryRosters ? team.roster : []),
+            "starters":     stringsAsAnyJSON(carryRosters ? team.starters : []),
+            "ir":           stringsAsAnyJSON(carryRosters ? team.ir : []),
+            "taxi":         stringsAsAnyJSON(carryRosters ? team.taxi : []),
             "logo_url":     team.logoURL.map { AnyJSON.string($0) } ?? .null,
             "color_hex":    team.colorHex.map { AnyJSON.string($0) } ?? .null,
             "abbreviation": team.abbreviation.map { AnyJSON.string($0) } ?? .null
