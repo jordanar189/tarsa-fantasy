@@ -67,6 +67,7 @@ struct MatchupTabView: View {
                 .padding(.top, FFSpace.s)
                 .padding(.bottom, 80)
             }
+            .refreshable { await reload() }
         }
     }
 

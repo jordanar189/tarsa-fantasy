@@ -568,8 +568,8 @@ actor NFLDataService {
 
     // MARK: - NFL schedules
 
-    func schedules(season: Int) async throws -> [NFLGame] {
-        if let cached = schedulesBySeason[season] { return cached }
+    func schedules(season: Int, forceRefresh: Bool = false) async throws -> [NFLGame] {
+        if !forceRefresh, let cached = schedulesBySeason[season] { return cached }
         struct Row: Decodable {
             let gameID: String; let season: Int; let week: Int
             let homeTeam: String; let awayTeam: String

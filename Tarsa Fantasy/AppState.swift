@@ -386,6 +386,12 @@ final class AppState {
         }
     }
 
+    // Pull-to-refresh entry point: force-refetch the selected season's stats
+    // past the memory/disk cache.
+    func refreshSelectedSeason() async {
+        await refreshSeasonInBackground(selectedSeason)
+    }
+
     func players(season: Int) -> [String: Player] {
         playersBySeason[season] ?? [:]
     }
@@ -537,8 +543,8 @@ final class AppState {
 
     // MARK: - NFL data (Phase 1 stats overhaul)
 
-    func schedules(season: Int) async -> [NFLGame] {
-        (try? await data.schedules(season: season)) ?? []
+    func schedules(season: Int, forceRefresh: Bool = false) async -> [NFLGame] {
+        (try? await data.schedules(season: season, forceRefresh: forceRefresh)) ?? []
     }
 
     func nflTeams() async -> [NFLTeamMeta] {

@@ -32,6 +32,12 @@ struct GameDetailView: View {
     @State private var teamsMeta: [String: NFLTeamMeta] = [:]
     @State private var loaded: Bool = false
     @State private var gamecastIndex: Int = 0
+    @State private var refreshedGame: NFLGame? = nil
+
+    // The prop is a snapshot from whenever the parent fetched the schedule —
+    // refreshes (pull or the in-progress poll) land here so the score header
+    // and tabs track the live game.
+    private var liveGame: NFLGame { refreshedGame ?? game }
 
     var body: some View {
         NavigationStack {
@@ -44,21 +50,22 @@ struct GameDetailView: View {
                             Text($0.label)
                         }
                         switch tab {
-                        case .gamecast: GamecastView(game: game, plays: plays,
+                        case .gamecast: GamecastView(game: liveGame, plays: plays,
                                                      loaded: loaded,
                                                      index: $gamecastIndex,
                                                      teamsMeta: teamsMeta)
-                        case .overview: OverviewTab(game: game, plays: plays,
+                        case .overview: OverviewTab(game: liveGame, plays: plays,
                                                     teamsMeta: teamsMeta,
                                                     onSelectPlayer: onSelectPlayer)
-                        case .stats:    StatsTab(game: game, plays: plays)
-                        case .plays:    PlaysTab(game: game, plays: plays, loaded: loaded)
+                        case .stats:    StatsTab(game: liveGame, plays: plays)
+                        case .plays:    PlaysTab(game: liveGame, plays: plays, loaded: loaded)
                         }
                     }
                     .padding(.horizontal, FFSpace.l)
                     .padding(.vertical, FFSpace.l)
                     .padding(.bottom, 40)
                 }
+                .refreshable { await refresh() }
             }
             .navigationTitle("\(game.away) @ \(game.home)")
             .navigationBarTitleDisplayMode(.inline)
@@ -69,7 +76,28 @@ struct GameDetailView: View {
                         .foregroundStyle(FFColor.accent)
                 }
             }
-            .task(id: game.id) { await load() }
+            .task(id: game.id) {
+                await load()
+                // No Realtime channel carries plays or the schedule row, so a
+                // live game polls while this screen is open. Stops on final.
+                while !Task.isCancelled, shouldPoll {
+                    try? await Task.sleep(nanoseconds: 60_000_000_000)
+                    guard !Task.isCancelled else { break }
+                    await refresh()
+                }
+            }
+        }
+    }
+
+    // Poll while the game is live — or scheduled with kickoff imminent/past,
+    // so a screen opened just before kickoff picks the game up.
+    private var shouldPoll: Bool {
+        switch liveGame.status {
+        case .inProgress: return true
+        case .scheduled:
+            guard let k = liveGame.kickoff else { return false }
+            return k.timeIntervalSinceNow < 10 * 60
+        case .final: return false
         }
     }
 
@@ -82,23 +110,34 @@ struct GameDetailView: View {
         loaded = true
     }
 
+    // Re-pull the plays feed and the schedule row (score/status).
+    private func refresh() async {
+        async let p = app.plays(gameID: game.id)
+        async let s = app.schedules(season: game.season, forceRefresh: true)
+        let (rawPlays, schedule) = await (p, s)
+        plays = rawPlays
+        if let fresh = schedule.first(where: { $0.id == game.id }) {
+            refreshedGame = fresh
+        }
+    }
+
     // MARK: - Score header
 
     private var scoreHeader: some View {
         HStack(alignment: .center, spacing: FFSpace.m) {
-            sideBlock(team: game.away, score: game.awayScore, meta: teamsMeta[game.away],
+            sideBlock(team: liveGame.away, score: liveGame.awayScore, meta: teamsMeta[liveGame.away],
                       winning: winning(side: .away))
             VStack(spacing: 4) {
                 statusChip
-                if let s = game.homeSpread {
+                if let s = liveGame.homeSpread {
                     Text(formatSpread(s)).font(.ffMicro).foregroundStyle(FFColor.textTertiary)
                 }
-                if let t = game.total {
+                if let t = liveGame.total {
                     Text("O/U \(String(format: "%.1f", t))")
                         .font(.ffMicro).foregroundStyle(FFColor.textTertiary)
                 }
             }
-            sideBlock(team: game.home, score: game.homeScore, meta: teamsMeta[game.home],
+            sideBlock(team: liveGame.home, score: liveGame.homeScore, meta: teamsMeta[liveGame.home],
                       winning: winning(side: .home))
         }
         .ffCard()
@@ -106,7 +145,7 @@ struct GameDetailView: View {
 
     private enum Side { case home, away }
     private func winning(side: Side) -> Bool {
-        guard let h = game.homeScore, let a = game.awayScore else { return false }
+        guard let h = liveGame.homeScore, let a = liveGame.awayScore else { return false }
         return side == .home ? h > a : a > h
     }
 
@@ -122,10 +161,10 @@ struct GameDetailView: View {
             Text(abbr)
                 .font(.ffCaption.bold())
                 .foregroundStyle(FFColor.textPrimary)
-            if let s = score, game.status != .scheduled {
+            if let s = score, liveGame.status != .scheduled {
                 Text("\(s)").font(.ffStatLarge)
                     .foregroundStyle(winning ? FFColor.accent : FFColor.textPrimary)
-            } else if let kickoff = game.kickoff {
+            } else if let kickoff = liveGame.kickoff {
                 Text(kickoff.formatted(.dateTime.month().day()))
                     .font(.ffMicro).foregroundStyle(FFColor.textTertiary)
             }
@@ -135,9 +174,9 @@ struct GameDetailView: View {
 
     @ViewBuilder
     private var statusChip: some View {
-        switch game.status {
+        switch liveGame.status {
         case .scheduled:
-            if let k = game.kickoff {
+            if let k = liveGame.kickoff {
                 Text(k.formatted(.dateTime.weekday(.abbreviated).hour().minute()))
                     .font(.ffMicro).foregroundStyle(FFColor.textSecondary)
             } else {

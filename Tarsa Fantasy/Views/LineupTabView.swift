@@ -121,6 +121,10 @@ struct LineupTabView: View {
                 .padding(.top, FFSpace.s)
                 .padding(.bottom, 80)
             }
+            .refreshable {
+                guard !saving else { return }
+                await reload()
+            }
         }
     }
 

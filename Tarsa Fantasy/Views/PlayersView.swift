@@ -128,6 +128,10 @@ struct PlayersBrowser: View {
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .prefetchAvatars(urls: results.map(\.headshotURL))
+                .refreshable {
+                    await app.refreshSelectedSeason()
+                    await loadMatchups()
+                }
             }
         }
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),

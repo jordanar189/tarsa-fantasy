@@ -52,6 +52,7 @@ struct LeagueDetailView: View {
                     // widget (e.g. standings) scrolls fully into view.
                     .padding(.bottom, 80)
                 }
+                .refreshable { await loadLeague() }
             } else {
                 ProgressView().tint(FFColor.accent)
             }
