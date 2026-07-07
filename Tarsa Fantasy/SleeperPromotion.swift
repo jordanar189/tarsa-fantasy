@@ -9,27 +9,32 @@ import Foundation
 enum SleeperPromotion {
 
     // Sleeper roster slots → our RosterConfig. Sleeper labels its bench "BN",
-    // injured reserve "IR", taxi "TAXI". Every flex variant (including
-    // SUPER_FLEX, which our lineup engine can't model exactly because FLEX
-    // never accepts a QB) collapses onto our single FLEX slot.
+    // injured reserve "IR", taxi "TAXI". Every Sleeper flex variant now has a
+    // native slot: SUPER_FLEX → superflex (QB-eligible), WRRB_FLEX → W/R,
+    // REC_FLEX → W/T. Only IDP_FLEX (defensive players, which the engine
+    // doesn't model) collapses onto the generic FLEX.
     static func rosterConfig(from positions: [String]) -> RosterConfig {
         func count(_ matches: (String) -> Bool) -> Int { positions.filter(matches).count }
-        let qb    = count { $0 == "QB" }
-        let rb    = count { $0 == "RB" }
-        let wr    = count { $0 == "WR" }
-        let te    = count { $0 == "TE" }
-        let flex  = count { ["FLEX", "WRRB_FLEX", "REC_FLEX", "SUPER_FLEX", "IDP_FLEX"].contains($0) }
-        let k     = count { $0 == "K" }
-        let def   = count { $0 == "DEF" || $0 == "DST" }
-        let bench = count { $0 == "BN" }
-        let ir    = count { $0 == "IR" }
+        let qb        = count { $0 == "QB" }
+        let rb        = count { $0 == "RB" }
+        let wr        = count { $0 == "WR" }
+        let te        = count { $0 == "TE" }
+        let flex      = count { $0 == "FLEX" || $0 == "IDP_FLEX" }
+        let superflex = count { $0 == "SUPER_FLEX" }
+        let wrFlex    = count { $0 == "WRRB_FLEX" }
+        let recFlex   = count { $0 == "REC_FLEX" }
+        let k         = count { $0 == "K" }
+        let def       = count { $0 == "DEF" || $0 == "DST" }
+        let bench     = count { $0 == "BN" }
+        let ir        = count { $0 == "IR" }
         // An empty / unusual position list (or an IDP-only league we can't map)
         // falls back to the default starter spine so the league is still
         // playable rather than slot-less.
-        if qb + rb + wr + te + flex + k + def == 0 { return .default }
+        if qb + rb + wr + te + flex + superflex + wrFlex + recFlex + k + def == 0 { return .default }
         return RosterConfig(
             qb: qb, rb: rb, wr: wr, te: te,
-            flex: flex, k: k, def: def, bench: bench, ir: ir
+            flex: flex, superflex: superflex, wrFlex: wrFlex, recFlex: recFlex,
+            k: k, def: def, bench: bench, ir: ir
         )
     }
 

@@ -22,10 +22,14 @@ interface DraftRow {
     pick_seconds: number; current_pick: number; total_picks: number;
     pick_deadline: string | null; pick_order: string[];
 }
+interface RosterConfigRow {
+    qb?: number; rb?: number; wr?: number; te?: number;
+    flex?: number; superflex?: number; wrFlex?: number; recFlex?: number;
+    k?: number; def?: number; bench?: number;
+}
 interface LeagueRow {
     id: string; season: number; scoring: string; is_test: boolean;
-    roster_config: { qb: number; rb: number; wr: number; te: number;
-                     flex: number; k: number; bench: number; } | null;
+    roster_config: RosterConfigRow | null;
 }
 interface PickRow { team_id: string; player_id: string; pick_number: number; }
 interface PlayerStat { player_id: string; fantasy_points_ppr: number; }
@@ -34,9 +38,10 @@ interface AdpRow { player_id: string; adp: number; snapshot_date: string; }
 
 // ============================================================
 // Auto-pick strategy (mirror of Fantasy.bestAutoPickPlayerID).
-// Mid-round loop of 7 with position template + per-loop budgets,
-// final two rounds reserved for K (we don't track DEF as a roster
-// position in this app).
+// Mid-round loop of 7 with position template + per-loop budgets.
+// The final (k + def) rounds are the K/DEF phase — sized by the
+// league's actual starter slots, absent entirely when it rosters
+// neither, and only asking for the positions still missing.
 // ============================================================
 const LOOP_ROUNDS    = 7;
 const BUDGET_RB      = 2;
@@ -51,8 +56,19 @@ function roundTemplate(loopOffset: number): Set<string> {
     return new Set(["RB","WR","TE"]);
 }
 
-function allowedPositions(round: number, totalRounds: number, loopPicks: string[]): Set<string> {
-    if (totalRounds >= 2 && round >= totalRounds - 1) return new Set(["K", "DEF"]);
+function allowedPositions(
+    round: number, totalRounds: number, loopPicks: string[],
+    kSlots: number, defSlots: number, kOwned: number, defOwned: number,
+    qbBudget: number,
+): Set<string> {
+    const kdefReserve = kSlots + defSlots;
+    if (kdefReserve > 0 && round > totalRounds - kdefReserve) {
+        const need = new Set<string>();
+        if (kOwned < kSlots) need.add("K");
+        if (defOwned < defSlots) need.add("DEF");
+        if (need.size > 0) return need;
+        // K/DEF already covered — fall through to the normal template.
+    }
     const loopOffset = (round - 1) % LOOP_ROUNDS;
     const template = roundTemplate(loopOffset);
     const counts = new Map<string, number>();
@@ -66,20 +82,21 @@ function allowedPositions(round: number, totalRounds: number, loopPicks: string[
             case "RB": return (counts.get("RB") ?? 0) < BUDGET_RB || flexLeft > 0;
             case "WR": return (counts.get("WR") ?? 0) < BUDGET_WR || flexLeft > 0;
             case "TE": return (counts.get("TE") ?? 0) < BUDGET_TE || flexLeft > 0;
-            case "QB": return (counts.get("QB") ?? 0) < BUDGET_QB;
+            case "QB": return (counts.get("QB") ?? 0) < qbBudget;
             default:   return true;
         }
     };
     return new Set([...template].filter(hasCapacity));
 }
 
-// Picks in the same loop as `round` for `teamID`, excluding K-phase picks.
+// Picks in the same loop as `round` for `teamID`, excluding K-phase picks
+// (the final `kdefReserve` rounds).
 function positionsInCurrentLoop(
     teamPicks: { pick_number: number; position: string }[],
-    round: number, totalRounds: number, teamCount: number, format: string,
+    round: number, totalRounds: number, kdefReserve: number,
 ): string[] {
-    const kPhaseStart = totalRounds - 1;
-    if (totalRounds >= 2 && round >= kPhaseStart) return [];
+    const kPhaseStart = totalRounds - kdefReserve + 1;
+    if (kdefReserve > 0 && round >= kPhaseStart) return [];
     const upcomingLoop = Math.floor((round - 1) / LOOP_ROUNDS);
     // Convert each pick to a round number for *this team*. With snake/linear
     // draft, the team's pick rounds are 1-indexed sequentially — pick #1 for
@@ -88,7 +105,7 @@ function positionsInCurrentLoop(
     return sorted
         .map((p, i) => ({ round: i + 1, position: p.position }))
         .filter(p => {
-            if (totalRounds >= 2 && p.round >= kPhaseStart) return false;
+            if (kdefReserve > 0 && p.round >= kPhaseStart) return false;
             return Math.floor((p.round - 1) / LOOP_ROUNDS) === upcomingLoop;
         })
         .map(p => p.position);
@@ -135,8 +152,16 @@ async function advanceDraft(d: DraftRow): Promise<string> {
         .eq("id", d.league_id).single();
     if (!lg) return "no_league";
     const L = lg as LeagueRow;
-    const rc = L.roster_config ?? { qb:1, rb:2, wr:2, te:1, flex:1, k:1, bench:6 };
-    const totalRounds = rc.qb + rc.rb + rc.wr + rc.te + rc.flex + rc.k + rc.bench;
+    const rc = L.roster_config ?? {};
+    // Mirror RosterConfig.totalSize: every starter slot (incl. def and the
+    // flex variants) + bench. Older leagues' jsonb may lack the newer keys.
+    const kSlots    = rc.k ?? 1;
+    const defSlots  = rc.def ?? 1;
+    const superflex = rc.superflex ?? 0;
+    const totalRounds =
+        (rc.qb ?? 1) + (rc.rb ?? 2) + (rc.wr ?? 2) + (rc.te ?? 1) +
+        (rc.flex ?? 1) + superflex + (rc.wrFlex ?? 0) + (rc.recFlex ?? 0) +
+        kSlots + defSlots + (rc.bench ?? 6);
     const round = roundIdx + 1;
 
     // What's already been picked across all teams.
@@ -152,14 +177,22 @@ async function advanceDraft(d: DraftRow): Promise<string> {
         const { data: rows } = await supa.from("players_cache")
             .select("id, position")
             .in("id", myPickPlayerIds);
-        const posByID = new Map((rows ?? []).map((r: CachePlayer) => [r.id, (r.position ?? "").toUpperCase()]));
+        const posByID = new Map<string, string>(
+            ((rows ?? []) as CachePlayer[]).map(r => [r.id, (r.position ?? "").toUpperCase()])
+        );
         myPickRows = allPicks.filter(p => p.team_id === teamID).map(p => ({
             pick_number: p.pick_number,
             position: posByID.get(p.player_id) ?? "",
         }));
     }
-    const loopPicks = positionsInCurrentLoop(myPickRows, round, totalRounds, teamCount, d.format);
-    const allowed = allowedPositions(round, totalRounds, loopPicks);
+    const loopPicks = positionsInCurrentLoop(myPickRows, round, totalRounds, kSlots + defSlots);
+    const kOwned   = myPickRows.filter(p => p.position === "K").length;
+    const defOwned = myPickRows.filter(p => p.position === "DEF").length;
+    const allowed = allowedPositions(
+        round, totalRounds, loopPicks,
+        kSlots, defSlots, kOwned, defOwned,
+        Math.max(BUDGET_QB, (rc.qb ?? 1) + superflex),
+    );
 
     // Build the ADP-ranked candidate list. Pick the right snapshot:
     // sim leagues use the latest snapshot <= the season's draft anchor
@@ -167,21 +200,42 @@ async function advanceDraft(d: DraftRow): Promise<string> {
     const adpByID = await fetchAdpRankings(L);
 
     // Player metadata (position) for every candidate we might rank.
-    const { data: playersData } = await supa.from("players_cache")
-        .select("id, position");
-    const cache = (playersData ?? []) as CachePlayer[];
+    // Paginated: PostgREST caps unranged selects at 1000 rows, and
+    // players_cache holds every NFL player — an unpaginated fetch made the
+    // auto-pick pool an arbitrary 1000-row subset.
+    const cache: CachePlayer[] = [];
+    for (let from = 0; ; from += 1000) {
+        const { data: page } = await supa.from("players_cache")
+            .select("id, position")
+            .order("id")
+            .range(from, from + 999);
+        if (!page || page.length === 0) break;
+        cache.push(...(page as CachePlayer[]));
+        if (page.length < 1000) break;
+    }
 
     // Available = not-yet-picked.
     const available = cache.filter(p => !pickedIDs.has(p.id));
     if (available.length === 0) return "no_candidates";
 
     // Season-points fallback for tiebreaking players without ADP.
-    const { data: stats } = await supa.from("player_games")
-        .select("player_id, fantasy_points_ppr")
-        .eq("season", L.season);
+    // Paginated for the same 1000-row reason as above.
     const totals = new Map<string, number>();
-    for (const s of (stats ?? []) as PlayerStat[]) {
-        totals.set(s.player_id, (totals.get(s.player_id) ?? 0) + Number(s.fantasy_points_ppr));
+    for (let from = 0; ; from += 1000) {
+        // Ordered by the full (player_id, week) key: player_id repeats
+        // across weeks, and range pagination over a non-unique order can
+        // skip or double-count rows at page boundaries.
+        const { data: page } = await supa.from("player_games")
+            .select("player_id, fantasy_points_ppr")
+            .eq("season", L.season)
+            .order("player_id")
+            .order("week")
+            .range(from, from + 999);
+        if (!page || page.length === 0) break;
+        for (const s of page as PlayerStat[]) {
+            totals.set(s.player_id, (totals.get(s.player_id) ?? 0) + Number(s.fantasy_points_ppr));
+        }
+        if (page.length < 1000) break;
     }
 
     // Sort: ADP asc; players without ADP fall to bottom ordered by points desc.

@@ -800,8 +800,9 @@ struct LineupTabView: View {
         var used = Set<String>()
         for i in slots.indices where context.isLocked(assignment[i]) { used.insert(assignment[i]) }
         let order = slots.indices.sorted { i, j in
-            if slots[i] == .flex && slots[j] != .flex { return false }
-            if slots[j] == .flex && slots[i] != .flex { return true }
+            if slots[i].flexibility != slots[j].flexibility {
+                return slots[i].flexibility < slots[j].flexibility
+            }
             return i < j
         }
         for i in order where !context.isLocked(assignment[i]) {

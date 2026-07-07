@@ -451,8 +451,7 @@ struct MatchupTabView: View {
         var total = 0.0
         let order = config.starterSlots.indices.sorted { i, j in
             let a = config.starterSlots[i], b = config.starterSlots[j]
-            if a == .flex && b != .flex { return false }
-            if b == .flex && a != .flex { return true }
+            if a.flexibility != b.flexibility { return a.flexibility < b.flexibility }
             return i < j
         }
         for i in order {

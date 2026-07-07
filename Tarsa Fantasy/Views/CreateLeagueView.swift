@@ -117,12 +117,15 @@ struct CreateLeagueView: View {
                         }
 
                         section("Roster",
-                                footer: "\(rosterConfig.starterCount) starters · \(rosterConfig.totalSize) total. FLEX accepts RB / WR / TE.") {
+                                footer: "\(rosterConfig.starterCount) starters · \(rosterConfig.totalSize) total. FLEX accepts RB / WR / TE; SFLX adds QB (2-QB leagues); W/R and W/T are two-position flexes.") {
                             rosterStepper("QB",    value: $rosterConfig.qb,    range: 0...4)
                             rosterStepper("RB",    value: $rosterConfig.rb,    range: 0...6)
                             rosterStepper("WR",    value: $rosterConfig.wr,    range: 0...6)
                             rosterStepper("TE",    value: $rosterConfig.te,    range: 0...4)
                             rosterStepper("FLEX",  value: $rosterConfig.flex,  range: 0...4)
+                            rosterStepper("SFLX",  value: $rosterConfig.superflex, range: 0...2)
+                            rosterStepper("W/R",   value: $rosterConfig.wrFlex,    range: 0...3)
+                            rosterStepper("W/T",   value: $rosterConfig.recFlex,   range: 0...3)
                             rosterStepper("K",     value: $rosterConfig.k,     range: 0...2)
                             rosterStepper("DEF",   value: $rosterConfig.def,   range: 0...2)
                             rosterStepper("Bench", value: $rosterConfig.bench, range: 0...12)

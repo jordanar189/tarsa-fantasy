@@ -99,7 +99,9 @@ struct SleeperActivateView: View {
         var parts: [String] = []
         func add(_ n: Int, _ label: String) { if n > 0 { parts.append("\(n) \(label)") } }
         add(cfg.qb, "QB"); add(cfg.rb, "RB"); add(cfg.wr, "WR"); add(cfg.te, "TE")
-        add(cfg.flex, "FLEX"); add(cfg.k, "K"); add(cfg.def, "DEF")
+        add(cfg.flex, "FLEX"); add(cfg.superflex, "SFLX")
+        add(cfg.wrFlex, "W/R"); add(cfg.recFlex, "W/T")
+        add(cfg.k, "K"); add(cfg.def, "DEF")
         return parts.isEmpty ? "—" : parts.joined(separator: ", ")
     }
 

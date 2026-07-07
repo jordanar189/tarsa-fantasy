@@ -208,6 +208,44 @@ struct LineupTests {
         #expect(!LineupSlot.flex.accepts(position: "DEF"))
     }
 
+    @Test func flexVariantEligibility() {
+        #expect(LineupSlot.superflex.accepts(position: "QB"))
+        #expect(LineupSlot.superflex.accepts(position: "RB"))
+        #expect(LineupSlot.superflex.accepts(position: "WR"))
+        #expect(LineupSlot.superflex.accepts(position: "TE"))
+        #expect(!LineupSlot.superflex.accepts(position: "K"))
+        #expect(LineupSlot.wrFlex.accepts(position: "RB"))
+        #expect(LineupSlot.wrFlex.accepts(position: "WR"))
+        #expect(!LineupSlot.wrFlex.accepts(position: "TE"))
+        #expect(LineupSlot.recFlex.accepts(position: "WR"))
+        #expect(LineupSlot.recFlex.accepts(position: "TE"))
+        #expect(!LineupSlot.recFlex.accepts(position: "RB"))
+    }
+
+    @Test func superflexCountsInStartersAndSlots() {
+        let config = RosterConfig(qb: 1, rb: 2, wr: 2, te: 1, flex: 1,
+                                  superflex: 1, k: 1, def: 1, bench: 6)
+        #expect(config.starterCount == 10)
+        #expect(config.starterSlots.filter { $0 == .superflex }.count == 1)
+    }
+
+    /// In a 2-QB (superflex) league, auto-fill puts the best QB in the QB
+    /// slot and the second QB in the superflex — the catch-all never steals
+    /// the dedicated slot's player.
+    @Test func superflexAutoFillTakesSecondQB() {
+        let config = RosterConfig(qb: 1, rb: 0, wr: 0, te: 0, flex: 0,
+                                  superflex: 1, k: 0, def: 0, bench: 0)
+        let players = [
+            "q1": qb("q1", weekPoints: [1: 25]),
+            "q2": qb("q2", weekPoints: [1: 15])
+        ]
+        let team = FantasyTeam(id: "A", name: "A", roster: ["q2", "q1"])
+        let (starters, _) = Fantasy.resolveLineup(
+            team: team, players: players, config: config,
+            scoring: .standard, week: nil)
+        #expect(starters == ["q1", "q2"], "QB slot gets the better QB, SFLX the second")
+    }
+
     /// A frozen weekly lineup with the right slot count is honored verbatim.
     @Test func frozenWeeklyLineupIsHonored() {
         let players = [
