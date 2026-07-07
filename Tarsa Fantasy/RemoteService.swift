@@ -884,39 +884,41 @@ actor RemoteService {
             return try await self.league(id: league.id)
         }
 
-        // Apply roster mutation + log transaction + (if a drop) start waiver
-        // period for the dropped player. Starters are slot-positional, so the
-        // dropped player's slot is blanked in place — the rest of the lineup
-        // must survive an add/drop untouched.
-        let starters = team.starters.map { $0 == dropPlayerID ? "" : $0 }
-        _ = try await setRoster(teamID: team.id, roster: roster, starters: starters)
-        if let drop = dropPlayerID {
-            try await registerDrop(leagueID: league.id, playerID: drop,
-                                   periodHours: league.waiverSettings.periodHours)
+        // Server-side RPC applies the mutation atomically under the league
+        // row lock: ownership, one-player-one-roster, waiver-window, and
+        // roster-size checks all happen there, the dropped player's starter
+        // slot blanks in place, and the drop + transaction log write in the
+        // same transaction. (The size check above stays for a friendly local
+        // error before the round-trip.)
+        guard let lid = UUID(uuidString: league.id),
+              let tid = UUID(uuidString: team.id) else { return nil }
+        struct Args: Encodable {
+            let p_league_id: UUID
+            let p_team_id: UUID
+            let p_add_player_id: String
+            let p_drop_player_id: String?
+            let p_bid: Int?
         }
-        try await insertTransaction(
-            leagueID: league.id, teamID: team.id,
-            kind: dropPlayerID == nil ? .add : .addDrop,
-            addPlayerID: addPlayerID, dropPlayerID: dropPlayerID,
-            status: .completed, note: nil
-        )
+        _ = try await client.rpc("add_free_agent", params: Args(
+            p_league_id: lid, p_team_id: tid,
+            p_add_player_id: addPlayerID, p_drop_player_id: dropPlayerID,
+            p_bid: bid
+        )).execute()
         return try await self.league(id: league.id)
     }
 
     @discardableResult
     func dropPlayer(league: League, team: FantasyTeam, playerID: String) async throws -> League? {
-        var roster = team.roster
-        roster.removeAll { $0 == playerID }
-        // Blank the dropped player's slot in place; keep the rest of the lineup.
-        let starters = team.starters.map { $0 == playerID ? "" : $0 }
-        _ = try await setRoster(teamID: team.id, roster: roster, starters: starters)
-        try await registerDrop(leagueID: league.id, playerID: playerID,
-                               periodHours: league.waiverSettings.periodHours)
-        try await insertTransaction(
-            leagueID: league.id, teamID: team.id,
-            kind: .drop, addPlayerID: nil, dropPlayerID: playerID,
-            status: .completed, note: nil
-        )
+        guard let lid = UUID(uuidString: league.id),
+              let tid = UUID(uuidString: team.id) else { return nil }
+        struct Args: Encodable {
+            let p_league_id: UUID
+            let p_team_id: UUID
+            let p_player_id: String
+        }
+        _ = try await client.rpc("drop_roster_player", params: Args(
+            p_league_id: lid, p_team_id: tid, p_player_id: playerID
+        )).execute()
         return try await self.league(id: league.id)
     }
 
@@ -967,6 +969,18 @@ actor RemoteService {
         try await client.from("waiver_claims")
             .delete()
             .eq("id", value: cid)
+            .execute()
+    }
+
+    // Sim-league waiver resolution: a won claim's player is by definition
+    // inside a waiver window, which add_free_agent rejects — clear the
+    // window first, exactly like the server worker does before applying.
+    func clearWaiverWindow(leagueID: String, playerID: String) async throws {
+        guard let lid = UUID(uuidString: leagueID) else { return }
+        try await client.from("dropped_players")
+            .delete()
+            .eq("league_id", value: lid)
+            .eq("player_id", value: playerID)
             .execute()
     }
 

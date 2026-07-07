@@ -1964,6 +1964,11 @@ final class AppState {
                 return false
             }
             do {
+                // The won player comes off waivers before the add — the
+                // add_free_agent RPC (correctly) refuses players still
+                // inside a waiver window.
+                try? await remote.clearWaiverWindow(
+                    leagueID: current.id, playerID: claim.addPlayerID)
                 let updated = try await remote.addFreeAgent(
                     league: current, team: team,
                     addPlayerID: claim.addPlayerID, dropPlayerID: claim.dropPlayerID,

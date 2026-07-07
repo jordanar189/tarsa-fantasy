@@ -71,6 +71,11 @@ begin
     );
     new_recipient_roster := coalesce(new_recipient_roster, '{}'::text[]) || t.proposer_player_ids;
 
+    -- Sanctioned roster write (see guard_roster_write in the roster-RPCs
+    -- migration, which sorts before this one): the caller is an ordinary
+    -- owner accepting a trade, and the guard trigger would otherwise
+    -- reject the swap.
+    perform public.mark_roster_write();
     update public.teams set roster = new_proposer_roster  where id = proposer.id;
     update public.teams set roster = new_recipient_roster where id = recipient.id;
 

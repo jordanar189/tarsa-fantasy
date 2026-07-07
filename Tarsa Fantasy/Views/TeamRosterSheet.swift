@@ -85,7 +85,12 @@ struct TeamRosterSheet: View {
                 }
             }
 
-            if isMine || isCommish {
+            // Direct roster editing is a commissioner tool only: for owners
+            // it bypassed waivers entirely (instant-grab any free agent, no
+            // window, no claims), and the server-side roster guard now
+            // rejects raw owner writes anyway. Owners manage rosters through
+            // add/drop, waivers, trades, and the draft.
+            if isCommish {
                 Button {
                     dismiss()
                     onEdit()
