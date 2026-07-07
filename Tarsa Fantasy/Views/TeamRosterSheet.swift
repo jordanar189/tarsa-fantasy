@@ -111,28 +111,31 @@ struct TeamRosterSheet: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.top, FFSpace.s)
+            }
 
-                if let onCustomize {
-                    Button {
-                        dismiss()
-                        onCustomize()
-                    } label: {
-                        HStack {
-                            Image(systemName: "paintbrush")
-                                .font(.system(size: 13, weight: .semibold))
-                            Text("Customize team")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .font(.ffHeadline)
-                        .foregroundStyle(FFColor.textSecondary)
-                        .padding(.vertical, 12)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: FFRadius.s)
-                                .strokeBorder(FFColor.border, lineWidth: 1)
-                        )
+            // Customization (branding, nicknames) stays owner-authorized —
+            // only the roster editor above is a commissioner tool.
+            if isMine || isCommish, let onCustomize {
+                Button {
+                    dismiss()
+                    onCustomize()
+                } label: {
+                    HStack {
+                        Image(systemName: "paintbrush")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Customize team")
                     }
-                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                    .font(.ffHeadline)
+                    .foregroundStyle(FFColor.textSecondary)
+                    .padding(.vertical, 12)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: FFRadius.s)
+                            .strokeBorder(FFColor.border, lineWidth: 1)
+                    )
                 }
+                .buttonStyle(.plain)
+                .padding(.top, isCommish ? 0 : FFSpace.s)
             }
         }
         .ffCard()

@@ -57,6 +57,16 @@ begin
     values (p_user, p_title, p_body, p_deep_link);
 end$$;
 
+-- Both helpers bypass push_events RLS via security definer, so clients must
+-- not be able to reach them through /rest/v1/rpc: queue_push would let any
+-- authenticated user spam arbitrary notifications at any user, and
+-- claim_push_events would let one drain (and silence) the whole outbox.
+-- Triggers still call queue_push fine (definer functions run as the owner),
+-- and send_push keeps claim_push_events via its service-role grant.
+revoke execute on function public.queue_push(uuid, text, text, text) from public, anon, authenticated;
+revoke execute on function public.claim_push_events(int) from public, anon, authenticated;
+grant execute on function public.claim_push_events(int) to service_role;
+
 create or replace function public.player_display_name(p_id text) returns text
 language sql stable security definer set search_path = public as $$
     select coalesce((select name from public.players_cache where id = p_id), p_id)
@@ -76,7 +86,7 @@ declare
     proposer_name   text;
 begin
     if public.league_is_test(new.league_id) then return new; end if;
-    if new.status <> 'proposed' then return new; end if;
+    if new.status <> 'pending' then return new; end if;
     select owner_id into recipient_owner from public.teams where id = new.recipient_team_id;
     select name into proposer_name from public.teams where id = new.proposer_team_id;
     perform public.queue_push(
@@ -111,11 +121,11 @@ begin
       from public.teams where id = new.recipient_team_id;
     link := 'tarsafantasy://league/' || new.league_id;
 
-    if new.status = 'rejected' and old.status = 'proposed' then
+    if new.status = 'rejected' and old.status = 'pending' then
         perform public.queue_push(proposer_owner, 'Trade declined',
             coalesce(recipient_name, 'The other team') || ' declined your trade offer.', link);
     elsif new.status in ('accepted', 'pending_execution', 'pending_approval', 'voting')
-          and old.status = 'proposed' then
+          and old.status = 'pending' then
         perform public.queue_push(proposer_owner, 'Trade accepted',
             coalesce(recipient_name, 'The other team') || ' accepted your trade offer'
             || case when new.status in ('pending_approval', 'voting')
