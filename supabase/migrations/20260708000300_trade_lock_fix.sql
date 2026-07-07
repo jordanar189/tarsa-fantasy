@@ -36,8 +36,12 @@ begin
     select * into recipient from public.teams   where id = t.recipient_team_id;
 
     -- Locked = the player's NFL team has a game in progress right now.
-    -- (status is authoritative when the live sync has run; the kickoff
-    -- comparison covers the window before it flips to in_progress.)
+    -- nfl_schedules.status only refreshes on the DAILY schedule syncs (the
+    -- per-minute live sync never writes this table), so status alone would
+    -- hold a "kicked off" game locked until the next morning. The kickoff
+    -- arm is therefore bounded: no NFL game exceeds ~4.5 hours, so past
+    -- kickoff + 5h the game is treated as over and the trade settles the
+    -- same day, even before the daily sync flips status to 'final'.
     select count(*) into locked_count
       from public.players_cache pc
       join public.nfl_schedules g
@@ -45,8 +49,9 @@ begin
        and (g.home_team = pc.team or g.away_team = pc.team)
      where pc.id = any (t.proposer_player_ids || t.recipient_player_ids)
        and g.status <> 'final'
-       and (g.status = 'in_progress'
-            or (g.kickoff is not null and g.kickoff <= now()));
+       and g.kickoff is not null
+       and g.kickoff <= now()
+       and g.kickoff > now() - interval '5 hours';
 
     if locked_count > 0 then
         -- Stay in pending_execution; the hourly cron retries and succeeds

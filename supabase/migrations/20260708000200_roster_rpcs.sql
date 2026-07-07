@@ -134,8 +134,12 @@ begin
       from unnest(tm.starters) with ordinality as u(s, ord);
 
     perform public.mark_roster_write();
+    -- The dropped player also leaves IR/taxi — a phantom entry there would
+    -- inflate the slot counts and block future placements.
     update public.teams
-       set roster = new_roster, starters = new_starters
+       set roster = new_roster, starters = new_starters,
+           ir   = array_remove(coalesce(tm.ir,   '{}'), p_drop_player_id),
+           taxi = array_remove(coalesce(tm.taxi, '{}'), p_drop_player_id)
      where id = p_team_id
      returning * into tm;
 
