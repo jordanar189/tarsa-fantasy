@@ -717,7 +717,8 @@ final class AppState {
         weeksPerRound: Int = 1,
         divisionNames: [String] = [],
         scoringSettings: ScoringSettings? = nil,
-        isDynasty: Bool = false
+        isDynasty: Bool = false,
+        waiverSettings: WaiverSettings = .default
     ) async throws -> League {
         guard let session else { throw AppError.notSignedIn }
         let league = try await remote.createLeague(
@@ -731,7 +732,8 @@ final class AppState {
             weeksPerRound: weeksPerRound,
             divisionNames: divisionNames,
             scoringSettings: scoringSettings,
-            isDynasty: isDynasty
+            isDynasty: isDynasty,
+            waiverSettings: waiverSettings
         )
         await reloadLeagues()
         await selectLeague(league.id)
@@ -833,6 +835,14 @@ final class AppState {
         let scoring = SleeperPromotion.scoring(fromLabel: latest.scoringLabel)
         let rosterConfig = SleeperPromotion.rosterConfig(from: latest.rosterPositions)
         let regularSeasonWeeks = SleeperPromotion.regularSeasonWeeks(from: latest)
+        // High-fidelity carryover: exact scoring weights, dynasty flag, and
+        // FAAB waivers (older archives without the raw config fall back to
+        // preset scoring + priority waivers).
+        let customScoring = SleeperPromotion.scoringSettings(
+            from: latest.scoringSettings, fallback: scoring)
+        let isDynasty = SleeperPromotion.isDynasty(leagueType: latest.leagueType)
+        let waiverSettings = SleeperPromotion.waiverSettings(
+            waiverType: latest.waiverType, waiverBudget: latest.waiverBudget)
         let leagueName: String
         if let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty {
             leagueName = trimmed
@@ -861,7 +871,10 @@ final class AppState {
             rosterConfig: rosterConfig,
             yourTeamName: teamName(myTeam),
             otherTeamNames: others.map(teamName),
-            regularSeasonWeeks: regularSeasonWeeks
+            regularSeasonWeeks: regularSeasonWeeks,
+            scoringSettings: customScoring,
+            isDynasty: isDynasty,
+            waiverSettings: waiverSettings
         )
 
         // Populating rosters is the core promise, so a failure here is fatal:
@@ -1237,11 +1250,13 @@ final class AppState {
     @discardableResult
     func submitWaiverClaim(
         leagueID: String, teamID: String,
-        addPlayerID: String, dropPlayerID: String?
+        addPlayerID: String, dropPlayerID: String?,
+        bid: Int? = nil
     ) async throws -> WaiverClaim? {
         try await remote.submitWaiverClaim(
             leagueID: leagueID, teamID: teamID,
-            addPlayerID: addPlayerID, dropPlayerID: dropPlayerID
+            addPlayerID: addPlayerID, dropPlayerID: dropPlayerID,
+            bid: bid
         )
     }
 
@@ -1900,20 +1915,112 @@ final class AppState {
     }
 
     private func runAutoProcessing(league: League) async {
-        // Process waivers: re-use the regular waiver flow by simulating the
-        // tick. We don't have a "force run" RPC, so for each pending claim
-        // resolve it directly via processClaim — the existing
-        // process_waivers function is a cron-only Edge Function. For v1 we
-        // approximate by walking the pending list and using the same logic
-        // the server uses. Trades have attempt_execute_trade callable per id.
+        // Trades have attempt_execute_trade callable per id.
         let pendingTrades = await trades(leagueID: league.id)
             .filter { $0.status == .pendingExecution }
         for t in pendingTrades {
             _ = try? await remote.callTradeRetry(tradeID: t.id)
         }
-        // Pending waiver claims: simplest path is to leave them alone (the
-        // hourly cron handles them). Surfacing a "Run waivers now" button is
-        // a separate piece of work.
+        // The server worker deliberately skips is_test leagues (sims run on
+        // simulated time, not the wall clock), so pending claims resolve
+        // here on every week advance instead.
+        await resolveSimWaivers(league: league)
+    }
+
+    // Sim-league waiver resolution: a simplified mirror of the server
+    // worker. FAAB orders league-wide by bid (ties to waiver position);
+    // priority walks teams in waiver order. One winner per player; winners
+    // pay their bid (FAAB) or rotate to the back of the order (priority).
+    private func resolveSimWaivers(league: League) async {
+        guard league.isTest else { return }
+        let pending = await waiverClaims(leagueID: league.id)
+            .filter { $0.status == .pending }
+        guard !pending.isEmpty else { return }
+        guard let fresh = try? await remote.league(id: league.id), let lg = fresh else { return }
+
+        let isFaab = lg.waiverSettings.mode == .faab
+        var taken: Set<String> = []
+        var faabRemaining: [String: Int] = Dictionary(uniqueKeysWithValues:
+            lg.teams.map { ($0.id, lg.waiverSettings.faabBudget - $0.faabSpent) })
+        var current = lg
+
+        // Attempts one claim; returns true when it won.
+        func attempt(_ claim: WaiverClaim) async -> Bool {
+            guard let team = current.teams.first(where: { $0.id == claim.teamID }) else { return false }
+            if taken.contains(claim.addPlayerID) {
+                try? await remote.markWaiverClaim(
+                    id: claim.id, status: "failed",
+                    reason: isFaab ? "Outbid — another team won this player."
+                                   : "Higher-priority team won this player.")
+                return false
+            }
+            let bid = claim.bid ?? 0
+            if isFaab, bid > (faabRemaining[team.id] ?? 0) {
+                try? await remote.markWaiverClaim(
+                    id: claim.id, status: "failed",
+                    reason: "Bid exceeds your remaining FAAB budget.")
+                return false
+            }
+            do {
+                let updated = try await remote.addFreeAgent(
+                    league: current, team: team,
+                    addPlayerID: claim.addPlayerID, dropPlayerID: claim.dropPlayerID,
+                    bid: isFaab ? bid : nil
+                )
+                try? await remote.markWaiverClaim(id: claim.id, status: "processed", reason: nil)
+                taken.insert(claim.addPlayerID)
+                if isFaab {
+                    faabRemaining[team.id, default: 0] -= bid
+                    try? await remote.addFaabSpent(teamID: team.id, amount: bid)
+                }
+                if let updated { current = updated }
+                return true
+            } catch {
+                try? await remote.markWaiverClaim(
+                    id: claim.id, status: "failed",
+                    reason: error.localizedDescription)
+                return false
+            }
+        }
+
+        let position = Dictionary(uniqueKeysWithValues:
+            lg.waiverPriority.enumerated().map { ($0.element, $0.offset) })
+        if isFaab {
+            // League-wide bid order; teams may win multiple players.
+            let ordered = pending.sorted { a, b in
+                if (a.bid ?? 0) != (b.bid ?? 0) { return (a.bid ?? 0) > (b.bid ?? 0) }
+                let pa = position[a.teamID] ?? .max, pb = position[b.teamID] ?? .max
+                if pa != pb { return pa < pb }
+                return a.createdAt < b.createdAt
+            }
+            for claim in ordered { _ = await attempt(claim) }
+        } else {
+            // Mirror the server worker: repeated one-win-per-team rounds over
+            // the priority order, rotating each round's winners to the back,
+            // so a high-priority team with several claims can't sweep.
+            var working = lg.waiverPriority
+            for team in lg.teams where !working.contains(team.id) { working.append(team.id) }
+            var resolved: Set<String> = []
+            while true {
+                var roundWinners: [String] = []
+                for teamID in working {
+                    let teamClaims = pending
+                        .filter { $0.teamID == teamID && !resolved.contains($0.id) }
+                        .sorted { $0.teamPriority < $1.teamPriority }
+                    for claim in teamClaims {
+                        let won = await attempt(claim)
+                        resolved.insert(claim.id)
+                        if won { roundWinners.append(teamID); break }
+                    }
+                }
+                if roundWinners.isEmpty { break }
+                working = working.filter { !roundWinners.contains($0) } + roundWinners
+            }
+            if working != lg.waiverPriority {
+                _ = try? await remote.updateWaiverSettings(
+                    leagueID: current.id, settings: current.waiverSettings, priority: working)
+            }
+        }
     }
 
     // Generate one round of bot moves and execute each in sequence.
@@ -1966,9 +2073,12 @@ final class AppState {
                 addPlayerID: addPlayerID, dropPlayerID: dropPlayerID
             )
         case let .waiverClaim(teamID, addPlayerID, dropPlayerID):
+            // Bots bid $0 in FAAB leagues — a valid minimum bid, and the RPC
+            // rejects FAAB claims without one.
             _ = try await remote.submitWaiverClaim(
                 leagueID: league.id, teamID: teamID,
-                addPlayerID: addPlayerID, dropPlayerID: dropPlayerID
+                addPlayerID: addPlayerID, dropPlayerID: dropPlayerID,
+                bid: league.waiverSettings.mode == .faab ? 0 : nil
             )
         case let .proposeTrade(fromTeamID, toTeamID, sendIDs, requestIDs):
             _ = try await remote.proposeTrade(

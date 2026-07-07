@@ -2,20 +2,31 @@
 // passed since last_waivers_run_at. Scheduled hourly via pg_cron; this
 // function no-ops cheaply for leagues that aren't yet due.
 //
-// Resolution order, per league:
-//   1. Pull waiver_priority (ordered team IDs).
-//   2. For each team in priority order, walk that team's pending claims in
-//      team_priority order.
-//   3. For each claim: validate add player is still on waivers + not on any
-//      roster; validate the drop (if any) is still on the team's roster.
-//      If OK, apply the add/drop atomically, mark claim processed, log a
-//      transaction row.
-//   4. After resolving, move teams that won claims to the back of the
-//      priority list (rolling waivers). Teams without wins keep their slot.
-//   5. Clear dropped_players rows whose waiver_until is in the past AND the
-//      player wasn't claimed.
+// Two resolution modes (leagues.waiver_mode):
+//
+//   priority — repeated one-win-per-team rounds over the waiver_priority
+//     order. Within a round each team attempts its claims in team_priority
+//     order until one wins; a round's winners rotate to the back of the
+//     working order before the next round, and rounds repeat until one
+//     produces no wins (so multi-claim teams don't sweep, and the rotation
+//     is preserved between rounds). The final order is persisted.
+//
+//   faab — every pending claim carries a bid; claims resolve league-wide by
+//     bid desc (ties: better waiver position, then earlier submission).
+//     Winners pay their bid (teams.faab_spent) and can win any number of
+//     players in one tick.
+//
+// Commissioner approval: when leagues.commissioner_approval is on, a winning
+// claim does NOT mutate the roster. It resolves the contest (claim ->
+// processed, player off waivers, FAAB bid committed) and writes a
+// pending_approval transaction; the commissioner's approve applies the
+// roster change, and a reject refunds the bid (transactions.bid).
+//
+// Test/simulation leagues (is_test) and completed seasons are skipped —
+// sims advance on simulated time, not the wall clock.
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { faabClaimOrder, rotateWinners } from "./logic.ts";
 
 const SUPABASE_URL     = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -31,16 +42,25 @@ interface LeagueRow {
     waiver_priority: string[];
     last_waivers_run_at: string | null;
     commissioner_approval: boolean;
+    waiver_mode: string | null;
+    faab_budget: number | null;
+    waiver_period_hours: number;
+    roster_config: Record<string, number> | null;
+    is_test: boolean;
+    season_completed: boolean;
 }
 interface TeamRow {
     id: string; league_id: string; name: string;
     roster: string[]; starters: string[]; owner_id: string | null;
+    ir: string[] | null; faab_spent: number | null;
 }
 interface ClaimRow {
     id: string; league_id: string; team_id: string;
     add_player_id: string; drop_player_id: string | null;
     team_priority: number; status: string; created_at: string;
+    bid: number | null;
 }
+type ClaimResult = { id: string; status: string; reason?: string };
 
 Deno.serve(async (_req: Request) => {
     try {
@@ -48,8 +68,13 @@ Deno.serve(async (_req: Request) => {
         const leagues = await loadDueLeagues(now);
         const out: Record<string, unknown>[] = [];
         for (const lg of leagues) {
-            const summary = await processLeague(lg, now);
-            out.push({ league: lg.id, ...summary });
+            try {
+                const summary = await processLeague(lg, now);
+                out.push({ league: lg.id, ...summary });
+            } catch (err) {
+                console.error(`league ${lg.id}:`, err);
+                out.push({ league: lg.id, error: String(err) });
+            }
         }
         await clearExpiredDrops(now);
         return new Response(JSON.stringify({ processed: out.length, leagues: out }), {
@@ -62,15 +87,19 @@ Deno.serve(async (_req: Request) => {
     }
 });
 
-// Returns leagues where the most recent occurrence of (process_day,
-// process_hour) is after last_waivers_run_at.
+// Returns real, in-season leagues where the most recent occurrence of
+// (process_day, process_hour) is after last_waivers_run_at.
 async function loadDueLeagues(now: Date): Promise<LeagueRow[]> {
     const { data, error } = await supa.from("leagues").select(
-        "id, waiver_process_day, waiver_process_hour, waiver_priority, last_waivers_run_at, commissioner_approval"
+        "id, waiver_process_day, waiver_process_hour, waiver_priority, " +
+        "last_waivers_run_at, commissioner_approval, waiver_mode, faab_budget, " +
+        "waiver_period_hours, roster_config, is_test, season_completed"
     );
     if (error) throw error;
     const all = (data ?? []) as LeagueRow[];
     return all.filter(l => {
+        // Sim leagues run on simulated time; completed seasons are frozen.
+        if (l.is_test || l.season_completed) return false;
         const tick = mostRecentTick(now, l.waiver_process_day, l.waiver_process_hour);
         if (!tick) return false;
         if (!l.last_waivers_run_at) return true;
@@ -92,8 +121,6 @@ function mostRecentTick(now: Date, dow: number, hour: number): Date | null {
 }
 
 async function processLeague(lg: LeagueRow, now: Date) {
-    // Pull all pending claims for this league, plus teams (for roster
-    // mutations) and dropped_players (to validate waiver state).
     const { data: claimRows } = await supa.from("waiver_claims")
         .select("*").eq("league_id", lg.id).eq("status", "pending");
     const claims = (claimRows ?? []) as ClaimRow[];
@@ -103,66 +130,67 @@ async function processLeague(lg: LeagueRow, now: Date) {
     const teamByID = new Map(teams.map(t => [t.id, t]));
 
     const { data: dropRows } = await supa.from("dropped_players").select("*").eq("league_id", lg.id);
-    const onWaivers = new Set((dropRows ?? []).map((r: { player_id: string }) => r.player_id));
+    const onWaivers = new Set<string>(
+        ((dropRows ?? []) as { player_id: string }[]).map(r => r.player_id)
+    );
 
-    // Index claims by team and sort by team_priority ascending.
-    const claimsByTeam = new Map<string, ClaimRow[]>();
-    for (const c of claims) {
-        if (!claimsByTeam.has(c.team_id)) claimsByTeam.set(c.team_id, []);
-        claimsByTeam.get(c.team_id)!.push(c);
-    }
-    for (const arr of claimsByTeam.values()) {
-        arr.sort((a, b) => a.team_priority - b.team_priority);
-    }
+    // Working priority order; teams missing from it (edge case) go last.
+    const order = [...(lg.waiver_priority ?? [])];
+    for (const t of teams) if (!order.includes(t.id)) order.push(t.id);
 
-    // Walk teams in waiver_priority order. Each team's first VALID claim
-    // wins; subsequent claims for the same player by lower-priority teams
-    // are skipped because the player has already been added.
-    const addedThisTick = new Set<string>();
-    const winnerTeams: string[] = [];
-    const processed: { id: string; status: string; reason?: string }[] = [];
+    const ctx: LeagueContext = {
+        lg,
+        onWaivers,
+        addedThisTick: new Set<string>(),
+        // Remaining FAAB per team, tracked in-memory across this tick's wins.
+        faabRemaining: new Map(teams.map(t =>
+            [t.id, (lg.faab_budget ?? 100) - (t.faab_spent ?? 0)]
+        )),
+    };
 
-    for (const teamID of lg.waiver_priority ?? []) {
-        const team = teamByID.get(teamID);
-        if (!team) continue;
-        const teamClaims = claimsByTeam.get(teamID) ?? [];
-        let wonOne = false;
-        for (const claim of teamClaims) {
-            if (wonOne) {
-                // Walk remaining claims later (in another pass) so the team
-                // gets one win per tick before others go again. Skip for now.
-                continue;
-            }
-            const result = await attemptClaim(claim, team, onWaivers, addedThisTick);
-            processed.push(result);
-            if (result.status === "processed") {
-                wonOne = true;
-                winnerTeams.push(teamID);
-            }
+    const processed: ClaimResult[] = [];
+    let finalOrder = order;
+
+    if ((lg.waiver_mode ?? "priority") === "faab") {
+        // FAAB: one league-wide pass in bid order. No priority rotation —
+        // the order is only a tiebreaker.
+        const priorityIndex = new Map(order.map((id, i) => [id, i]));
+        for (const claim of faabClaimOrder(claims, priorityIndex)) {
+            const team = teamByID.get(claim.team_id);
+            if (!team) continue;
+            processed.push(await attemptClaim(claim, team, ctx));
         }
-    }
-
-    // Optional second pass: teams that haven't won yet may get a turn at
-    // remaining claims now. Keep this simple — one extra pass is enough for
-    // typical league sizes; rare edge cases can wait for the next tick.
-    for (const teamID of lg.waiver_priority ?? []) {
-        const team = teamByID.get(teamID);
-        if (!team) continue;
-        const teamClaims = (claimsByTeam.get(teamID) ?? [])
-            .filter(c => !processed.find(p => p.id === c.id));
-        for (const claim of teamClaims) {
-            const result = await attemptClaim(claim, team, onWaivers, addedThisTick);
-            processed.push(result);
+    } else {
+        // Priority: repeated one-win-per-team rounds; each round's winners
+        // rotate to the back before the next round.
+        const resolved = new Set<string>();
+        let working = order;
+        for (;;) {
+            const roundWinners: string[] = [];
+            for (const teamID of working) {
+                const team = teamByID.get(teamID);
+                if (!team) continue;
+                const teamClaims = (claims.filter(c => c.team_id === teamID && !resolved.has(c.id)))
+                    .sort((a, b) => a.team_priority - b.team_priority);
+                for (const claim of teamClaims) {
+                    const result = await attemptClaim(claim, team, ctx);
+                    processed.push(result);
+                    resolved.add(claim.id);
+                    if (result.status === "processed") {
+                        roundWinners.push(teamID);
+                        break;  // one win per team per round
+                    }
+                }
+            }
+            if (roundWinners.length === 0) break;
+            working = rotateWinners(working, roundWinners);
         }
+        finalOrder = working;
     }
 
-    // Rolling waivers: winners go to the back of the priority list.
-    if (winnerTeams.length > 0) {
-        const losers = (lg.waiver_priority ?? []).filter(t => !winnerTeams.includes(t));
-        const newPriority = [...losers, ...winnerTeams];
-        await supa.from("leagues").update({ waiver_priority: newPriority }).eq("id", lg.id);
+    if (JSON.stringify(finalOrder) !== JSON.stringify(lg.waiver_priority ?? [])) {
+        await supa.from("leagues").update({ waiver_priority: finalOrder }).eq("id", lg.id);
     }
-
     await supa.from("leagues").update({ last_waivers_run_at: now.toISOString() }).eq("id", lg.id);
 
     return {
@@ -172,26 +200,42 @@ async function processLeague(lg: LeagueRow, now: Date) {
     };
 }
 
-async function attemptClaim(
-    claim: ClaimRow, team: TeamRow,
-    onWaivers: Set<string>, addedThisTick: Set<string>
-): Promise<{ id: string; status: string; reason?: string }> {
+interface LeagueContext {
+    lg: LeagueRow;
+    onWaivers: Set<string>;
+    addedThisTick: Set<string>;
+    faabRemaining: Map<string, number>;
+}
 
-    // If someone earlier in this tick already grabbed the player, skip
-    // (priority order handles "ties" implicitly).
+async function attemptClaim(
+    claim: ClaimRow, team: TeamRow, ctx: LeagueContext
+): Promise<ClaimResult> {
+    const { lg, onWaivers, addedThisTick, faabRemaining } = ctx;
+    const isFaab = (lg.waiver_mode ?? "priority") === "faab";
+
+    // If someone earlier in this tick already grabbed the player, this claim
+    // lost the contest (priority order / bid order handled who wins).
     if (addedThisTick.has(claim.add_player_id)) {
-        await failClaim(claim.id, "Higher-priority team won this player.");
+        await failClaim(claim.id, isFaab ? "Outbid — another team won this player."
+                                         : "Higher-priority team won this player.");
         return { id: claim.id, status: "failed", reason: "outbid" };
     }
 
-    // Validate add player is on waivers.
     if (!onWaivers.has(claim.add_player_id)) {
         await failClaim(claim.id, "Player is no longer on waivers.");
         return { id: claim.id, status: "failed", reason: "not_on_waivers" };
     }
 
-    // Re-pull team to ensure the latest roster (other claims may have
-    // mutated it in this same pass).
+    const bid = claim.bid ?? 0;
+    if (isFaab) {
+        const remaining = faabRemaining.get(team.id) ?? 0;
+        if (bid > remaining) {
+            await failClaim(claim.id, `Bid ($${bid}) exceeds your remaining FAAB budget ($${Math.max(0, remaining)}).`);
+            return { id: claim.id, status: "failed", reason: "over_budget" };
+        }
+    }
+
+    // Re-pull the team so earlier wins in this same tick are reflected.
     const { data: latest } = await supa.from("teams").select("*").eq("id", team.id).single();
     if (!latest) {
         await failClaim(claim.id, "Team not found.");
@@ -199,7 +243,6 @@ async function attemptClaim(
     }
     const roster = [...latest.roster] as string[];
 
-    // Validate drop (if specified) is still on roster.
     if (claim.drop_player_id) {
         if (!roster.includes(claim.drop_player_id)) {
             await failClaim(claim.id, "Drop player is no longer on your roster.");
@@ -210,13 +253,12 @@ async function attemptClaim(
     }
     roster.push(claim.add_player_id);
 
-    // Check roster size — fetch league for limit.
-    const { data: lg } = await supa.from("leagues").select("roster_config").eq("id", claim.league_id).single();
-    const cfg = (lg?.roster_config ?? {}) as Record<string, number>;
+    // Roster-size check against the league's config (IR sits outside the
+    // active roster). Mirrors RosterConfig.totalSize incl. flex variants.
+    const cfg = lg.roster_config ?? {};
     const totalSize = (cfg.qb ?? 1) + (cfg.rb ?? 2) + (cfg.wr ?? 2) + (cfg.te ?? 1)
-        + (cfg.flex ?? 1) + (cfg.k ?? 1) + (cfg.def ?? 1) + (cfg.bench ?? 6);
-    // IR players sit outside the active roster, so they don't count toward the
-    // limit — only active (non-IR) players do.
+        + (cfg.flex ?? 1) + (cfg.superflex ?? 0) + (cfg.wrFlex ?? 0) + (cfg.recFlex ?? 0)
+        + (cfg.k ?? 1) + (cfg.def ?? 1) + (cfg.bench ?? 6);
     const irSet = new Set((latest.ir ?? []) as string[]);
     const activeCount = roster.filter((p: string) => !irSet.has(p)).length;
     if (activeCount > totalSize) {
@@ -224,28 +266,39 @@ async function attemptClaim(
         return { id: claim.id, status: "failed", reason: "roster_full" };
     }
 
-    // Apply the change.
-    await supa.from("teams").update({ roster, starters: latest.starters }).eq("id", team.id);
-    // Remove the player from waivers + track this tick's wins.
+    // The claim WINS from here on: the contest is resolved, the player comes
+    // off waivers, and (FAAB) the bid is committed — regardless of whether
+    // the roster change applies now or waits for commissioner approval.
+    const held = lg.commissioner_approval === true;
+
+    if (!held) {
+        // Blank the dropped player's starter slot in place (slot-positional).
+        const starters = ((latest.starters ?? []) as string[])
+            .map(s => s === claim.drop_player_id ? "" : s);
+        await supa.from("teams").update({ roster, starters }).eq("id", team.id);
+        if (claim.drop_player_id) {
+            const until = new Date(Date.now() + lg.waiver_period_hours * 3600 * 1000).toISOString();
+            await supa.from("dropped_players").upsert({
+                league_id: claim.league_id,
+                player_id: claim.drop_player_id,
+                dropped_at: new Date().toISOString(),
+                waiver_until: until,
+            });
+        }
+    }
+
+    if (isFaab && bid >= 0) {
+        faabRemaining.set(team.id, (faabRemaining.get(team.id) ?? 0) - bid);
+        await supa.from("teams")
+            .update({ faab_spent: ((latest.faab_spent ?? 0) as number) + bid })
+            .eq("id", team.id);
+    }
+
     await supa.from("dropped_players").delete()
         .eq("league_id", claim.league_id).eq("player_id", claim.add_player_id);
     onWaivers.delete(claim.add_player_id);
     addedThisTick.add(claim.add_player_id);
-    // If a drop happened, register the dropped player on waivers for the
-    // league's standard waiver period (claim resolution dropped them).
-    if (claim.drop_player_id) {
-        const { data: lgFull } = await supa.from("leagues")
-            .select("waiver_period_hours").eq("id", claim.league_id).single();
-        const periodHours = (lgFull?.waiver_period_hours ?? 24) as number;
-        const until = new Date(Date.now() + periodHours * 3600 * 1000).toISOString();
-        await supa.from("dropped_players").upsert({
-            league_id: claim.league_id,
-            player_id: claim.drop_player_id,
-            dropped_at: new Date().toISOString(),
-            waiver_until: until,
-        });
-    }
-    // Mark claim processed + log transaction.
+
     await supa.from("waiver_claims").update({
         status: "processed", processed_at: new Date().toISOString(),
     }).eq("id", claim.id);
@@ -254,7 +307,9 @@ async function attemptClaim(
         kind: "waiver_claim",
         add_player_id: claim.add_player_id,
         drop_player_id: claim.drop_player_id,
-        status: "completed",
+        status: held ? "pending_approval" : "completed",
+        bid: isFaab ? bid : null,
+        note: held ? "Won waiver claim — awaiting commissioner approval." : null,
     });
     return { id: claim.id, status: "processed" };
 }

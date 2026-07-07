@@ -90,16 +90,71 @@ struct SleeperActivateView: View {
             Text("Starters: \(starterSummary(cfg))")
                 .font(.ffCaption)
                 .foregroundStyle(FFColor.textTertiary)
+            carryoverSummary(latest: latest)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .ffCard(padding: FFSpace.m)
+    }
+
+    // Honest pre-promotion accounting: what carries over exactly, what maps
+    // approximately, and what this app doesn't model yet — so nobody
+    // discovers a rule change after the league is live.
+    @ViewBuilder
+    private func carryoverSummary(latest: ImportedSeason) -> some View {
+        let scoring = SleeperPromotion.scoring(fromLabel: latest.scoringLabel)
+        let custom = SleeperPromotion.scoringSettings(from: latest.scoringSettings, fallback: scoring)
+        let waivers = SleeperPromotion.waiverSettings(
+            waiverType: latest.waiverType, waiverBudget: latest.waiverBudget)
+        let isDynasty = SleeperPromotion.isDynasty(leagueType: latest.leagueType)
+        let isKeeper = latest.leagueType == 1
+        let hasIDP = latest.rosterPositions.contains { $0 == "IDP_FLEX" || $0 == "DL" || $0 == "LB" || $0 == "DB" }
+
+        VStack(alignment: .leading, spacing: 4) {
+            carryLine("checkmark.circle.fill", positive: true,
+                      latest.scoringSettings == nil
+                        ? "Scoring: \(scoring.label) preset (this archive predates exact-weights import — re-import to carry custom weights)"
+                        : (custom == nil ? "Scoring: \(scoring.label) preset (exact match)"
+                                         : "Scoring: custom per-stat weights carried over"))
+            carryLine("checkmark.circle.fill", positive: true,
+                      waivers.mode == .faab
+                        ? "Waivers: FAAB, $\(waivers.faabBudget) budget"
+                        : "Waivers: rolling priority")
+            if isDynasty {
+                carryLine("checkmark.circle.fill", positive: true,
+                          "Dynasty: rosters carry over every season")
+            }
+            if isKeeper {
+                carryLine("exclamationmark.triangle.fill", positive: false,
+                          "Keeper rules aren't supported yet — promotes as a redraft league")
+            }
+            if hasIDP {
+                carryLine("exclamationmark.triangle.fill", positive: false,
+                          "IDP slots aren't supported — they map to FLEX")
+            }
+            carryLine("exclamationmark.triangle.fill", positive: false,
+                      "Future draft-pick trades don't carry over; past seasons import as history only")
+        }
+        .padding(.top, 2)
+    }
+
+    private func carryLine(_ icon: String, positive: Bool, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundStyle(positive ? FFColor.positive : FFColor.warning)
+            Text(text)
+                .font(.ffCaption)
+                .foregroundStyle(FFColor.textSecondary)
+        }
     }
 
     private func starterSummary(_ cfg: RosterConfig) -> String {
         var parts: [String] = []
         func add(_ n: Int, _ label: String) { if n > 0 { parts.append("\(n) \(label)") } }
         add(cfg.qb, "QB"); add(cfg.rb, "RB"); add(cfg.wr, "WR"); add(cfg.te, "TE")
-        add(cfg.flex, "FLEX"); add(cfg.k, "K"); add(cfg.def, "DEF")
+        add(cfg.flex, "FLEX"); add(cfg.superflex, "SFLX")
+        add(cfg.wrFlex, "W/R"); add(cfg.recFlex, "W/T")
+        add(cfg.k, "K"); add(cfg.def, "DEF")
         return parts.isEmpty ? "—" : parts.joined(separator: ", ")
     }
 

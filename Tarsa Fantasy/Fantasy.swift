@@ -236,7 +236,8 @@ enum Fantasy {
         kSlots: Int = 1,
         defSlots: Int = 1,
         kOwned: Int = 0,
-        defOwned: Int = 0
+        defOwned: Int = 0,
+        qbBudget: Int = loopBudgetQB
     ) -> Set<String> {
         // Final (kSlots + defSlots) rounds = K / DEF phase. A league that
         // starts neither has no phase at all — no wasted end-of-draft picks.
@@ -269,7 +270,7 @@ enum Fantasy {
             case "RB": return (counts["RB"] ?? 0) < loopBudgetRB || flexLeft > 0
             case "WR": return (counts["WR"] ?? 0) < loopBudgetWR || flexLeft > 0
             case "TE": return (counts["TE"] ?? 0) < loopBudgetTE || flexLeft > 0
-            case "QB": return (counts["QB"] ?? 0) < loopBudgetQB
+            case "QB": return (counts["QB"] ?? 0) < qbBudget
             default:   return true
             }
         }
@@ -347,11 +348,14 @@ enum Fantasy {
             default:    break
             }
         }
+        // Superflex leagues effectively start 2 QBs — widen the per-loop QB
+        // budget so the bot actually drafts them.
         let allowed = autoPickAllowedPositions(
             round: round, totalRounds: totalRounds,
             currentLoopPicks: loopPicks,
             kSlots: config.k, defSlots: config.def,
-            kOwned: kOwned, defOwned: defOwned
+            kOwned: kOwned, defOwned: defOwned,
+            qbBudget: max(loopBudgetQB, config.qb + config.superflex)
         )
         if let pick = ranked.first(where: { allowed.contains($0.position.uppercased()) }) {
             return pick.id
@@ -439,11 +443,11 @@ enum Fantasy {
         let slots = config.starterSlots
         var assignment = Array(repeating: "", count: slots.count)
         var used: Set<String> = []
-        // Order slots so FLEX (and any other catch-all slots) are filled last.
+        // Fill the most-constrained slots first (dedicated → W/R & W/T →
+        // FLEX → SFLX) so a catch-all never steals a dedicated slot's player.
         let slotOrder = slots.indices.sorted { i, j in
             let a = slots[i], b = slots[j]
-            if a == .flex && b != .flex { return false }
-            if b == .flex && a != .flex { return true }
+            if a.flexibility != b.flexibility { return a.flexibility < b.flexibility }
             return i < j
         }
         for slotIdx in slotOrder {
@@ -479,13 +483,16 @@ enum Fantasy {
         for (i, slot) in slots.enumerated() where assignment[i].isEmpty {
             unfilled += 1
             switch slot {
-            case .qb:   positions.insert("QB")
-            case .rb:   positions.insert("RB")
-            case .wr:   positions.insert("WR")
-            case .te:   positions.insert("TE")
-            case .k:    positions.insert("K")
-            case .def:  positions.insert("DEF")
-            case .flex: positions.formUnion(["RB", "WR", "TE"])
+            case .qb:        positions.insert("QB")
+            case .rb:        positions.insert("RB")
+            case .wr:        positions.insert("WR")
+            case .te:        positions.insert("TE")
+            case .k:         positions.insert("K")
+            case .def:       positions.insert("DEF")
+            case .flex:      positions.formUnion(["RB", "WR", "TE"])
+            case .superflex: positions.formUnion(["QB", "RB", "WR", "TE"])
+            case .wrFlex:    positions.formUnion(["RB", "WR"])
+            case .recFlex:   positions.formUnion(["WR", "TE"])
             case .bench, .ir: break
             }
         }
@@ -518,19 +525,30 @@ enum Fantasy {
         // players to the active roster instead of leaving them as unscorable ghosts.
         let reservedSet = Set(team.ir).union(config.taxi > 0 ? Set(team.taxi) : Set<String>())
         // Prefer the frozen lineup for the requested week, then the live
-        // lineup, then an auto-fill.
+        // lineup, then an auto-fill. A frozen lineup whose length doesn't
+        // match the current slot layout (the commissioner changed roster
+        // slots mid-season) is padded/truncated rather than discarded —
+        // discarding silently re-auto-filled every past week and rewrote
+        // history. Entries that no longer fit their slot's position blank
+        // out instead of scoring in an impossible spot.
         let chosen: [String]? = {
             if let week, let frozen = team.weeklyLineups[week],
-               frozen.count == config.starterCount,
                frozen.contains(where: { !$0.isEmpty }) {
-                return frozen
+                if frozen.count == config.starterCount { return frozen }
+                return Array((frozen + Array(repeating: "", count: max(0, config.starterCount - frozen.count)))
+                    .prefix(config.starterCount))
             }
             return nil
         }()
         let starters: [String]
         if let chosen {
             let onRoster = Set(team.roster)
-            starters = chosen.map { onRoster.contains($0) ? $0 : "" }
+            let slots = config.starterSlots
+            starters = chosen.enumerated().map { i, pid in
+                guard onRoster.contains(pid) else { return "" }
+                if let pos = players[pid]?.position, !slots[i].accepts(position: pos) { return "" }
+                return pid
+            }
         } else if team.starters.count == config.starterCount
             && team.starters.contains(where: { !$0.isEmpty }) {
             // Drop starter IDs no longer on the roster (or moved to IR/taxi).
@@ -1019,13 +1037,13 @@ enum Fantasy {
             pointsByID[p.id] = pts
             byPosition[pos, default: []].append(pts)
         }
-        // Replacement-level points per position (FLEX spread over RB/WR/TE).
-        let flexShare = Double(config.flex) / 3.0
+        // Replacement-level points per position (each flex variant spread
+        // evenly over the positions it accepts; superflex includes QB).
         let startersByPos: [String: Double] = [
-            "QB": Double(config.qb),
-            "RB": Double(config.rb) + flexShare,
-            "WR": Double(config.wr) + flexShare,
-            "TE": Double(config.te) + flexShare,
+            "QB": Double(config.qb) + config.flexShareQB,
+            "RB": Double(config.rb) + config.flexShareRB,
+            "WR": Double(config.wr) + config.flexShareWR,
+            "TE": Double(config.te) + config.flexShareTE,
             "K":  Double(config.k),
             "DEF": Double(config.def),
         ]
@@ -1101,12 +1119,11 @@ enum Fantasy {
             guard !pts.isEmpty else { continue }
             byPos[pos, default: []].append((p.id, pts))
         }
-        let flexShare = Double(config.flex) / 3.0
         let startersByPos: [String: Double] = [
-            "QB": Double(config.qb),
-            "RB": Double(config.rb) + flexShare,
-            "WR": Double(config.wr) + flexShare,
-            "TE": Double(config.te) + flexShare,
+            "QB": Double(config.qb) + config.flexShareQB,
+            "RB": Double(config.rb) + config.flexShareRB,
+            "WR": Double(config.wr) + config.flexShareWR,
+            "TE": Double(config.te) + config.flexShareTE,
             "K":  Double(config.k),
             "DEF": Double(config.def),
         ]
@@ -1136,9 +1153,16 @@ enum Fantasy {
                          ("TE", config.te), ("K", config.k), ("DEF", config.def)] {
             teamVar += Double(n) * (withinVar[pos] ?? 0)
         }
-        if config.flex > 0 {
-            let flexVar = ["RB", "WR", "TE"].map { withinVar[$0] ?? 0 }.reduce(0, +) / 3.0
-            teamVar += Double(config.flex) * flexVar
+        let flexFamilies: [(count: Int, positions: [String])] = [
+            (config.flex,      ["RB", "WR", "TE"]),
+            (config.superflex, ["QB", "RB", "WR", "TE"]),
+            (config.wrFlex,    ["RB", "WR"]),
+            (config.recFlex,   ["WR", "TE"])
+        ]
+        for family in flexFamilies where family.count > 0 {
+            let v = family.positions.map { withinVar[$0] ?? 0 }.reduce(0, +)
+                / Double(family.positions.count)
+            teamVar += Double(family.count) * v
         }
         let sigma = max(1.0, teamVar.squareRoot())
         func phi(_ x: Double) -> Double { 0.5 * (1 + erf(x / 2.0.squareRoot())) }
@@ -1360,11 +1384,11 @@ enum Fantasy {
         let slots = config.starterSlots
         var used: Set<String> = []
         var total = 0.0
-        // Fill FLEX last so a flex-eligible player isn't pulled from a dedicated slot.
+        // Fill catch-all slots last so a flex-eligible player isn't pulled
+        // from a dedicated slot (dedicated → W/R & W/T → FLEX → SFLX).
         let order = slots.indices.sorted { i, j in
             let a = slots[i], b = slots[j]
-            if a == .flex && b != .flex { return false }
-            if b == .flex && a != .flex { return true }
+            if a.flexibility != b.flexibility { return a.flexibility < b.flexibility }
             return i < j
         }
         for i in order {

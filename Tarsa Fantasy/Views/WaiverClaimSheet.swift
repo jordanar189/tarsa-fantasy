@@ -18,8 +18,16 @@ struct WaiverClaimSheet: View {
     let onComplete: (League?) -> Void
 
     @State private var dropPlayerID: String? = nil
+    @State private var bid: Int = 0
     @State private var saving: Bool = false
     @State private var error: String? = nil
+
+    private var isFAAB: Bool { league.waiverSettings.mode == .faab }
+    // Season budget minus won bids. Dollars tied up in other pending claims
+    // are enforced server-side; this is the headline number owners think in.
+    private var faabRemaining: Int {
+        max(0, league.waiverSettings.faabBudget - team.faabSpent)
+    }
 
     // IR players occupy extra capacity, so only active (non-IR) players count
     // against the roster limit.
@@ -42,6 +50,9 @@ struct WaiverClaimSheet: View {
                 ScrollView {
                     VStack(spacing: FFSpace.xl) {
                         addingCard
+                        if isOnWaivers && isFAAB {
+                            bidSection
+                        }
                         if dropRequired {
                             dropSection(required: true)
                         } else {
@@ -57,7 +68,8 @@ struct WaiverClaimSheet: View {
                                 "On waivers until \((waiverUntil ?? Date()).shortRelative). Claims process at "
                                 + "\(league.waiverSettings.processDayLabel) "
                                 + String(format: "%02d:00 UTC", league.waiverSettings.processHour)
-                                + ", in waiver-priority order."
+                                + (isFAAB ? " — highest bid wins."
+                                          : ", in waiver-priority order.")
                             )
                         }
                         if let error {
@@ -92,7 +104,32 @@ struct WaiverClaimSheet: View {
 
     private var canSubmit: Bool {
         if dropRequired && dropPlayerID == nil { return false }
+        if isOnWaivers && isFAAB && bid > faabRemaining { return false }
         return true
+    }
+
+    // Blind FAAB bid with the remaining season budget alongside. The server
+    // re-validates against budget minus bids already pending on other claims.
+    private var bidSection: some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            Text("YOUR BID").ffEyebrow()
+            HStack(spacing: FFSpace.m) {
+                Text("$\(bid)")
+                    .font(.ffStatMedium)
+                    .foregroundStyle(bid > faabRemaining ? FFColor.negative : FFColor.accent)
+                Stepper("", value: $bid, in: 0...max(0, faabRemaining))
+                    .labelsHidden()
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("$\(faabRemaining)").font(.ffStatSmall).foregroundStyle(FFColor.textSecondary)
+                    Text("REMAINING").ffEyebrow()
+                }
+            }
+            .ffCard()
+            Text("Bids are blind. Ties go to the earlier waiver position. $0 bids are allowed.")
+                .font(.ffCaption)
+                .foregroundStyle(FFColor.textTertiary)
+        }
     }
 
     private var addingCard: some View {
@@ -228,7 +265,8 @@ struct WaiverClaimSheet: View {
             if isOnWaivers {
                 _ = try await app.submitWaiverClaim(
                     leagueID: league.id, teamID: team.id,
-                    addPlayerID: addPlayer.id, dropPlayerID: dropPlayerID
+                    addPlayerID: addPlayer.id, dropPlayerID: dropPlayerID,
+                    bid: isFAAB ? bid : nil
                 )
                 onComplete(nil)
             } else {

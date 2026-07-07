@@ -48,6 +48,7 @@ struct LeagueSettingsView: View {
     @State private var rollingOver: Bool = false
     @State private var rolloverSeason: Int = Calendar.current.component(.year, from: Date())
     @State private var confirmingComplete: Bool = false
+    @State private var confirmingRetroactive: Bool = false
     // Members
     @State private var editingTeamID: String? = nil
     @State private var editingTeamName: String = ""
@@ -130,10 +131,24 @@ struct LeagueSettingsView: View {
                         .foregroundStyle(FFColor.textSecondary)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save") { Task { await save() } }
-                        .foregroundStyle(FFColor.accent)
-                        .disabled(saving)
+                    Button("Save") {
+                        if retroactiveChangePending {
+                            confirmingRetroactive = true
+                        } else {
+                            Task { await save() }
+                        }
+                    }
+                    .foregroundStyle(FFColor.accent)
+                    .disabled(saving)
                 }
+            }
+            .alert("Rewrite past weeks?", isPresented: $confirmingRetroactive) {
+                Button("Cancel", role: .cancel) {}
+                Button("Save anyway", role: .destructive) {
+                    Task { await save() }
+                }
+            } message: {
+                Text("Games have already been played. Roster-slot and scoring changes apply to every week, including finished ones — past scores, standings, and playoff seeding will be recomputed under the new rules.")
             }
             .alert(item: $teamToKick) { ref in
                 Alert(
@@ -233,6 +248,9 @@ struct LeagueSettingsView: View {
             rosterStepper("WR",    value: $rosterConfig.wr,    range: 0...6)
             rosterStepper("TE",    value: $rosterConfig.te,    range: 0...4)
             rosterStepper("FLEX",  value: $rosterConfig.flex,  range: 0...4)
+            rosterStepper("SFLX",  value: $rosterConfig.superflex, range: 0...2)
+            rosterStepper("W/R",   value: $rosterConfig.wrFlex,    range: 0...3)
+            rosterStepper("W/T",   value: $rosterConfig.recFlex,   range: 0...3)
             rosterStepper("K",     value: $rosterConfig.k,     range: 0...2)
             rosterStepper("DEF",   value: $rosterConfig.def,   range: 0...2)
             rosterStepper("Bench", value: $rosterConfig.bench, range: 0...12)
@@ -308,6 +326,24 @@ struct LeagueSettingsView: View {
             }
         }
         .tint(FFColor.accent)
+    }
+
+    // Roster-slot and scoring edits recompute every week retroactively
+    // (standings/scores derive from the current config). Once any rostered
+    // player has a recorded game, warn before saving such a change.
+    private var retroactiveChangePending: Bool {
+        let effectiveConfig: RosterConfig = {
+            var cfg = rosterConfig
+            cfg.taxi = taxiEnabled ? max(1, cfg.taxi) : 0
+            return cfg
+        }()
+        let rosterChanged = effectiveConfig != league.rosterConfig
+        let scoringChanged = scoring != league.scoring
+            || (useCustomScoring ? scoringSettings : nil) != league.scoringSettings
+        guard rosterChanged || scoringChanged else { return false }
+        let players = Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
+        let rostered = Set(league.teams.flatMap(\.roster))
+        return players.values.contains { rostered.contains($0.id) && !$0.games.isEmpty }
     }
 
     private func rosterWarning() -> String? {
@@ -532,6 +568,22 @@ struct LeagueSettingsView: View {
 
     private var waiversSection: some View {
         Section {
+            Picker("Claim resolution", selection: $waiverSettings.mode) {
+                ForEach(WaiverMode.allCases) { m in
+                    Text(m.label).tag(m)
+                }
+            }
+            if waiverSettings.mode == .faab {
+                Stepper(value: $waiverSettings.faabBudget, in: 10...1000, step: 10) {
+                    HStack {
+                        Text("FAAB budget").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                        Spacer()
+                        Text("$\(waiverSettings.faabBudget)")
+                            .font(.ffStatSmall)
+                            .foregroundStyle(FFColor.accent)
+                    }
+                }
+            }
             Toggle("Commissioner approval", isOn: $waiverSettings.commissionerApproval)
                 .tint(FFColor.accent)
             Picker("Process day", selection: $waiverSettings.processDay) {
@@ -576,7 +628,9 @@ struct LeagueSettingsView: View {
         } header: {
             Text("Waivers").ffEyebrow()
         } footer: {
-            Text("When approval is on, every add/drop and waiver claim by another manager waits for you in Activity. Priority #1 wins contested claims first; winners roll to the back automatically.")
+            Text(waiverSettings.mode == .faab
+                ? "FAAB: every claim carries a blind bid from each team's season budget; the highest bid wins (ties go to the better waiver position). When approval is on, every add/drop and waiver claim by another manager waits for you in Activity."
+                : "When approval is on, every add/drop and waiver claim by another manager waits for you in Activity. Priority #1 wins contested claims first; winners roll to the back automatically.")
                 .foregroundStyle(FFColor.textTertiary)
         }
         .listRowBackground(FFColor.surface)

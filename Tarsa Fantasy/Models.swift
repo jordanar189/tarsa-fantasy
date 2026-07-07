@@ -47,7 +47,9 @@ enum Position: String, CaseIterable, Identifiable, Hashable {
 }
 
 enum LineupSlot: String, Codable, Hashable, CaseIterable, Identifiable {
-    case qb = "QB", rb = "RB", wr = "WR", te = "TE", flex = "FLEX", k = "K", def = "DEF", bench = "BN", ir = "IR"
+    case qb = "QB", rb = "RB", wr = "WR", te = "TE", flex = "FLEX",
+         superflex = "SFLX", wrFlex = "W/R", recFlex = "W/T",
+         k = "K", def = "DEF", bench = "BN", ir = "IR"
     var id: String { rawValue }
     var label: String { rawValue }
     // Only lineup slots that contribute points each week. Bench and IR sit out.
@@ -56,15 +58,31 @@ enum LineupSlot: String, Codable, Hashable, CaseIterable, Identifiable {
     func accepts(position: String) -> Bool {
         let p = position.uppercased()
         switch self {
-        case .qb:    return p == "QB"
-        case .rb:    return p == "RB"
-        case .wr:    return p == "WR"
-        case .te:    return p == "TE"
-        case .k:     return p == "K"
-        case .def:   return p == "DEF"
-        case .flex:  return p == "RB" || p == "WR" || p == "TE"
-        case .bench: return true
-        case .ir:    return true
+        case .qb:        return p == "QB"
+        case .rb:        return p == "RB"
+        case .wr:        return p == "WR"
+        case .te:        return p == "TE"
+        case .k:         return p == "K"
+        case .def:       return p == "DEF"
+        case .flex:      return p == "RB" || p == "WR" || p == "TE"
+        case .superflex: return p == "QB" || p == "RB" || p == "WR" || p == "TE"
+        case .wrFlex:    return p == "RB" || p == "WR"
+        case .recFlex:   return p == "WR" || p == "TE"
+        case .bench:     return true
+        case .ir:        return true
+        }
+    }
+
+    // How many positions the slot accepts — lineup fills sort by this so the
+    // most-constrained slots claim players first and catch-alls fill last
+    // (a superflex should never steal the only QB from the QB slot).
+    var flexibility: Int {
+        switch self {
+        case .qb, .rb, .wr, .te, .k, .def: return 1
+        case .wrFlex, .recFlex:            return 2
+        case .flex:                        return 3
+        case .superflex:                   return 4
+        case .bench, .ir:                  return 99
         }
     }
 }
@@ -75,6 +93,12 @@ struct RosterConfig: Codable, Hashable {
     var wr: Int
     var te: Int
     var flex: Int
+    // Flex variants. superflex additionally accepts QB (the modern 2-QB
+    // format); wrFlex is W/R, recFlex is W/T. All default to 0 so existing
+    // leagues decode unchanged.
+    var superflex: Int
+    var wrFlex: Int
+    var recFlex: Int
     var k: Int
     var def: Int
     var bench: Int
@@ -91,7 +115,7 @@ struct RosterConfig: Codable, Hashable {
 
     static let `default` = RosterConfig(qb: 1, rb: 2, wr: 2, te: 1, flex: 1, k: 1, def: 1, bench: 6, ir: 0)
 
-    var starterCount: Int { qb + rb + wr + te + flex + k + def }
+    var starterCount: Int { qb + rb + wr + te + flex + superflex + wrFlex + recFlex + k + def }
     // Active roster size (starters + bench). Drives drafting and roster limits.
     // IR and taxi are deliberately excluded — they sit outside the active roster.
     var totalSize: Int { starterCount + bench }
@@ -103,28 +127,34 @@ struct RosterConfig: Codable, Hashable {
     var slots: [LineupSlot] {
         var out: [LineupSlot] = []
         out.reserveCapacity(totalSize)
-        for _ in 0..<qb    { out.append(.qb) }
-        for _ in 0..<rb    { out.append(.rb) }
-        for _ in 0..<wr    { out.append(.wr) }
-        for _ in 0..<te    { out.append(.te) }
-        for _ in 0..<flex  { out.append(.flex) }
-        for _ in 0..<k     { out.append(.k) }
-        for _ in 0..<def   { out.append(.def) }
-        for _ in 0..<bench { out.append(.bench) }
+        for _ in 0..<qb        { out.append(.qb) }
+        for _ in 0..<rb        { out.append(.rb) }
+        for _ in 0..<wr        { out.append(.wr) }
+        for _ in 0..<te        { out.append(.te) }
+        for _ in 0..<flex      { out.append(.flex) }
+        for _ in 0..<wrFlex    { out.append(.wrFlex) }
+        for _ in 0..<recFlex   { out.append(.recFlex) }
+        for _ in 0..<superflex { out.append(.superflex) }
+        for _ in 0..<k         { out.append(.k) }
+        for _ in 0..<def       { out.append(.def) }
+        for _ in 0..<bench     { out.append(.bench) }
         return out
     }
     var starterSlots: [LineupSlot] { Array(slots.prefix(starterCount)) }
 
     init(qb: Int = 1, rb: Int = 2, wr: Int = 2, te: Int = 1,
-         flex: Int = 1, k: Int = 1, def: Int = 1, bench: Int = 6, ir: Int = 0,
+         flex: Int = 1, superflex: Int = 0, wrFlex: Int = 0, recFlex: Int = 0,
+         k: Int = 1, def: Int = 1, bench: Int = 6, ir: Int = 0,
          taxi: Int = 0, taxiMaxExperience: Int = 0) {
         self.qb = qb; self.rb = rb; self.wr = wr; self.te = te
-        self.flex = flex; self.k = k; self.def = def; self.bench = bench; self.ir = ir
+        self.flex = flex; self.superflex = superflex
+        self.wrFlex = wrFlex; self.recFlex = recFlex
+        self.k = k; self.def = def; self.bench = bench; self.ir = ir
         self.taxi = taxi; self.taxiMaxExperience = taxiMaxExperience
     }
 
     private enum CodingKeys: String, CodingKey {
-        case qb, rb, wr, te, flex, k, def, bench, ir, taxi, taxiMaxExperience
+        case qb, rb, wr, te, flex, superflex, wrFlex, recFlex, k, def, bench, ir, taxi, taxiMaxExperience
     }
 
     init(from decoder: Decoder) throws {
@@ -134,6 +164,9 @@ struct RosterConfig: Codable, Hashable {
         wr    = try c.decodeIfPresent(Int.self, forKey: .wr)    ?? 2
         te    = try c.decodeIfPresent(Int.self, forKey: .te)    ?? 1
         flex  = try c.decodeIfPresent(Int.self, forKey: .flex)  ?? 1
+        superflex = try c.decodeIfPresent(Int.self, forKey: .superflex) ?? 0
+        wrFlex    = try c.decodeIfPresent(Int.self, forKey: .wrFlex)    ?? 0
+        recFlex   = try c.decodeIfPresent(Int.self, forKey: .recFlex)   ?? 0
         k     = try c.decodeIfPresent(Int.self, forKey: .k)     ?? 1
         def   = try c.decodeIfPresent(Int.self, forKey: .def)   ?? 1
         bench = try c.decodeIfPresent(Int.self, forKey: .bench) ?? 6
@@ -141,6 +174,14 @@ struct RosterConfig: Codable, Hashable {
         taxi  = try c.decodeIfPresent(Int.self, forKey: .taxi)  ?? 0
         taxiMaxExperience = try c.decodeIfPresent(Int.self, forKey: .taxiMaxExperience) ?? 0
     }
+
+    // Per-position share of the flex-family slots — each variant spreads
+    // evenly over the positions it accepts. Used by the replacement-level
+    // (VOR) and variance approximations in Fantasy.swift.
+    var flexShareQB: Double { Double(superflex) / 4.0 }
+    var flexShareRB: Double { Double(flex) / 3.0 + Double(wrFlex) / 2.0 + Double(superflex) / 4.0 }
+    var flexShareWR: Double { Double(flex) / 3.0 + Double(wrFlex) / 2.0 + Double(recFlex) / 2.0 + Double(superflex) / 4.0 }
+    var flexShareTE: Double { Double(flex) / 3.0 + Double(recFlex) / 2.0 + Double(superflex) / 4.0 }
 }
 
 // Per-stat fantasy scoring. The three named presets reproduce nflverse's
@@ -657,22 +698,25 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
     var logoURL: String?
     var colorHex: String?
     var abbreviation: String?
+    // FAAB dollars already spent on won claims this season (0 in
+    // priority-mode leagues).
+    var faabSpent: Int
 
     init(id: String, name: String, roster: [String] = [],
          starters: [String] = [], ownerID: String? = nil,
          ir: [String] = [], taxi: [String] = [], weeklyLineups: [Int: [String]] = [:],
          division: Int? = nil,
          logoURL: String? = nil, colorHex: String? = nil,
-         abbreviation: String? = nil) {
+         abbreviation: String? = nil, faabSpent: Int = 0) {
         self.id = id; self.name = name; self.roster = roster
         self.starters = starters; self.ownerID = ownerID
         self.ir = ir; self.taxi = taxi; self.weeklyLineups = weeklyLineups; self.division = division
         self.logoURL = logoURL; self.colorHex = colorHex
-        self.abbreviation = abbreviation
+        self.abbreviation = abbreviation; self.faabSpent = faabSpent
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ownerID, ir, taxi, weeklyLineups, division, logoURL, colorHex, abbreviation
+        case id, name, roster, starters, ownerID, ir, taxi, weeklyLineups, division, logoURL, colorHex, abbreviation, faabSpent
     }
 
     init(from decoder: Decoder) throws {
@@ -689,6 +733,7 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
         logoURL  = try c.decodeIfPresent(String.self, forKey: .logoURL)
         colorHex = try c.decodeIfPresent(String.self, forKey: .colorHex)
         abbreviation = try c.decodeIfPresent(String.self, forKey: .abbreviation)
+        faabSpent = try c.decodeIfPresent(Int.self, forKey: .faabSpent) ?? 0
     }
 
     // The short tag for compact contexts (scoreboard, bracket), or nil when
@@ -710,16 +755,57 @@ struct ScheduleWeek: Codable, Hashable, Identifiable {
     var id: Int { week }
 }
 
+// How waiver claims resolve: rolling priority (winner moves to the back of
+// the order) or FAAB (blind bids from a season budget; highest bid wins).
+enum WaiverMode: String, Codable, Hashable, CaseIterable, Identifiable {
+    case priority, faab
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .priority: return "Rolling priority"
+        case .faab:     return "FAAB budget"
+        }
+    }
+}
+
 struct WaiverSettings: Codable, Hashable {
     // 0 = Sunday … 6 = Saturday, UTC. Matches Postgres date_part('dow').
     var processDay: Int
     var processHour: Int     // UTC hour, 0–23
     var periodHours: Int
     var commissionerApproval: Bool
+    var mode: WaiverMode
+    // Season-long FAAB budget per team (only meaningful when mode == .faab).
+    var faabBudget: Int
 
     static let `default` = WaiverSettings(
         processDay: 3, processHour: 8, periodHours: 24, commissionerApproval: false
     )
+
+    init(processDay: Int, processHour: Int, periodHours: Int,
+         commissionerApproval: Bool,
+         mode: WaiverMode = .priority, faabBudget: Int = 100) {
+        self.processDay = processDay; self.processHour = processHour
+        self.periodHours = periodHours
+        self.commissionerApproval = commissionerApproval
+        self.mode = mode; self.faabBudget = faabBudget
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case processDay, processHour, periodHours, commissionerApproval, mode, faabBudget
+    }
+
+    // Defaulted decoding so locally-persisted leagues from before FAAB
+    // existed still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        processDay  = try c.decodeIfPresent(Int.self, forKey: .processDay)  ?? 3
+        processHour = try c.decodeIfPresent(Int.self, forKey: .processHour) ?? 8
+        periodHours = try c.decodeIfPresent(Int.self, forKey: .periodHours) ?? 24
+        commissionerApproval = try c.decodeIfPresent(Bool.self, forKey: .commissionerApproval) ?? false
+        mode = try c.decodeIfPresent(WaiverMode.self, forKey: .mode) ?? .priority
+        faabBudget = try c.decodeIfPresent(Int.self, forKey: .faabBudget) ?? 100
+    }
 
     var processDayLabel: String {
         ["Sunday", "Monday", "Tuesday", "Wednesday",
@@ -1390,6 +1476,8 @@ struct WaiverClaim: Identifiable, Hashable {
     let failureReason: String?
     let createdAt: Date
     let processedAt: Date?
+    // FAAB bid; nil on priority-mode claims.
+    let bid: Int?
 }
 
 struct DroppedPlayer: Identifiable, Hashable {
