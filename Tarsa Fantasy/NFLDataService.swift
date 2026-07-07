@@ -28,15 +28,47 @@ actor NFLDataService {
 
     // Per-(player, season, week) live override pushed via Realtime. Read at
     // display time and OR-merged into the stored game points.
-    private var liveOverrides: [LiveKey: LiveOverride] = [:]
+    private var liveOverrides: [LiveKey: LiveStatLine] = [:]
     private var liveListenerTask: Task<Void, Never>? = nil
 
     struct LiveKey: Hashable { let playerID: String; let season: Int; let week: Int }
-    struct LiveOverride {
-        let standard: Double
-        let ppr: Double
-        let halfPpr: Double
-        let isFinal: Bool
+    // Full live stat line from the live_scores Realtime channel. Raw counting
+    // stats ride along with the preset points because custom-scoring leagues
+    // and K/DST scoring compute from the raw columns — points alone left
+    // them at 0 during games.
+    struct LiveStatLine: Sendable {
+        var standard: Double = 0
+        var ppr: Double = 0
+        var halfPpr: Double = 0
+        var isFinal: Bool = false
+        var completions: Double = 0
+        var attempts: Double = 0
+        var passingYards: Double = 0
+        var passingTDs: Double = 0
+        var passingInterceptions: Double = 0
+        var carries: Double = 0
+        var rushingYards: Double = 0
+        var rushingTDs: Double = 0
+        var receptions: Double = 0
+        var targets: Double = 0
+        var receivingYards: Double = 0
+        var receivingTDs: Double = 0
+        var fumblesLost: Double = 0
+        var fieldGoals0_19: Double = 0
+        var fieldGoals20_29: Double = 0
+        var fieldGoals30_39: Double = 0
+        var fieldGoals40_49: Double = 0
+        var fieldGoals50_59: Double = 0
+        var fieldGoals60Plus: Double = 0
+        var fieldGoalsMissed: Double = 0
+        var extraPointsMade: Double = 0
+        var extraPointsMissed: Double = 0
+        var defSacks: Double = 0
+        var defInterceptions: Double = 0
+        var defFumbleRecoveries: Double = 0
+        var defTouchdowns: Double = 0
+        var defSafeties: Double = 0
+        var pointsAllowed: Double? = nil
     }
 
     init() {
@@ -149,27 +181,23 @@ actor NFLDataService {
 
     // MARK: - Live overrides
 
-    // Apply a live update from realtime. Splices the new fantasy point values
-    // into the matching Game inside our cached player. Idempotent.
-    func applyLiveOverride(playerID: String, season: Int, week: Int,
-                           standard: Double, ppr: Double, halfPpr: Double, isFinal: Bool) {
-        liveOverrides[LiveKey(playerID: playerID, season: season, week: week)] =
-            LiveOverride(standard: standard, ppr: ppr, halfPpr: halfPpr, isFinal: isFinal)
+    // Apply a live update from realtime. Splices the full live stat line —
+    // preset points AND raw counting stats — into the matching Game inside
+    // our cached player, so custom-scoring leagues and K/DST compute real
+    // live points. Idempotent.
+    func applyLiveOverride(playerID: String, season: Int, week: Int, line: LiveStatLine) {
+        liveOverrides[LiveKey(playerID: playerID, season: season, week: week)] = line
         guard var players = playersBySeason[season],
               var player = players[playerID] else { return }
         if let idx = player.games.firstIndex(where: { $0.week == week }) {
-            player.games[idx].fantasyPoints        = standard
-            player.games[idx].fantasyPointsPPR     = ppr
-            player.games[idx].fantasyPointsHalfPPR = halfPpr
+            splice(line, into: &player.games[idx])
         } else {
-            // Player has no row yet for this week (game in progress, no stats
-            // accumulated). Insert a stub so scoring picks up zero baseline
-            // until the next nflverse sync writes the full counting stats.
+            // Player has no row yet for this week (game just started). Insert
+            // a stub carrying the live line; the next nflverse sync replaces
+            // it with the authoritative row.
             var stub = Game()
             stub.season = season; stub.week = week
-            stub.fantasyPoints = standard
-            stub.fantasyPointsPPR = ppr
-            stub.fantasyPointsHalfPPR = halfPpr
+            splice(line, into: &stub)
             player.games.append(stub)
             player.games.sort { $0.week < $1.week }
         }
@@ -177,17 +205,55 @@ actor NFLDataService {
         playersBySeason[season] = players
     }
 
+    private func splice(_ line: LiveStatLine, into game: inout Game) {
+        game.fantasyPoints        = line.standard
+        game.fantasyPointsPPR     = line.ppr
+        game.fantasyPointsHalfPPR = line.halfPpr
+        game.completions          = line.completions
+        game.attempts             = line.attempts
+        game.passingYards         = line.passingYards
+        game.passingTDs           = line.passingTDs
+        game.passingInterceptions = line.passingInterceptions
+        game.carries              = line.carries
+        game.rushingYards         = line.rushingYards
+        game.rushingTDs           = line.rushingTDs
+        game.receptions           = line.receptions
+        game.targets              = line.targets
+        game.receivingYards       = line.receivingYards
+        game.receivingTDs         = line.receivingTDs
+        game.fumblesLost          = line.fumblesLost
+        game.fieldGoals0_19       = line.fieldGoals0_19
+        game.fieldGoals20_29      = line.fieldGoals20_29
+        game.fieldGoals30_39      = line.fieldGoals30_39
+        game.fieldGoals40_49      = line.fieldGoals40_49
+        game.fieldGoals50_59      = line.fieldGoals50_59
+        game.fieldGoals60Plus     = line.fieldGoals60Plus
+        game.fieldGoalsMissed     = line.fieldGoalsMissed
+        game.extraPointsMade      = line.extraPointsMade
+        game.extraPointsMissed    = line.extraPointsMissed
+        game.defSacks             = line.defSacks
+        game.defInterceptions     = line.defInterceptions
+        game.defFumbleRecoveries  = line.defFumbleRecoveries
+        game.defTouchdowns        = line.defTouchdowns
+        game.defSafeties          = line.defSafeties
+        if let pa = line.pointsAllowed { game.pointsAllowed = pa }
+    }
+
     func currentSnapshot(season: Int) -> [String: Player]? {
         playersBySeason[season]
     }
 
     private func applyAllLiveOverrides(to players: inout [String: Player], season: Int) {
-        for (key, o) in liveOverrides where key.season == season {
+        for (key, line) in liveOverrides where key.season == season {
             guard var p = players[key.playerID] else { continue }
             if let idx = p.games.firstIndex(where: { $0.week == key.week }) {
-                p.games[idx].fantasyPoints        = o.standard
-                p.games[idx].fantasyPointsPPR     = o.ppr
-                p.games[idx].fantasyPointsHalfPPR = o.halfPpr
+                splice(line, into: &p.games[idx])
+            } else {
+                var stub = Game()
+                stub.season = key.season; stub.week = key.week
+                splice(line, into: &stub)
+                p.games.append(stub)
+                p.games.sort { $0.week < $1.week }
             }
             players[key.playerID] = p
         }
