@@ -4,8 +4,13 @@
 //   • result populated  → 'final'
 //   • kickoff in the past, no result → 'in_progress' (best-effort)
 //   • kickoff in the future          → 'scheduled'
+// Rows are MERGED against what's already in the table before upserting
+// (kickoff.ts): sync_schedules_espn's exact UTC kickoffs and finals written
+// overnight by sync_espn_live survive; nflverse only overrides them on a
+// real reschedule or with an actual result.
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { ScheduleRow, ExistingRow, combineKickoff, mergeExisting } from "./kickoff.ts";
 
 const SUPABASE_URL     = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -14,15 +19,6 @@ const SCHEDULES_URL    = "https://github.com/nflverse/nflverse-data/releases/dow
 const supa: SupabaseClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false }
 });
-
-interface ScheduleRow {
-    game_id: string; season: number; week: number;
-    home_team: string; away_team: string;
-    kickoff: string | null;
-    home_score: number | null;
-    away_score: number | null;
-    status: string;
-}
 
 Deno.serve(async (_req: Request) => {
     try {
@@ -34,6 +30,8 @@ Deno.serve(async (_req: Request) => {
         }
         const csv = await resp.text();
         const rows = parseRows(csv);
+        const existing = await loadExisting();
+        for (const row of rows) mergeExisting(row, existing.get(row.game_id));
         // Upsert in chunks to stay under PostgREST payload limits.
         const chunk = 500;
         for (let i = 0; i < rows.length; i += chunk) {
@@ -105,18 +103,24 @@ function parseRows(csv: string): ScheduleRow[] {
     return out;
 }
 
-// gameday is "YYYY-MM-DD" UTC, gametime is "HH:MM" ET — treat the combined
-// timestamp as ET (UTC-5/-4). We don't strictly need DST precision for
-// schedule display, so use a fixed UTC-5 offset; off by an hour for a few
-// weeks of the year is acceptable for a scheduling display.
-function combineKickoff(day: string | undefined, time: string | undefined): string | null {
-    if (!day) return null;
-    const d = day.trim();
-    if (!d || d.toUpperCase() === "NA") return null;
-    const t = (time ?? "").trim();
-    const hhmm = /^\d{1,2}:\d{2}$/.test(t) ? t.padStart(5, "0") : "13:00";
-    // Build "YYYY-MM-DDTHH:MM:00-05:00"
-    return `${d}T${hhmm}:00-05:00`;
+// Existing schedule rows, keyed by game_id. Other writers put better data in
+// this table than the nflverse CSV carries — sync_schedules_espn writes exact
+// UTC kickoffs, and sync_espn_live marks games final overnight before the CSV
+// has ingested the result — so a blind upsert must not clobber them (merge
+// rules live in kickoff.ts).
+async function loadExisting(): Promise<Map<string, ExistingRow>> {
+    const map = new Map<string, ExistingRow>();
+    const page = 1000;
+    for (let from = 0; ; from += page) {
+        const { data, error } = await supa.from("nfl_schedules")
+            .select("game_id, kickoff, status, home_score, away_score")
+            .order("game_id")
+            .range(from, from + page - 1);
+        if (error) throw new Error(`load existing: ${error.message}`);
+        for (const r of (data ?? []) as ExistingRow[]) map.set(r.game_id, r);
+        if (!data || data.length < page) break;
+    }
+    return map;
 }
 
 function numOrNull(v: string | undefined): number | null {

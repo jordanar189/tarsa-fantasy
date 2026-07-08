@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 // Matchup screen: your weekly head-to-head for the selected league. Score header
 // with projected final + win probability + players-yet-to-play, slot-by-slot
@@ -36,6 +37,18 @@ struct MatchupTabView: View {
         .leagueSwitcher()
         .onAppear { if !didInit { week = defaultWeek; didInit = true } }
         .task(id: contextKey) { await reload() }
+        // Live games: recompute the frozen WeekContext when realtime updates
+        // the player snapshot, so win probability, projected final, and
+        // "yet to play" track the live score banner. Debounced — realtime
+        // delivers one event per player row, hundreds per minute.
+        .onReceive(
+            NotificationCenter.default.publisher(for: .liveScoresUpdated)
+                .debounce(for: .seconds(2), scheduler: RunLoop.main)
+        ) { note in
+            guard let season = note.userInfo?["season"] as? Int,
+                  season == league?.season else { return }
+            Task { await reload() }
+        }
     }
 
     @ViewBuilder
@@ -54,6 +67,7 @@ struct MatchupTabView: View {
                 .padding(.top, FFSpace.s)
                 .padding(.bottom, 80)
             }
+            .refreshable { await reload() }
         }
     }
 

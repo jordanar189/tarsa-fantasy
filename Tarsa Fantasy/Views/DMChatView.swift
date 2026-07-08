@@ -51,6 +51,10 @@ struct DMChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: .dmMessageDeleted)) { note in
             handleDeleted(note)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .dmChatResync)) { note in
+            guard note.userInfo?["threadID"] as? String == thread.id else { return }
+            Task { await resyncTranscript() }
+        }
         .onChange(of: pickerItem) { _, item in
             Task { await loadPickedImage(item) }
         }
@@ -362,6 +366,14 @@ struct DMChatView: View {
         messages = await app.dmMessages(threadID: thread.id)
         loaded = true
         await DMChatListener.shared.start(threadID: thread.id)
+    }
+
+    // Full transcript re-fetch after a foreground catch-up — realtime deltas
+    // delivered while backgrounded are lost, and the transcript is built
+    // incrementally from them. Quieter than initialLoad: no loading flash,
+    // and the listener was already re-established by the foreground hook.
+    private func resyncTranscript() async {
+        messages = await app.dmMessages(threadID: thread.id)
     }
 
     private func loadPickedImage(_ item: PhotosPickerItem?) async {

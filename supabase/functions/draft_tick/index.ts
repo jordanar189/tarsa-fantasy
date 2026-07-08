@@ -32,6 +32,7 @@ interface LeagueRow {
     roster_config: RosterConfigRow | null;
 }
 interface PickRow { team_id: string; player_id: string; pick_number: number; }
+interface TeamKeepersRow { id: string; keepers: string[] | null; }
 interface PlayerStat { player_id: string; fantasy_points_ppr: number; }
 interface CachePlayer { id: string; position: string; }
 interface AdpRow { player_id: string; adp: number; snapshot_date: string; }
@@ -162,28 +163,51 @@ async function advanceDraft(d: DraftRow): Promise<string> {
         (rc.qb ?? 1) + (rc.rb ?? 2) + (rc.wr ?? 2) + (rc.te ?? 1) +
         (rc.flex ?? 1) + superflex + (rc.wrFlex ?? 0) + (rc.recFlex ?? 0) +
         kSlots + defSlots + (rc.bench ?? 6);
-    const round = roundIdx + 1;
 
-    // What's already been picked across all teams.
+    // Keeper-lite: kept players never enter the pool, and a team's own
+    // keepers count as its earliest "picks" so the round/position math
+    // (mirroring the client's roster.count + 1) tracks the full roster
+    // size even though the draft itself runs keeper_count fewer rounds.
+    const { data: teamRows } = await supa.from("teams")
+        .select("id, keepers").eq("league_id", d.league_id);
+    const keepersByTeam = new Map<string, string[]>(
+        ((teamRows ?? []) as TeamKeepersRow[]).map(t => [t.id, t.keepers ?? []])
+    );
+    const allKeepers = [...keepersByTeam.values()].flat();
+    const myKeepers = keepersByTeam.get(teamID) ?? [];
+
+    // What's already been picked across all teams (plus every keeper).
     const { data: pickedRows } = await supa.from("draft_picks")
         .select("player_id, team_id, pick_number").eq("draft_id", d.id);
     const allPicks = (pickedRows ?? []) as PickRow[];
-    const pickedIDs = new Set(allPicks.map(p => p.player_id));
+    const pickedIDs = new Set([...allPicks.map(p => p.player_id), ...allKeepers]);
 
-    // Player positions for the picks this team already made.
-    const myPickPlayerIds = allPicks.filter(p => p.team_id === teamID).map(p => p.player_id);
+    // The team's roster round: keepers + picks so far + 1. Equals the
+    // draft round (roundIdx + 1) in leagues without keepers.
+    const myPicks = allPicks.filter(p => p.team_id === teamID);
+    const round = myKeepers.length + myPicks.length + 1;
+
+    // Player positions for the team's keepers + picks. Keepers sort first
+    // (synthetic pick numbers below any real pick).
+    const myIds = [...myKeepers, ...myPicks.map(p => p.player_id)];
     let myPickRows: { pick_number: number; position: string }[] = [];
-    if (myPickPlayerIds.length > 0) {
+    if (myIds.length > 0) {
         const { data: rows } = await supa.from("players_cache")
             .select("id, position")
-            .in("id", myPickPlayerIds);
+            .in("id", myIds);
         const posByID = new Map<string, string>(
             ((rows ?? []) as CachePlayer[]).map(r => [r.id, (r.position ?? "").toUpperCase()])
         );
-        myPickRows = allPicks.filter(p => p.team_id === teamID).map(p => ({
-            pick_number: p.pick_number,
-            position: posByID.get(p.player_id) ?? "",
-        }));
+        myPickRows = [
+            ...myKeepers.map((pid, i) => ({
+                pick_number: -1000 + i,
+                position: posByID.get(pid) ?? "",
+            })),
+            ...myPicks.map(p => ({
+                pick_number: p.pick_number,
+                position: posByID.get(p.player_id) ?? "",
+            })),
+        ];
     }
     const loopPicks = positionsInCurrentLoop(myPickRows, round, totalRounds, kSlots + defSlots);
     const kOwned   = myPickRows.filter(p => p.position === "K").length;

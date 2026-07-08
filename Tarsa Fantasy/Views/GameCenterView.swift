@@ -1,9 +1,12 @@
 import SwiftUI
+import Combine
 
 // Week-by-week NFL scoreboard. Lists every game for the picked week as a
 // card showing home/away matchup, kickoff or final score, and (when
 // expanded) the top fantasy performers on each side derived from the
-// season's cached player data.
+// season's cached player data. Live: pull-to-refresh, plus a debounced
+// reload on the Realtime live-scores signal (sync_espn_live mirrors
+// score/status onto nfl_schedules in the same per-minute run).
 struct GameCenterView: View {
     @Environment(AppState.self) private var app
 
@@ -12,6 +15,7 @@ struct GameCenterView: View {
     @State private var week: Int = 1
     @State private var loading: Bool = false
     @State private var selectedGame: NFLGame? = nil
+    @State private var loadedSeason: Int? = nil
 
     private var availableWeeks: [Int] {
         Array(Set(games.map(\.week))).sorted()
@@ -46,7 +50,15 @@ struct GameCenterView: View {
             .padding(.horizontal, FFSpace.l)
             .padding(.bottom, 40)
         }
+        .refreshable { await reload(force: true) }
         .task(id: app.selectedSeason) { await reload() }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .liveScoresUpdated)
+                .debounce(for: .seconds(2), scheduler: RunLoop.main)
+        ) { note in
+            guard note.userInfo?["season"] as? Int == app.selectedSeason else { return }
+            Task { await reload(force: true) }
+        }
         .sheet(item: $selectedGame) { game in
             GameDetailView(game: game) { playerID in
                 // Close the game detail, then open the player profile globally.
@@ -56,15 +68,20 @@ struct GameCenterView: View {
         }
     }
 
-    private func reload() async {
+    private func reload(force: Bool = false) async {
         loading = true; defer { loading = false }
-        async let g = app.schedules(season: app.selectedSeason)
+        let season = app.selectedSeason
+        async let g = app.schedules(season: season, forceRefresh: force)
         async let t = app.nflTeams()
         let (gamesResult, teamsResult) = await (g, t)
         games = gamesResult
         teams = Dictionary(uniqueKeysWithValues: teamsResult.map { ($0.abbr, $0) })
-        // Default week: first one with any game whose kickoff is in the
-        // future, otherwise the latest week with games.
+        // Default week — first one with any game whose kickoff is in the
+        // future, otherwise the latest week with games — but only on first
+        // load / season switch: a live refresh must not yank the user off
+        // the week they're browsing.
+        guard loadedSeason != season else { return }
+        loadedSeason = season
         let now = Date()
         let upcoming = gamesResult
             .filter { ($0.kickoff ?? .distantPast) > now }

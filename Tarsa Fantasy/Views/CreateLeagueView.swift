@@ -35,6 +35,7 @@ struct CreateLeagueView: View {
     @State private var divisionCount: Int = 2
     @State private var waiverMode: WaiverMode = .priority
     @State private var faabBudget: Int = 100
+    @State private var keeperCount: Int = 0
     @State private var error: String? = nil
     @State private var saving: Bool = false
 
@@ -162,6 +163,16 @@ struct CreateLeagueView: View {
                                     stepperRow("FAAB budget", value: $faabBudget, range: 10...1000) {
                                         "$\($0)"
                                     }
+                                }
+                            }
+
+                            section("Keepers",
+                                    footer: keeperCount == 0
+                                        ? "Off — a full redraft every season."
+                                        : "Rosters carry into next season so each team can keep up to \(keeperCount) player\(keeperCount == 1 ? "" : "s") through the draft, which shrinks by that many rounds. Keepers are picked in the draft room before it starts.") {
+                                stepperRow("Keepers per team", value: $keeperCount,
+                                           range: 0...max(0, rosterConfig.totalSize - 1)) {
+                                    $0 == 0 ? "Off" : "\($0)"
                                 }
                             }
 
@@ -466,7 +477,8 @@ struct CreateLeagueView: View {
                         periodHours: WaiverSettings.default.periodHours,
                         commissionerApproval: false,
                         mode: waiverMode, faabBudget: faabBudget
-                    )
+                    ),
+                    keeperCount: min(keeperCount, max(0, rosterConfig.totalSize - 1))
                 )
             case .simulation:
                 _ = try await app.createSimulation(

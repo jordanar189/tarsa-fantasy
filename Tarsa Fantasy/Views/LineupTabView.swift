@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 // Lineup tab: the single place to view and set your starting lineup for the
 // selected league, per week. Rich per-slot context (opponent, DvP matchup,
@@ -61,6 +62,19 @@ struct LineupTabView: View {
             if !didInit { week = defaultWeek; didInit = true }
         }
         .task(id: contextKey) { await reload() }
+        // Live games: realtime pushes update the player snapshot, but the
+        // WeekContext captured above is frozen — recompute it so actuals,
+        // projections, and "yet to play" track the live banner. Debounced:
+        // realtime delivers one event per player row, hundreds per minute.
+        .onReceive(
+            NotificationCenter.default.publisher(for: .liveScoresUpdated)
+                .debounce(for: .seconds(2), scheduler: RunLoop.main)
+        ) { note in
+            guard let season = note.userInfo?["season"] as? Int,
+                  season == league?.season,
+                  !saving else { return }
+            Task { await reload() }
+        }
         .sheet(item: Binding(
             get: { pickingSlot.map { SlotRef(index: $0) } },
             set: { pickingSlot = $0?.index }
@@ -106,6 +120,10 @@ struct LineupTabView: View {
                 .padding(.horizontal, FFSpace.l)
                 .padding(.top, FFSpace.s)
                 .padding(.bottom, 80)
+            }
+            .refreshable {
+                guard !saving else { return }
+                await reload()
             }
         }
     }

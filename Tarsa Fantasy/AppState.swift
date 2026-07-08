@@ -386,6 +386,12 @@ final class AppState {
         }
     }
 
+    // Pull-to-refresh entry point: force-refetch the selected season's stats
+    // past the memory/disk cache.
+    func refreshSelectedSeason() async {
+        await refreshSeasonInBackground(selectedSeason)
+    }
+
     func players(season: Int) -> [String: Player] {
         playersBySeason[season] ?? [:]
     }
@@ -537,8 +543,8 @@ final class AppState {
 
     // MARK: - NFL data (Phase 1 stats overhaul)
 
-    func schedules(season: Int) async -> [NFLGame] {
-        (try? await data.schedules(season: season)) ?? []
+    func schedules(season: Int, forceRefresh: Bool = false) async -> [NFLGame] {
+        (try? await data.schedules(season: season, forceRefresh: forceRefresh)) ?? []
     }
 
     func nflTeams() async -> [NFLTeamMeta] {
@@ -718,7 +724,8 @@ final class AppState {
         divisionNames: [String] = [],
         scoringSettings: ScoringSettings? = nil,
         isDynasty: Bool = false,
-        waiverSettings: WaiverSettings = .default
+        waiverSettings: WaiverSettings = .default,
+        keeperCount: Int = 0
     ) async throws -> League {
         guard let session else { throw AppError.notSignedIn }
         let league = try await remote.createLeague(
@@ -733,7 +740,8 @@ final class AppState {
             divisionNames: divisionNames,
             scoringSettings: scoringSettings,
             isDynasty: isDynasty,
-            waiverSettings: waiverSettings
+            waiverSettings: waiverSettings,
+            keeperCount: keeperCount
         )
         await reloadLeagues()
         await selectLeague(league.id)
@@ -1295,14 +1303,25 @@ final class AppState {
         leagueID: String, name: String, scoring: Scoring, rosterConfig: RosterConfig,
         playoffTeams: Int, playoffReseed: Bool,
         scoringSettings: ScoringSettings?, divisionNames: [String],
-        regularSeasonWeeks: Int, weeksPerRound: Int, schedule: [ScheduleWeek]
+        regularSeasonWeeks: Int, weeksPerRound: Int, schedule: [ScheduleWeek],
+        keeperCount: Int
     ) async throws -> League? {
         let updated = try await remote.updateLeague(
             leagueID: leagueID, name: name, scoring: scoring, rosterConfig: rosterConfig,
             playoffTeams: playoffTeams, playoffReseed: playoffReseed,
             scoringSettings: scoringSettings, divisionNames: divisionNames,
             regularSeasonWeeks: regularSeasonWeeks, weeksPerRound: weeksPerRound,
-            schedule: schedule
+            schedule: schedule, keeperCount: keeperCount
+        )
+        await reloadLeagues()
+        return updated
+    }
+
+    // Keeper-lite: lock in a team's keepers pre-draft (server-validated).
+    @discardableResult
+    func setKeepers(leagueID: String, teamID: String, playerIDs: [String]) async throws -> League? {
+        let updated = try await remote.setKeepers(
+            leagueID: leagueID, teamID: teamID, playerIDs: playerIDs
         )
         await reloadLeagues()
         return updated
@@ -1615,14 +1634,20 @@ final class AppState {
         draft: Draft, league: League?, players: [String: Player], lockIntoAuto: Bool
     ) async -> Draft? {
         guard let teamID = draft.teamOnClock(forPick: draft.currentPick) else { return nil }
-        let pickedIDs = await draftedPlayerIDs(draftID: draft.id)
+        var pickedIDs = await draftedPlayerIDs(draftID: draft.id)
+        // Keepers never re-enter the pool, and the team's own keepers count
+        // as its earliest picks so the round/position math lines up with the
+        // full roster size.
+        let allKeepers = league?.teams.flatMap(\.keepers) ?? []
+        pickedIDs.formUnion(allKeepers)
+        let myKeepers = league?.teams.first(where: { $0.id == teamID })?.keepers ?? []
         // Use the league snapshot to know what's on the team (in case the
         // cached league.teams.roster lags behind the latest picks). The most
         // accurate roster is the picks-so-far filtered by this team_id.
         let teamPicks = await draftPicks(draftID: draft.id)
             .filter { $0.teamID == teamID }
             .map(\.playerID)
-        let team = FantasyTeam(id: teamID, name: "", roster: teamPicks)
+        let team = FantasyTeam(id: teamID, name: "", roster: myKeepers + teamPicks)
         let config = league?.rosterConfig ?? .default
         let scoring = league?.scoring ?? .ppr
         // Queue strictly wins: if the team owner queued players, the first

@@ -701,22 +701,28 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
     // FAAB dollars already spent on won claims this season (0 in
     // priority-mode leagues).
     var faabSpent: Int
+    // Keeper-lite: player IDs (subset of roster) this team keeps through the
+    // next draft. Chosen pre-draft via set_keepers; start_draft trims the
+    // roster down to these. Empty in leagues with keeperCount == 0.
+    var keepers: [String]
 
     init(id: String, name: String, roster: [String] = [],
          starters: [String] = [], ownerID: String? = nil,
          ir: [String] = [], taxi: [String] = [], weeklyLineups: [Int: [String]] = [:],
          division: Int? = nil,
          logoURL: String? = nil, colorHex: String? = nil,
-         abbreviation: String? = nil, faabSpent: Int = 0) {
+         abbreviation: String? = nil, faabSpent: Int = 0,
+         keepers: [String] = []) {
         self.id = id; self.name = name; self.roster = roster
         self.starters = starters; self.ownerID = ownerID
         self.ir = ir; self.taxi = taxi; self.weeklyLineups = weeklyLineups; self.division = division
         self.logoURL = logoURL; self.colorHex = colorHex
         self.abbreviation = abbreviation; self.faabSpent = faabSpent
+        self.keepers = keepers
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ownerID, ir, taxi, weeklyLineups, division, logoURL, colorHex, abbreviation, faabSpent
+        case id, name, roster, starters, ownerID, ir, taxi, weeklyLineups, division, logoURL, colorHex, abbreviation, faabSpent, keepers
     }
 
     init(from decoder: Decoder) throws {
@@ -734,6 +740,7 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
         colorHex = try c.decodeIfPresent(String.self, forKey: .colorHex)
         abbreviation = try c.decodeIfPresent(String.self, forKey: .abbreviation)
         faabSpent = try c.decodeIfPresent(Int.self, forKey: .faabSpent) ?? 0
+        keepers   = try c.decodeIfPresent([String].self, forKey: .keepers) ?? []
     }
 
     // The short tag for compact contexts (scoreboard, bracket), or nil when
@@ -874,6 +881,11 @@ struct League: Codable, Identifiable, Hashable {
     // Frozen champion once the postseason completes (set by completeLeagueSeason).
     var championTeamID: String?
     var championTeamName: String?
+    // Keeper-lite: how many players each team may keep through the draft
+    // (0 = redraft, no keepers). Rollover carries rosters forward so owners
+    // can pick keepers off last season's team; the draft shrinks by this
+    // many rounds.
+    var keeperCount: Int
 
     init(id: String, name: String, season: Int, scoring: Scoring, createdAt: Date,
          teams: [FantasyTeam], schedule: [ScheduleWeek],
@@ -896,7 +908,8 @@ struct League: Codable, Identifiable, Hashable {
          scoringSettings: ScoringSettings? = nil,
          divisionNames: [String] = [],
          championTeamID: String? = nil,
-         championTeamName: String? = nil) {
+         championTeamName: String? = nil,
+         keeperCount: Int = 0) {
         self.id = id; self.name = name; self.season = season; self.scoring = scoring
         self.createdAt = createdAt; self.teams = teams; self.schedule = schedule
         self.rosterConfig = rosterConfig
@@ -921,6 +934,7 @@ struct League: Codable, Identifiable, Hashable {
         self.divisionNames = divisionNames
         self.championTeamID = championTeamID
         self.championTeamName = championTeamName
+        self.keeperCount = max(0, keeperCount)
     }
 
     // Effective scoring used by league computations: custom settings if set,

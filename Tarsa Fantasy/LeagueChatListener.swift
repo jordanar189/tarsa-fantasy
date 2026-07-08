@@ -1,23 +1,28 @@
 import Foundation
 import Supabase
+import UIKit
 
 // Realtime subscription for one league's chat. Posts an NSNotification for
 // each INSERT/DELETE on league_messages and league_message_reactions so the
 // LeagueChatView can append/remove rows live without a refresh round-trip.
 // Mirrors LiveScoresListener: one channel at a time per app, swapped on
-// `start(leagueID:)`.
+// `start(leagueID:)`. Subscribes with retry; on app-foreground it
+// re-establishes a dead channel and posts .leagueChatResync so the view
+// reloads the transcript (deltas delivered while backgrounded are lost).
 
 actor LeagueChatListener {
     static let shared = LeagueChatListener()
 
     private var channel: RealtimeChannelV2?
     private var currentLeagueID: String?
+    private var foregroundObserver: (any NSObjectProtocol)?
 
     func start(leagueID: String) async {
         if currentLeagueID == leagueID, channel != nil { return }
         await stop()
         guard let lid = UUID(uuidString: leagueID) else { return }
         currentLeagueID = leagueID
+        installForegroundHook()
 
         let client = SupabaseConfig.sharedClient
         let ch = client.channel("league-chat-\(leagueID)")
@@ -43,10 +48,8 @@ actor LeagueChatListener {
             table: "message_responses"
         )
 
-        do {
-            try await ch.subscribeWithError()
-        } catch {
-            print("LeagueChatListener subscribe failed: \(error)")
+        guard await RealtimeResilience.subscribe(ch, label: "LeagueChatListener") else {
+            // Foreground hook retries; currentLeagueID stays set for it.
             return
         }
         channel = ch
@@ -74,6 +77,32 @@ actor LeagueChatListener {
         }
         channel = nil
         currentLeagueID = nil
+        if let obs = foregroundObserver {
+            NotificationCenter.default.removeObserver(obs)
+            foregroundObserver = nil
+        }
+    }
+
+    private func installForegroundHook() {
+        guard foregroundObserver == nil else { return }
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil, queue: .main
+        ) { _ in
+            Task { await LeagueChatListener.shared.foregroundResync() }
+        }
+    }
+
+    private func foregroundResync() async {
+        guard let leagueID = currentLeagueID else { return }
+        if channel == nil {
+            currentLeagueID = nil   // force start() past its idempotence guard
+            await start(leagueID: leagueID)
+        }
+        await MainActor.run {
+            NotificationCenter.default.post(
+                name: .leagueChatResync, object: nil, userInfo: ["leagueID": leagueID])
+        }
     }
 
     private static func routeMessage(_ change: AnyAction, leagueID: String) async {

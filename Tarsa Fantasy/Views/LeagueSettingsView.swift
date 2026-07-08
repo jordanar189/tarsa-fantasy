@@ -34,6 +34,7 @@ struct LeagueSettingsView: View {
     @State private var scoringSettings: ScoringSettings
     // Taxi squad
     @State private var taxiEnabled: Bool
+    @State private var keeperCount: Int
     // Divisions
     @State private var divisionsEnabled: Bool
     @State private var divisionNames: [String]
@@ -84,6 +85,7 @@ struct LeagueSettingsView: View {
         _useCustomScoring = State(initialValue: league.scoringSettings != nil)
         _scoringSettings = State(initialValue: league.effectiveScoringSettings)
         _taxiEnabled = State(initialValue: league.rosterConfig.taxi > 0)
+        _keeperCount = State(initialValue: league.keeperCount)
         _divisionsEnabled = State(initialValue: league.hasDivisions)
         _divisionNames = State(initialValue: league.divisionNames.isEmpty
                                ? ["East", "West"] : league.divisionNames)
@@ -255,6 +257,10 @@ struct LeagueSettingsView: View {
             rosterStepper("DEF",   value: $rosterConfig.def,   range: 0...2)
             rosterStepper("Bench", value: $rosterConfig.bench, range: 0...12)
             rosterStepper("IR",    value: $rosterConfig.ir,    range: 0...6)
+            // Keeper-lite: how many players each team carries through the
+            // draft. Owners pick theirs in the draft room pre-draft.
+            rosterStepper("Keepers", value: $keeperCount,
+                          range: 0...max(0, rosterConfig.totalSize - 1))
             HStack {
                 Text("Total").font(.ffBody).foregroundStyle(FFColor.textPrimary)
                 Spacer()
@@ -1031,7 +1037,8 @@ struct LeagueSettingsView: View {
                 divisionNames: divisions,
                 regularSeasonWeeks: newRegularSeasonWeeks,
                 weeksPerRound: weeksPerRound,
-                schedule: newSchedule
+                schedule: newSchedule,
+                keeperCount: min(keeperCount, max(0, cfg.totalSize - 1))
             )
             // Push per-team division assignments when divisions are on.
             if divisionsEnabled, divisions.count >= 2 {
