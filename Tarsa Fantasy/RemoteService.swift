@@ -238,7 +238,8 @@ actor RemoteService {
         scoringSettings: ScoringSettings? = nil,
         isDynasty: Bool = false,
         waiverSettings: WaiverSettings = .default,
-        keeperCount: Int = 0
+        keeperCount: Int = 0,
+        keeperRoundCost: Bool = false
     ) async throws -> League {
         guard let creatorUUID = UUID(uuidString: creatorID) else {
             throw RemoteError.invalidUserID
@@ -292,6 +293,7 @@ actor RemoteService {
             let waiver_mode: String
             let faab_budget: Int
             let keeper_count: Int
+            let keeper_round_cost: Bool
         }
         let leagueID = UUID()
         // Initial priority: reverse-order of team creation (last team picks
@@ -317,7 +319,8 @@ actor RemoteService {
             is_dynasty: isDynasty,
             waiver_mode: waiverSettings.mode.rawValue,
             faab_budget: waiverSettings.faabBudget,
-            keeper_count: max(0, keeperCount)
+            keeper_count: max(0, keeperCount),
+            keeper_round_cost: keeperRoundCost
         )
         let insertedLeague: LeagueRow = try await client.from("leagues")
             .insert(leagueInsert)
@@ -640,7 +643,8 @@ actor RemoteService {
                     colorHex: t.colorHex,
                     abbreviation: t.abbreviation,
                     faabSpent: t.faabSpent ?? 0,
-                    keepers: t.keepers ?? []
+                    keepers: t.keepers ?? [],
+                    priorTeamID: t.priorTeamId?.uuidString
                 )
             },
             schedule: row.schedule,
@@ -677,6 +681,8 @@ actor RemoteService {
             championTeamID: row.championTeamId?.uuidString,
             championTeamName: row.championTeamName,
             keeperCount: row.keeperCount ?? 0,
+            keeperRoundCost: row.keeperRoundCost ?? false,
+            keeperDeadline: row.keeperDeadline,
             tiebreaker: row.tiebreaker.flatMap(TiebreakerMode.init(rawValue:)) ?? .pointsFor
         )
     }
@@ -1128,6 +1134,8 @@ actor RemoteService {
         weeksPerRound: Int,
         schedule: [ScheduleWeek],
         keeperCount: Int,
+        keeperRoundCost: Bool = false,
+        keeperDeadline: Date? = nil,
         tiebreaker: TiebreakerMode = .pointsFor
     ) async throws -> League? {
         guard let uuid = UUID(uuidString: leagueID) else { return nil }
@@ -1147,6 +1155,9 @@ actor RemoteService {
             let regular_season_weeks: Int
             let weeks_per_round: Int
             let keeper_count: Int
+            let keeper_round_cost: Bool
+            // nil clears the deadline (owners can then edit until draft start).
+            let keeper_deadline: Date?
             let tiebreaker: String
             // Regenerated to match the regular-season length when the playoff
             // start week changes. The round-robin is prefix-stable, so already
@@ -1165,6 +1176,8 @@ actor RemoteService {
                 regular_season_weeks: max(1, regularSeasonWeeks),
                 weeks_per_round: min(max(weeksPerRound, 1), 2),
                 keeper_count: max(0, keeperCount),
+                keeper_round_cost: keeperRoundCost,
+                keeper_deadline: keeperDeadline,
                 tiebreaker: tiebreaker.rawValue,
                 schedule: scheduleAsAnyJSON(schedule)
             ))
@@ -1305,6 +1318,27 @@ actor RemoteService {
             p_league_id: lid, p_team_id: tid, p_keepers: playerIDs
         )).execute()
         return try await self.league(id: leagueID)
+    }
+
+    // Round-cost keepers: playerID → the draft round keeping them consumes,
+    // derived server-side from the parent league's draft (escalating one
+    // round per consecutive keep). Players absent from the map cost the
+    // last round.
+    func keeperRoundCosts(leagueID: String) async -> [String: Int] {
+        guard let uuid = UUID(uuidString: leagueID) else { return [:] }
+        struct Args: Encodable { let p_league_id: UUID }
+        struct Row: Decodable {
+            let playerId: String
+            let costRound: Int
+            enum CodingKeys: String, CodingKey {
+                case playerId = "player_id", costRound = "cost_round"
+            }
+        }
+        let rows: [Row] = (try? await client.rpc(
+            "keeper_round_costs", params: Args(p_league_id: uuid)
+        ).execute().value) ?? []
+        return Dictionary(rows.map { ($0.playerId, $0.costRound) },
+                          uniquingKeysWith: { a, _ in a })
     }
 
     // MARK: - Drafts
@@ -1533,7 +1567,13 @@ actor RemoteService {
             pickDeadline: r.pickDeadline,
             pickOrder: r.pickOrder,
             pausedRemaining: r.pausedRemaining,
-            autoPickTeamIDs: r.autoPickTeamIds
+            autoPickTeamIDs: r.autoPickTeamIds,
+            pickOwnerOverrides: Dictionary(uniqueKeysWithValues:
+                r.pickOwnerOverrides.compactMap { key, value in
+                    guard let pick = Int(key),
+                          let owner = UUID(uuidString: value)?.uuidString else { return nil }
+                    return (pick, owner)
+                })
         )
     }
 
@@ -1587,7 +1627,9 @@ actor RemoteService {
         proposerPlayerIDs: [String],
         recipientPlayerIDs: [String],
         note: String?,
-        parentTradeID: String? = nil
+        parentTradeID: String? = nil,
+        proposerPickIDs: [String] = [],
+        recipientPickIDs: [String] = []
     ) async throws -> Trade? {
         guard let lid = UUID(uuidString: leagueID),
               let pid = UUID(uuidString: proposerTeamID),
@@ -1600,6 +1642,8 @@ actor RemoteService {
             let p_recipient_player_ids: [String]
             let p_note: String?
             let p_parent_trade_id: UUID?
+            let p_proposer_pick_ids: [UUID]
+            let p_recipient_pick_ids: [UUID]
         }
         let row: TradeRow = try await client.rpc("propose_trade", params: Args(
             p_league_id: lid,
@@ -1608,9 +1652,58 @@ actor RemoteService {
             p_proposer_player_ids: proposerPlayerIDs,
             p_recipient_player_ids: recipientPlayerIDs,
             p_note: note,
-            p_parent_trade_id: parentTradeID.flatMap { UUID(uuidString: $0) }
+            p_parent_trade_id: parentTradeID.flatMap { UUID(uuidString: $0) },
+            p_proposer_pick_ids: proposerPickIDs.compactMap(UUID.init(uuidString:)),
+            p_recipient_pick_ids: recipientPickIDs.compactMap(UUID.init(uuidString:))
         )).execute().value
         return Self.toTrade(row)
+    }
+
+    // All tradeable pick assets in a league (label lookups + propose pickers).
+    func pickAssets(leagueID: String) async -> [DraftPickAsset] {
+        guard let lid = UUID(uuidString: leagueID) else { return [] }
+        struct Row: Decodable {
+            let id: UUID
+            let leagueId: UUID
+            let season: Int
+            let round: Int
+            let originalTeamId: UUID
+            let ownerTeamId: UUID
+            enum CodingKeys: String, CodingKey {
+                case id, season, round
+                case leagueId       = "league_id"
+                case originalTeamId = "original_team_id"
+                case ownerTeamId    = "owner_team_id"
+            }
+        }
+        let rows: [Row] = (try? await client.from("draft_pick_assets")
+            .select()
+            .eq("league_id", value: lid)
+            .order("season").order("round")
+            .execute().value) ?? []
+        return rows.map {
+            DraftPickAsset(
+                id: $0.id.uuidString, leagueID: $0.leagueId.uuidString,
+                season: $0.season, round: $0.round,
+                originalTeamID: $0.originalTeamId.uuidString,
+                ownerTeamID: $0.ownerTeamId.uuidString
+            )
+        }
+    }
+
+    // Commissioner: generate one asset per team × round for a future season.
+    @discardableResult
+    func ensurePickAssets(leagueID: String, season: Int, rounds: Int = 4) async throws -> Int {
+        guard let lid = UUID(uuidString: leagueID) else { return 0 }
+        struct Args: Encodable {
+            let p_league_id: UUID
+            let p_season: Int
+            let p_rounds: Int
+        }
+        let created: Int = try await client.rpc("ensure_pick_assets", params: Args(
+            p_league_id: lid, p_season: season, p_rounds: rounds
+        )).execute().value
+        return created
     }
 
     @discardableResult
@@ -1923,6 +2016,8 @@ actor RemoteService {
             recipientTeamID: r.recipientTeamId.uuidString,
             proposerPlayerIDs: r.proposerPlayerIds,
             recipientPlayerIDs: r.recipientPlayerIds,
+            proposerPickIDs: (r.proposerPickIds ?? []).map(\.uuidString),
+            recipientPickIDs: (r.recipientPickIds ?? []).map(\.uuidString),
             note: r.note,
             parentTradeID: r.parentTradeId?.uuidString,
             status: TradeStatus(rawValue: r.status) ?? .pending,
@@ -2169,7 +2264,10 @@ actor RemoteService {
             "taxi":         stringsAsAnyJSON(carryRosters ? team.taxi : []),
             "logo_url":     team.logoURL.map { AnyJSON.string($0) } ?? .null,
             "color_hex":    team.colorHex.map { AnyJSON.string($0) } ?? .null,
-            "abbreviation": team.abbreviation.map { AnyJSON.string($0) } ?? .null
+            "abbreviation": team.abbreviation.map { AnyJSON.string($0) } ?? .null,
+            // Lineage: links the new team to its previous-season self, which
+            // also lets the RPC translate traded pick assets into the child.
+            "prior_team_id": .string(team.id)
         ])
     }
 
@@ -2247,28 +2345,37 @@ actor RemoteService {
         }
     }
 
-    // All historical matchups between two users in the league chain that
-    // contains `leagueID`. Each entry is from `meUserID`'s perspective.
-    func headToHead(leagueID: String, meUserID: String, opponentUserID: String) async throws -> [HeadToHeadEntry] {
-        // League chain.
-        var chain: [UUID] = []
+    // Every league in the chain containing `leagueID`, newest first (walks
+    // parent_league_id upward). Powers lineage-aware history features.
+    func chainLeagues(leagueID: String) async -> [League] {
+        var chain: [League] = []
+        var seen: Set<String> = []
         var cursor: String? = leagueID
-        while let id = cursor, let uuid = UUID(uuidString: id) {
-            chain.append(uuid)
-            guard let lg = try await self.league(id: id) else { break }
+        while let id = cursor, !seen.contains(id) {
+            seen.insert(id)
+            guard let fetched = try? await self.league(id: id),
+                  let lg = fetched else { break }
+            chain.append(lg)
             cursor = lg.parentLeagueID
         }
-        guard !chain.isEmpty else { return [] }
-        guard let me = UUID(uuidString: meUserID),
-              let opp = UUID(uuidString: opponentUserID) else { return [] }
+        return chain
+    }
 
+    // Every archived matchup row across the chain, newest season first.
+    // Paginated: a long-running league's history exceeds PostgREST's
+    // 1000-row default cap.
+    func chainMatchups(leagueID: String, chain: [League]) async -> [ArchivedMatchup] {
+        let ids = chain.compactMap { UUID(uuidString: $0.id) }
+        guard !ids.isEmpty else { return [] }
         struct Row: Decodable {
+            let leagueId: UUID
             let season: Int; let week: Int
             let homeTeamId: UUID; let awayTeamId: UUID
             let homeUserId: UUID?; let awayUserId: UUID?
             let homePoints: Double; let awayPoints: Double
             enum CodingKeys: String, CodingKey {
                 case season, week
+                case leagueId     = "league_id"
                 case homeTeamId   = "home_team_id"
                 case awayTeamId   = "away_team_id"
                 case homeUserId   = "home_user_id"
@@ -2277,26 +2384,79 @@ actor RemoteService {
                 case awayPoints   = "away_points"
             }
         }
-        let rows: [Row] = (try? await client.from("league_matchups")
-            .select()
-            .in("league_id", values: chain)
-            .or("and(home_user_id.eq.\(me),away_user_id.eq.\(opp)),and(home_user_id.eq.\(opp),away_user_id.eq.\(me))")
-            .order("season", ascending: false)
-            .order("week",   ascending: true)
-            .execute().value) ?? []
+        var out: [ArchivedMatchup] = []
+        var from = 0
+        while true {
+            let page: [Row] = (try? await client.from("league_matchups")
+                .select()
+                .in("league_id", values: ids)
+                .order("season", ascending: false)
+                .order("week",   ascending: true)
+                .order("home_team_id", ascending: true)
+                .range(from: from, to: from + 999)
+                .execute().value) ?? []
+            out.append(contentsOf: page.map {
+                ArchivedMatchup(
+                    leagueID: $0.leagueId.uuidString,
+                    season: $0.season, week: $0.week,
+                    homeTeamID: $0.homeTeamId.uuidString,
+                    awayTeamID: $0.awayTeamId.uuidString,
+                    homeUserID: $0.homeUserId?.uuidString,
+                    awayUserID: $0.awayUserId?.uuidString,
+                    homePoints: $0.homePoints, awayPoints: $0.awayPoints
+                )
+            })
+            if page.count < 1000 { break }
+            from += 1000
+        }
+        return out
+    }
+
+    // All historical matchups between two franchises in the league chain
+    // that contains `leagueID`, from `meUserID`'s perspective. Matching is
+    // keyed on team lineage (prior_team_id chains) so history survives
+    // owner changes and unclaimed stretches; rows that predate the lineage
+    // column fall back to the old user-id match.
+    func headToHead(
+        leagueID: String, meUserID: String, opponentUserID: String,
+        myTeamID: String? = nil, opponentTeamID: String? = nil
+    ) async throws -> [HeadToHeadEntry] {
+        let chain = await chainLeagues(leagueID: leagueID)
+        guard !chain.isEmpty else { return [] }
+        let rows = await chainMatchups(leagueID: leagueID, chain: chain)
+
+        let roots = Fantasy.franchiseRoots(chain: chain)
+        let myF  = myTeamID.map { roots[$0] ?? $0 }
+        let oppF = opponentTeamID.map { roots[$0] ?? $0 }
 
         // Lookup opponent username (one read).
-        let oppRow: ProfileRow? = try? await client.from("profiles")
-            .select("id, username").eq("id", value: opp)
-            .single().execute().value
-        let oppName = oppRow?.username
+        var oppName: String? = nil
+        if let opp = UUID(uuidString: opponentUserID) {
+            let oppRow: ProfileRow? = try? await client.from("profiles")
+                .select("id, username").eq("id", value: opp)
+                .single().execute().value
+            oppName = oppRow?.username
+        }
 
-        return rows.map { r in
-            let iAmHome = (r.homeUserId == me)
+        return rows.compactMap { r in
+            let homeF = roots[r.homeTeamID] ?? r.homeTeamID
+            let awayF = roots[r.awayTeamID] ?? r.awayTeamID
+            let iAmHome: Bool
+            if let myF, let oppF, homeF == myF, awayF == oppF {
+                iAmHome = true
+            } else if let myF, let oppF, homeF == oppF, awayF == myF {
+                iAmHome = false
+            } else if r.homeUserID == meUserID, r.awayUserID == opponentUserID {
+                iAmHome = true
+            } else if r.homeUserID == opponentUserID, r.awayUserID == meUserID {
+                iAmHome = false
+            } else {
+                return nil
+            }
             return HeadToHeadEntry(
                 season: r.season, week: r.week,
-                myTeamID:       iAmHome ? r.homeTeamId.uuidString : r.awayTeamId.uuidString,
-                opponentTeamID: iAmHome ? r.awayTeamId.uuidString : r.homeTeamId.uuidString,
+                myTeamID:       iAmHome ? r.homeTeamID : r.awayTeamID,
+                opponentTeamID: iAmHome ? r.awayTeamID : r.homeTeamID,
                 opponentUsername: oppName,
                 myPoints:       iAmHome ? r.homePoints : r.awayPoints,
                 opponentPoints: iAmHome ? r.awayPoints : r.homePoints
@@ -3560,6 +3720,8 @@ struct LeagueRow: Codable, Hashable {
     let championTeamId: UUID?
     let championTeamName: String?
     let keeperCount: Int?
+    let keeperRoundCost: Bool?
+    let keeperDeadline: Date?
     let tiebreaker: String?
 
     enum CodingKeys: String, CodingKey {
@@ -3594,6 +3756,8 @@ struct LeagueRow: Codable, Hashable {
         case championTeamId       = "champion_team_id"
         case championTeamName     = "champion_team_name"
         case keeperCount          = "keeper_count"
+        case keeperRoundCost      = "keeper_round_cost"
+        case keeperDeadline       = "keeper_deadline"
     }
 
     init(from decoder: Decoder) throws {
@@ -3635,6 +3799,8 @@ struct LeagueRow: Codable, Hashable {
         championTeamId       = try c.decodeIfPresent(UUID.self,    forKey: .championTeamId)
         championTeamName     = try c.decodeIfPresent(String.self,  forKey: .championTeamName)
         keeperCount          = try c.decodeIfPresent(Int.self,     forKey: .keeperCount)
+        keeperRoundCost      = try c.decodeIfPresent(Bool.self,    forKey: .keeperRoundCost)
+        keeperDeadline       = try c.decodeIfPresent(Date.self,    forKey: .keeperDeadline)
         tiebreaker           = try c.decodeIfPresent(String.self,  forKey: .tiebreaker)
     }
 }
@@ -3654,13 +3820,15 @@ struct TeamRow: Codable, Hashable {
     let logoUrl: String?
     let colorHex: String?
     let abbreviation: String?
-    // Optional: columns land with the FAAB / keeper migrations; older rows
-    // decode nil.
+    // Optional: columns land with the FAAB / keeper / lineage migrations;
+    // older rows decode nil.
     let faabSpent: Int?
     let keepers: [String]?
+    let priorTeamId: UUID?
 
     enum CodingKeys: String, CodingKey {
         case id, name, roster, starters, ir, taxi, division, abbreviation, keepers
+        case priorTeamId   = "prior_team_id"
         case leagueId      = "league_id"
         case ownerId       = "owner_id"
         case sortIndex     = "sort_index"
@@ -3691,6 +3859,7 @@ struct TeamRow: Codable, Hashable {
         // updates all computed from 0.
         faabSpent = try c.decodeIfPresent(Int.self, forKey: .faabSpent)
         keepers   = try c.decodeIfPresent([String].self, forKey: .keepers)
+        priorTeamId = try c.decodeIfPresent(UUID.self, forKey: .priorTeamId)
     }
 }
 
@@ -3762,6 +3931,7 @@ struct DraftRow: Codable, Hashable {
     let pickOrder: [String]
     let pausedRemaining: Int?
     let autoPickTeamIds: [String]
+    let pickOwnerOverrides: [String: String]
 
     enum CodingKeys: String, CodingKey {
         case id, format, status
@@ -3776,6 +3946,7 @@ struct DraftRow: Codable, Hashable {
         case pickOrder        = "pick_order"
         case pausedRemaining  = "paused_remaining"
         case autoPickTeamIds  = "auto_pick_team_ids"
+        case pickOwnerOverrides = "pick_owner_overrides"
     }
 
     init(from decoder: Decoder) throws {
@@ -3794,6 +3965,7 @@ struct DraftRow: Codable, Hashable {
         pickOrder       = try c.decode([String].self,       forKey: .pickOrder)
         pausedRemaining = try c.decodeIfPresent(Int.self,   forKey: .pausedRemaining)
         autoPickTeamIds = try c.decodeIfPresent([String].self, forKey: .autoPickTeamIds) ?? []
+        pickOwnerOverrides = try c.decodeIfPresent([String: String].self, forKey: .pickOwnerOverrides) ?? [:]
     }
 }
 
@@ -3824,6 +3996,8 @@ struct TradeRow: Codable, Hashable {
     let recipientTeamId: UUID
     let proposerPlayerIds: [String]
     let recipientPlayerIds: [String]
+    let proposerPickIds: [UUID]?
+    let recipientPickIds: [UUID]?
     let note: String?
     let parentTradeId: UUID?
     let status: String
@@ -3841,6 +4015,8 @@ struct TradeRow: Codable, Hashable {
         case recipientTeamId     = "recipient_team_id"
         case proposerPlayerIds   = "proposer_player_ids"
         case recipientPlayerIds  = "recipient_player_ids"
+        case proposerPickIds     = "proposer_pick_ids"
+        case recipientPickIds    = "recipient_pick_ids"
         case parentTradeId       = "parent_trade_id"
         case votingEndsAt        = "voting_ends_at"
         case acceptedAt          = "accepted_at"

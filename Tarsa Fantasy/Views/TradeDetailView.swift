@@ -15,6 +15,7 @@ struct TradeDetailView: View {
     let onCounter: (Trade) -> Void
 
     @State private var votes: [TradeVote] = []
+    @State private var assets: [String: DraftPickAsset] = [:]
     @State private var saving: Bool = false
     @State private var error: String? = nil
     @State private var values: [String: Double] = [:]
@@ -76,6 +77,10 @@ struct TradeDetailView: View {
             }
             .task(id: trade.id) {
                 await reloadVotes()
+                if !(trade.proposerPickIDs.isEmpty && trade.recipientPickIDs.isEmpty) {
+                    assets = Dictionary(uniqueKeysWithValues:
+                        await app.pickAssets(leagueID: league.id).map { ($0.id, $0) })
+                }
                 await app.ensureProjectedSnapshot(season: league.season)
                 let snapshot = Fantasy.playersFor(league: league, snapshot: app.displayPlayers(season: league.season))
                 valuationPlayers = snapshot
@@ -181,9 +186,11 @@ struct TradeDetailView: View {
     private var sidesCard: some View {
         let players = Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
         return VStack(spacing: 0) {
-            sideRow(team: proposerTeam, label: "Sends", ids: trade.proposerPlayerIDs, players: players)
+            sideRow(team: proposerTeam, label: "Sends", ids: trade.proposerPlayerIDs,
+                    pickIDs: trade.proposerPickIDs, players: players)
             Rectangle().fill(FFColor.border).frame(height: 1)
-            sideRow(team: recipientTeam, label: "Sends", ids: trade.recipientPlayerIDs, players: players)
+            sideRow(team: recipientTeam, label: "Sends", ids: trade.recipientPlayerIDs,
+                    pickIDs: trade.recipientPickIDs, players: players)
         }
         .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
         .overlay(
@@ -192,7 +199,8 @@ struct TradeDetailView: View {
         )
     }
 
-    private func sideRow(team: FantasyTeam?, label: String, ids: [String], players: [String: Player]) -> some View {
+    private func sideRow(team: FantasyTeam?, label: String, ids: [String],
+                         pickIDs: [String] = [], players: [String: Player]) -> some View {
         VStack(alignment: .leading, spacing: FFSpace.s) {
             HStack {
                 Text(team?.name ?? "—")
@@ -201,7 +209,7 @@ struct TradeDetailView: View {
                 Spacer()
                 Text(label.uppercased()).ffEyebrow(color: FFColor.textTertiary)
             }
-            if ids.isEmpty {
+            if ids.isEmpty && pickIDs.isEmpty {
                 Text("Nothing")
                     .font(.ffCaption)
                     .foregroundStyle(FFColor.textTertiary)
@@ -230,9 +238,30 @@ struct TradeDetailView: View {
                             .foregroundStyle(FFColor.textSecondary)
                     }
                 }
+                ForEach(pickIDs, id: \.self) { pickID in
+                    HStack(spacing: FFSpace.m) {
+                        Image(systemName: "ticket")
+                            .font(.system(size: 16))
+                            .foregroundStyle(FFColor.accent)
+                            .frame(width: 32)
+                        Text(pickLabel(pickID))
+                            .font(.ffBody)
+                            .foregroundStyle(FFColor.textPrimary)
+                        Spacer()
+                    }
+                }
             }
         }
         .padding(FFSpace.l)
+    }
+
+    private func pickLabel(_ pickID: String) -> String {
+        guard let asset = assets[pickID] else { return "Draft pick" }
+        if asset.originalTeamID != asset.ownerTeamID,
+           let origin = league.teams.first(where: { $0.id == asset.originalTeamID }) {
+            return "\(asset.shortLabel) (via \(origin.name))"
+        }
+        return asset.shortLabel
     }
 
     @ViewBuilder

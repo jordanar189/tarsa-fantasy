@@ -739,6 +739,10 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
     // next draft. Chosen pre-draft via set_keepers; start_draft trims the
     // roster down to these. Empty in leagues with keeperCount == 0.
     var keepers: [String]
+    // Lineage: the previous season's team this one was rolled over from
+    // (nil for a league's first season). Chains across rollovers so
+    // franchise history survives owner changes and unclaimed stretches.
+    var priorTeamID: String?
 
     init(id: String, name: String, roster: [String] = [],
          starters: [String] = [], ownerID: String? = nil,
@@ -746,17 +750,18 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
          division: Int? = nil,
          logoURL: String? = nil, colorHex: String? = nil,
          abbreviation: String? = nil, faabSpent: Int = 0,
-         keepers: [String] = []) {
+         keepers: [String] = [], priorTeamID: String? = nil) {
         self.id = id; self.name = name; self.roster = roster
         self.starters = starters; self.ownerID = ownerID
         self.ir = ir; self.taxi = taxi; self.weeklyLineups = weeklyLineups; self.division = division
         self.logoURL = logoURL; self.colorHex = colorHex
         self.abbreviation = abbreviation; self.faabSpent = faabSpent
         self.keepers = keepers
+        self.priorTeamID = priorTeamID
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ownerID, ir, taxi, weeklyLineups, division, logoURL, colorHex, abbreviation, faabSpent, keepers
+        case id, name, roster, starters, ownerID, ir, taxi, weeklyLineups, division, logoURL, colorHex, abbreviation, faabSpent, keepers, priorTeamID
     }
 
     init(from decoder: Decoder) throws {
@@ -775,6 +780,7 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
         abbreviation = try c.decodeIfPresent(String.self, forKey: .abbreviation)
         faabSpent = try c.decodeIfPresent(Int.self, forKey: .faabSpent) ?? 0
         keepers   = try c.decodeIfPresent([String].self, forKey: .keepers) ?? []
+        priorTeamID = try c.decodeIfPresent(String.self, forKey: .priorTeamID)
     }
 
     // The short tag for compact contexts (scoreboard, bracket), or nil when
@@ -938,6 +944,14 @@ struct League: Codable, Identifiable, Hashable {
     // can pick keepers off last season's team; the draft shrinks by this
     // many rounds.
     var keeperCount: Int
+    // Full keeper rules: when true, each keeper consumes the team's draft
+    // pick in the round the player cost last season (escalating a round per
+    // consecutive keep; last round for undrafted pickups) and the draft runs
+    // the full roster-size rounds. False = keeper-lite (draft just shrinks).
+    var keeperRoundCost: Bool
+    // Owners may change keepers only until this instant (commish exempt).
+    // Nil = changeable until the draft starts.
+    var keeperDeadline: Date?
     // Standings tiebreaker among equal win% teams. Feeds playoff seeding.
     var tiebreaker: TiebreakerMode
 
@@ -964,6 +978,8 @@ struct League: Codable, Identifiable, Hashable {
          championTeamID: String? = nil,
          championTeamName: String? = nil,
          keeperCount: Int = 0,
+         keeperRoundCost: Bool = false,
+         keeperDeadline: Date? = nil,
          tiebreaker: TiebreakerMode = .pointsFor) {
         self.id = id; self.name = name; self.season = season; self.scoring = scoring
         self.createdAt = createdAt; self.teams = teams; self.schedule = schedule
@@ -990,6 +1006,8 @@ struct League: Codable, Identifiable, Hashable {
         self.championTeamID = championTeamID
         self.championTeamName = championTeamName
         self.keeperCount = max(0, keeperCount)
+        self.keeperRoundCost = keeperRoundCost
+        self.keeperDeadline = keeperDeadline
         self.tiebreaker = tiebreaker
     }
 
@@ -1066,6 +1084,55 @@ struct LeagueMatchupArchive: Hashable {
     let awayUserID: String?
     let homePoints: Double
     let awayPoints: Double
+}
+
+// One row read back from the league_matchups history across a league chain.
+struct ArchivedMatchup: Hashable {
+    let leagueID: String
+    let season: Int
+    let week: Int
+    let homeTeamID: String
+    let awayTeamID: String
+    let homeUserID: String?
+    let awayUserID: String?
+    let homePoints: Double
+    let awayPoints: Double
+}
+
+// Career aggregate for one franchise (team lineage across rollovers) over
+// every archived season. Built by Fantasy.allTimeRecords.
+struct AllTimeFranchiseRecord: Identifiable, Hashable {
+    // Franchise root: the oldest team id in the lineage chain.
+    let id: String
+    // Most recent team name seen for the franchise.
+    let name: String
+    let ownerID: String?
+    let seasons: Int
+    let wins: Int
+    let losses: Int
+    let ties: Int
+    let pointsFor: Double
+    let championships: Int
+
+    var winPct: Double {
+        let games = wins + losses + ties
+        guard games > 0 else { return 0 }
+        return (Double(wins) + 0.5 * Double(ties)) / Double(games)
+    }
+    var record: String {
+        ties > 0 ? "\(wins)-\(losses)-\(ties)" : "\(wins)-\(losses)"
+    }
+}
+
+// Career head-to-head tally between two franchises, from the row
+// franchise's perspective.
+struct H2HRecord: Hashable {
+    var wins: Int = 0
+    var losses: Int = 0
+    var ties: Int = 0
+    var label: String {
+        ties > 0 ? "\(wins)-\(losses)-\(ties)" : "\(wins)-\(losses)"
+    }
 }
 
 // One mirrored ESPN headline (player_news, synced hourly). playerIDs are
@@ -1634,6 +1701,9 @@ struct Trade: Identifiable, Hashable {
     let recipientTeamID: String
     let proposerPlayerIDs: [String]
     let recipientPlayerIDs: [String]
+    // Draft-pick assets riding along (dynasty). Empty for player-only deals.
+    let proposerPickIDs: [String]
+    let recipientPickIDs: [String]
     let note: String?
     let parentTradeID: String?
     let status: TradeStatus
@@ -1677,6 +1747,9 @@ struct Draft: Identifiable, Hashable {
     var pickOrder: [String]    // ordered team-id strings (round 1)
     var pausedRemaining: Int?
     var autoPickTeamIDs: [String]  // teams whose picks fire automatically
+    // Traded picks: {pick number: owning team id}, materialized server-side
+    // at draft start. Empty when no picks changed hands.
+    var pickOwnerOverrides: [Int: String] = [:]
 
     func isOnAutoPick(teamID: String) -> Bool {
         // Why: pick_order stores team IDs in Swift's UUID.uuidString format
@@ -1691,6 +1764,9 @@ struct Draft: Identifiable, Hashable {
     func teamOnClock(forPick pick: Int) -> String? {
         let teamCount = pickOrder.count
         guard teamCount > 0, pick >= 1, pick <= totalPicks else { return nil }
+        // Traded picks route to the asset owner (same map team_on_clock and
+        // draft_tick consult server-side).
+        if let owner = pickOwnerOverrides[pick] { return owner }
         let roundIdx    = (pick - 1) / teamCount
         var posInRound  = (pick - 1) % teamCount
         if format == .snake && roundIdx.isMultiple(of: 2) == false {
@@ -1713,6 +1789,20 @@ struct DraftPick: Identifiable, Hashable {
     let playerID: String
     let autoPick: Bool
     let pickedAt: Date
+}
+
+// A tradeable future-draft pick (dynasty). originalTeamID is whose schedule
+// slot the pick occupies (never changes); ownerTeamID moves on trade.
+struct DraftPickAsset: Identifiable, Hashable {
+    let id: String
+    let leagueID: String
+    let season: Int
+    let round: Int
+    let originalTeamID: String
+    let ownerTeamID: String
+
+    // "2027 Round 2" (+ " (via <team>)" appended by views when traded).
+    var shortLabel: String { "\(season) Round \(round)" }
 }
 
 // MARK: - NFL data (stats overhaul Phase 1)

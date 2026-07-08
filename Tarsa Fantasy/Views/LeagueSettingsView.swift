@@ -36,6 +36,9 @@ struct LeagueSettingsView: View {
     // Taxi squad
     @State private var taxiEnabled: Bool
     @State private var keeperCount: Int
+    @State private var keeperRoundCost: Bool
+    @State private var hasKeeperDeadline: Bool
+    @State private var keeperDeadline: Date?
     // Divisions
     @State private var divisionsEnabled: Bool
     @State private var divisionNames: [String]
@@ -51,6 +54,9 @@ struct LeagueSettingsView: View {
     @State private var rolloverSeason: Int = Calendar.current.component(.year, from: Date())
     @State private var confirmingComplete: Bool = false
     @State private var confirmingRetroactive: Bool = false
+    // Draft picks
+    @State private var generatingPicks: Bool = false
+    @State private var pickGenResult: String? = nil
     // Members
     @State private var editingTeamID: String? = nil
     @State private var editingTeamName: String = ""
@@ -88,6 +94,9 @@ struct LeagueSettingsView: View {
         _scoringSettings = State(initialValue: league.effectiveScoringSettings)
         _taxiEnabled = State(initialValue: league.rosterConfig.taxi > 0)
         _keeperCount = State(initialValue: league.keeperCount)
+        _keeperRoundCost = State(initialValue: league.keeperRoundCost)
+        _hasKeeperDeadline = State(initialValue: league.keeperDeadline != nil)
+        _keeperDeadline = State(initialValue: league.keeperDeadline)
         _divisionsEnabled = State(initialValue: league.hasDivisions)
         _divisionNames = State(initialValue: league.divisionNames.isEmpty
                                ? ["East", "West"] : league.divisionNames)
@@ -110,6 +119,9 @@ struct LeagueSettingsView: View {
                     divisionsSection
                     waiversSection
                     tradesSection
+                    if league.isDynasty || league.keeperCount > 0 {
+                        pickAssetsSection
+                    }
                     membersSection
                     seasonSection
                     dangerSection
@@ -263,6 +275,35 @@ struct LeagueSettingsView: View {
             // draft. Owners pick theirs in the draft room pre-draft.
             rosterStepper("Keepers", value: $keeperCount,
                           range: 0...max(0, rosterConfig.totalSize - 1))
+            if keeperCount > 0 {
+                Toggle("Keepers cost draft rounds", isOn: $keeperRoundCost)
+                    .tint(FFColor.accent)
+                Toggle("Keeper deadline", isOn: $hasKeeperDeadline)
+                    .tint(FFColor.accent)
+                    .onChange(of: hasKeeperDeadline) { _, on in
+                        if on {
+                            if keeperDeadline == nil {
+                                // Default: a week from today, evening.
+                                keeperDeadline = Calendar.current.date(
+                                    byAdding: .day, value: 7, to: Date()
+                                )
+                            }
+                        } else {
+                            keeperDeadline = nil
+                        }
+                    }
+                if hasKeeperDeadline {
+                    DatePicker(
+                        "Deadline",
+                        selection: Binding(
+                            get: { keeperDeadline ?? Date() },
+                            set: { keeperDeadline = $0 }
+                        ),
+                        displayedComponents: [.date, .hourAndMinute]
+                    )
+                    .tint(FFColor.accent)
+                }
+            }
             HStack {
                 Text("Total").font(.ffBody).foregroundStyle(FFColor.textPrimary)
                 Spacer()
@@ -280,10 +321,23 @@ struct LeagueSettingsView: View {
         } header: {
             Text("Roster").ffEyebrow()
         } footer: {
-            Text("Shrinking the roster is allowed even if a team currently has more players — they'll just be unable to add new ones until they drop.")
+            Text(rosterFooter)
                 .foregroundStyle(FFColor.textTertiary)
         }
         .listRowBackground(FFColor.surface)
+    }
+
+    private var rosterFooter: String {
+        var text = "Shrinking the roster is allowed even if a team currently has more players — they'll just be unable to add new ones until they drop."
+        if keeperCount > 0 {
+            text += keeperRoundCost
+                ? " Each keeper consumes the team's pick in the round the player cost last season (one round earlier per consecutive keep; undrafted pickups cost the last round)."
+                : " Keepers simply carry through: the draft runs \(keeperCount) fewer round\(keeperCount == 1 ? "" : "s")."
+            if hasKeeperDeadline {
+                text += " Owners can change keepers until the deadline; you can adjust them any time before the draft."
+            }
+        }
+        return text
     }
 
     // MARK: - Taxi squad
@@ -729,6 +783,57 @@ struct LeagueSettingsView: View {
         }
     }
 
+    // MARK: - Draft picks
+
+    private var pickAssetsSection: some View {
+        Section {
+            Button {
+                Task { await generatePicks() }
+            } label: {
+                HStack {
+                    Image(systemName: "ticket")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FFColor.accent)
+                    Text("Generate \(league.season + 1) picks (4 rounds)")
+                        .font(.ffBody)
+                        .foregroundStyle(FFColor.textPrimary)
+                    Spacer()
+                    if generatingPicks {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+            }
+            .disabled(generatingPicks)
+            if let pickGenResult {
+                Text(pickGenResult)
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textSecondary)
+            }
+        } header: {
+            Text("Draft picks").ffEyebrow()
+        } footer: {
+            Text("Creates one tradeable pick per team and round for next season's draft. Safe to run again — existing picks aren't duplicated.")
+                .foregroundStyle(FFColor.textTertiary)
+        }
+        .listRowBackground(FFColor.surface)
+    }
+
+    private func generatePicks() async {
+        generatingPicks = true; defer { generatingPicks = false }
+        do {
+            let created = try await app.ensurePickAssets(
+                leagueID: league.id, season: league.season + 1
+            )
+            pickGenResult = created > 0
+                ? "Created \(created) new pick\(created == 1 ? "" : "s")."
+                : "All \(league.season + 1) picks already exist."
+            Haptics.success()
+        } catch {
+            pickGenResult = nil
+            self.error = "Couldn't generate picks: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Members
 
     private var membersSection: some View {
@@ -1060,6 +1165,8 @@ struct LeagueSettingsView: View {
                 weeksPerRound: weeksPerRound,
                 schedule: newSchedule,
                 keeperCount: min(keeperCount, max(0, cfg.totalSize - 1)),
+                keeperRoundCost: keeperCount > 0 && keeperRoundCost,
+                keeperDeadline: keeperCount > 0 && hasKeeperDeadline ? keeperDeadline : nil,
                 tiebreaker: tiebreaker
             )
             // Push per-team division assignments when divisions are on.

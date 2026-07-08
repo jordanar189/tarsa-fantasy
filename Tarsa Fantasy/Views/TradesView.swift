@@ -15,6 +15,7 @@ struct TradesView: View {
     let onLeagueUpdate: (League) -> Void
 
     @State private var trades: [Trade] = []
+    @State private var assets: [String: DraftPickAsset] = [:]
     @State private var loading: Bool = false
     @State private var refreshTick: Int = 0
     @State private var showingPropose: Bool = false
@@ -182,9 +183,11 @@ struct TradesView: View {
                 statusBadge(trade.status)
             }
             HStack(alignment: .top, spacing: FFSpace.s) {
-                sideColumn(label: "Sends", ids: trade.proposerPlayerIDs, players: players)
+                sideColumn(label: "Sends", ids: trade.proposerPlayerIDs,
+                           pickIDs: trade.proposerPickIDs, players: players)
                 Rectangle().fill(FFColor.border).frame(width: 1)
-                sideColumn(label: "Receives", ids: trade.recipientPlayerIDs, players: players)
+                sideColumn(label: "Receives", ids: trade.recipientPlayerIDs,
+                           pickIDs: trade.recipientPickIDs, players: players)
             }
             if let note = trade.note, !note.isEmpty {
                 Text("“\(note)”")
@@ -209,10 +212,11 @@ struct TradesView: View {
         )
     }
 
-    private func sideColumn(label: String, ids: [String], players: [String: Player]) -> some View {
+    private func sideColumn(label: String, ids: [String], pickIDs: [String] = [],
+                            players: [String: Player]) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label).ffEyebrow(color: FFColor.textTertiary)
-            if ids.isEmpty {
+            if ids.isEmpty && pickIDs.isEmpty {
                 Text("—").font(.ffCaption).foregroundStyle(FFColor.textTertiary)
             } else {
                 ForEach(ids, id: \.self) { pid in
@@ -231,9 +235,29 @@ struct TradesView: View {
                     }
                     .playerLink(pid)
                 }
+                ForEach(pickIDs, id: \.self) { pickID in
+                    HStack(spacing: 4) {
+                        Image(systemName: "ticket")
+                            .font(.system(size: 12))
+                            .foregroundStyle(FFColor.accent)
+                        Text(pickLabel(pickID))
+                            .font(.ffCaption)
+                            .foregroundStyle(FFColor.textPrimary)
+                            .lineLimit(1)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func pickLabel(_ pickID: String) -> String {
+        guard let asset = assets[pickID] else { return "Draft pick" }
+        if asset.originalTeamID != asset.ownerTeamID,
+           let origin = league.teams.first(where: { $0.id == asset.originalTeamID }) {
+            return "\(asset.shortLabel) (via \(origin.name))"
+        }
+        return asset.shortLabel
     }
 
     private func statusBadge(_ s: TradeStatus) -> some View {
@@ -273,5 +297,7 @@ struct TradesView: View {
     private func reload() async {
         loading = true; defer { loading = false }
         trades = await app.trades(leagueID: league.id)
+        assets = Dictionary(uniqueKeysWithValues:
+            await app.pickAssets(leagueID: league.id).map { ($0.id, $0) })
     }
 }

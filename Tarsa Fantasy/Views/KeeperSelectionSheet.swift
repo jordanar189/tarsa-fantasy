@@ -13,8 +13,16 @@ struct KeeperSelectionSheet: View {
     var onSaved: ((League?) -> Void)? = nil
 
     @State private var selected: Set<String> = []
+    @State private var costs: [String: Int] = [:]
     @State private var saving: Bool = false
     @State private var error: String? = nil
+
+    private var isCommish: Bool { league.creatorID == app.session?.userID }
+    // Owners are locked out after the deadline; the commish can still adjust.
+    private var deadlinePassed: Bool {
+        guard let deadline = league.keeperDeadline else { return false }
+        return deadline < Date() && !isCommish
+    }
 
     var body: some View {
         NavigationStack {
@@ -44,24 +52,42 @@ struct KeeperSelectionSheet: View {
                     Button(saving ? "Saving…" : "Save") {
                         Task { await save() }
                     }
-                    .disabled(saving || selected.count > league.keeperCount)
+                    .disabled(saving || deadlinePassed || selected.count > league.keeperCount)
                     .foregroundStyle(FFColor.accent)
                 }
             }
             .onAppear { selected = Set(team.keepers) }
+            .task {
+                if league.keeperRoundCost {
+                    costs = await app.keeperRoundCosts(leagueID: league.id)
+                }
+            }
         }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(selected.count)/\(league.keeperCount) KEEPERS").ffEyebrow()
-            Text("Kept players stay on your roster through the draft and can't be drafted by anyone. Everyone else re-enters the pool when the draft starts. You can change this until the draft goes live.")
+            Text(headerCopy)
                 .font(.ffCaption)
                 .foregroundStyle(FFColor.textTertiary)
+            if let deadline = league.keeperDeadline {
+                Text(deadlinePassed
+                     ? "Keeper deadline passed \(deadline.shortRelative). Ask your commissioner for changes."
+                     : "Deadline: \(deadline.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.ffCaption)
+                    .foregroundStyle(deadlinePassed ? FFColor.negative : FFColor.warning)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, FFSpace.l)
         .padding(.vertical, FFSpace.m)
+    }
+
+    private var headerCopy: String {
+        league.keeperRoundCost
+            ? "Kept players stay on your roster and consume your pick in the round shown (players without a round drafted last season cost the last round). Everyone else re-enters the pool when the draft starts."
+            : "Kept players stay on your roster through the draft and can't be drafted by anyone. Everyone else re-enters the pool when the draft starts. You can change this until the draft goes live."
     }
 
     private var rosterList: some View {
@@ -80,6 +106,11 @@ struct KeeperSelectionSheet: View {
                             .foregroundStyle(FFColor.textTertiary)
                     }
                     Spacer()
+                    if league.keeperRoundCost {
+                        Text(costs[pid].map { "Costs R\($0)" } ?? "Costs last rd")
+                            .font(.ffMicro)
+                            .foregroundStyle(FFColor.textSecondary)
+                    }
                     Image(systemName: selected.contains(pid) ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(selected.contains(pid) ? FFColor.accent : FFColor.textTertiary)
                 }
@@ -100,6 +131,7 @@ struct KeeperSelectionSheet: View {
     }
 
     private func toggle(_ pid: String) {
+        guard !deadlinePassed else { return }
         if selected.contains(pid) {
             selected.remove(pid)
         } else if selected.count < league.keeperCount {

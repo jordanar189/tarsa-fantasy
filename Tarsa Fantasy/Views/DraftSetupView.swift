@@ -43,9 +43,14 @@ struct DraftSetupView: View {
 
     private var locked: Bool { (existing?.status ?? .scheduled) != .scheduled }
 
-    // Keeper leagues draft fewer rounds — keepers already occupy roster
-    // slots, so the draft fills only what's left.
-    private var rosterSize: Int { max(1, league.rosterConfig.totalSize - league.keeperCount) }
+    // Keeper-lite leagues draft fewer rounds — keepers already occupy roster
+    // slots, so the draft fills only what's left. Round-cost leagues run the
+    // full length; keepers pre-fill their cost rounds at draft start instead.
+    private var rosterSize: Int {
+        league.keeperRoundCost
+            ? max(1, league.rosterConfig.totalSize)
+            : max(1, league.rosterConfig.totalSize - league.keeperCount)
+    }
     private var totalPicks: Int { rosterSize * pickOrder.count }
 
     var body: some View {

@@ -2104,4 +2104,121 @@ enum Fantasy {
         }
         return out
     }
+
+    // MARK: - Franchise lineage (all-time history)
+
+    // Maps every team id across a league chain to its franchise root — the
+    // oldest ancestor reachable through priorTeamID. Teams without lineage
+    // (first seasons, pre-lineage rollovers) root at themselves, so archived
+    // ids stay usable even when the chain predates the lineage column.
+    static func franchiseRoots(chain: [League]) -> [String: String] {
+        var prior: [String: String] = [:]
+        for lg in chain {
+            for t in lg.teams where t.priorTeamID != nil {
+                prior[t.id] = t.priorTeamID
+            }
+        }
+        var roots: [String: String] = [:]
+        func root(of id: String) -> String {
+            if let cached = roots[id] { return cached }
+            var path: [String] = []
+            var cursor = id
+            // Walk up, guarding against malformed cycles.
+            while let up = prior[cursor], !path.contains(up) {
+                path.append(cursor)
+                cursor = up
+            }
+            for node in path + [id] { roots[node] = cursor }
+            return cursor
+        }
+        for lg in chain {
+            for t in lg.teams { _ = root(of: t.id) }
+        }
+        return roots
+    }
+
+    // Career W/L/PF per franchise across every archived season. Standings
+    // rows are grouped by franchise root; names/owners come from the newest
+    // appearance (chain and archives are expected newest-first).
+    static func allTimeRecords(
+        archives: [LeagueSeasonArchive],
+        chain: [League]
+    ) -> [AllTimeFranchiseRecord] {
+        let roots = franchiseRoots(chain: chain)
+        // Newest-first name/owner per franchise from the live chain.
+        var nameOf: [String: String] = [:]
+        var ownerOf: [String: String] = [:]
+        for lg in chain {
+            for t in lg.teams {
+                let f = roots[t.id] ?? t.id
+                if nameOf[f] == nil { nameOf[f] = t.name }
+                if ownerOf[f] == nil { ownerOf[f] = t.ownerID }
+            }
+        }
+
+        struct Tally {
+            var seasons = 0, wins = 0, losses = 0, ties = 0, champs = 0
+            var pf = 0.0
+            var name: String? = nil
+        }
+        var tallies: [String: Tally] = [:]
+        for archive in archives {
+            for row in archive.standings {
+                let f = roots[row.id] ?? row.id
+                var t = tallies[f] ?? Tally()
+                t.seasons += 1
+                t.wins += row.wins; t.losses += row.losses; t.ties += row.ties
+                t.pf += row.pointsFor
+                // Archives arrive newest-first: first name seen wins.
+                if t.name == nil { t.name = row.name }
+                tallies[f] = t
+            }
+            if let champ = archive.championTeamID {
+                let f = roots[champ] ?? champ
+                var t = tallies[f] ?? Tally()
+                t.champs += 1
+                tallies[f] = t
+            }
+        }
+
+        return tallies.map { f, t in
+            AllTimeFranchiseRecord(
+                id: f,
+                name: nameOf[f] ?? t.name ?? "Team",
+                ownerID: ownerOf[f],
+                seasons: t.seasons,
+                wins: t.wins, losses: t.losses, ties: t.ties,
+                pointsFor: round2(t.pf),
+                championships: t.champs
+            )
+        }
+        .sorted {
+            if $0.championships != $1.championships { return $0.championships > $1.championships }
+            if $0.winPct != $1.winPct { return $0.winPct > $1.winPct }
+            return $0.pointsFor > $1.pointsFor
+        }
+    }
+
+    // Career head-to-head grid between franchises: [rowFranchise:
+    // [columnFranchise: record-from-row's-perspective]].
+    static func headToHeadMatrix(
+        matchups: [ArchivedMatchup],
+        chain: [League]
+    ) -> [String: [String: H2HRecord]] {
+        let roots = franchiseRoots(chain: chain)
+        var grid: [String: [String: H2HRecord]] = [:]
+        for m in matchups {
+            let home = roots[m.homeTeamID] ?? m.homeTeamID
+            let away = roots[m.awayTeamID] ?? m.awayTeamID
+            guard home != away else { continue }
+            var hr = grid[home]?[away] ?? H2HRecord()
+            var ar = grid[away]?[home] ?? H2HRecord()
+            if m.homePoints > m.awayPoints { hr.wins += 1; ar.losses += 1 }
+            else if m.homePoints < m.awayPoints { hr.losses += 1; ar.wins += 1 }
+            else { hr.ties += 1; ar.ties += 1 }
+            grid[home, default: [:]][away] = hr
+            grid[away, default: [:]][home] = ar
+        }
+        return grid
+    }
 }

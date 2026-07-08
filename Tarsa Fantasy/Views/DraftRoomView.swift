@@ -240,6 +240,13 @@ struct DraftRoomView: View {
                     }
                     .ffSecondaryButton()
                     .padding(.top, FFSpace.s)
+                    if let deadline = league.keeperDeadline {
+                        Text(deadline < Date()
+                             ? "Keeper deadline passed \(deadline.shortRelative)."
+                             : "Keeper deadline \(deadline.formatted(date: .abbreviated, time: .shortened)).")
+                            .font(.ffMicro)
+                            .foregroundStyle(deadline < Date() ? FFColor.negative : FFColor.textTertiary)
+                    }
                 }
                 if isCommish && remaining <= 0 {
                     Button {
@@ -401,8 +408,9 @@ struct DraftRoomView: View {
         let totalRounds = draft.totalPicks / teamCount
         let myPicks = myTeam.map { t in picks.filter { $0.teamID == t.id }.map(\.playerID) } ?? []
         // Keepers count toward filled starter slots but not toward the
-        // (already keeper-reduced) remaining pick budget.
-        let myRoster = (myTeam?.keepers ?? []) + myPicks
+        // (already keeper-reduced) remaining pick budget. In round-cost
+        // leagues keepers are real pick rows, so dedupe against myPicks.
+        let myRoster = (myTeam?.keepers ?? []).filter { !myPicks.contains($0) } + myPicks
         let remainingPicks = max(0, totalRounds - myPicks.count)
         let needs = myTeam == nil
             ? (positions: Set<String>(), unfilledCount: 0)

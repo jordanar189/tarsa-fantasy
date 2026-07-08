@@ -734,7 +734,8 @@ final class AppState {
         scoringSettings: ScoringSettings? = nil,
         isDynasty: Bool = false,
         waiverSettings: WaiverSettings = .default,
-        keeperCount: Int = 0
+        keeperCount: Int = 0,
+        keeperRoundCost: Bool = false
     ) async throws -> League {
         guard let session else { throw AppError.notSignedIn }
         let league = try await remote.createLeague(
@@ -750,7 +751,8 @@ final class AppState {
             scoringSettings: scoringSettings,
             isDynasty: isDynasty,
             waiverSettings: waiverSettings,
-            keeperCount: keeperCount
+            keeperCount: keeperCount,
+            keeperRoundCost: keeperRoundCost
         )
         await reloadLeagues()
         await selectLeague(league.id)
@@ -1006,9 +1008,13 @@ final class AppState {
             }
         }
 
-        // Crown the playoff champion (winner of the final), when the bracket
-        // has resolved. Falls back to nil if the postseason isn't finished.
+        // Crown the playoff champion (winner of the final). When the bracket
+        // hasn't resolved — no postseason configured, or the season was
+        // completed early — fall back to the standings leader so every
+        // archived season carries a champion.
         let bracket = Fantasy.playoffBracket(league: league, players: snap)
+        let championID   = bracket.championTeamID   ?? standings.first?.id
+        let championName = bracket.championTeamName ?? standings.first?.name
 
         let updated = try await remote.completeLeagueSeason(
             leagueID: league.id,
@@ -1016,8 +1022,8 @@ final class AppState {
             scoringLeaderTeamID: leader?.id,
             scoringLeaderTeamName: leader?.name,
             matchups: archived,
-            championTeamID: bracket.championTeamID,
-            championTeamName: bracket.championTeamName
+            championTeamID: championID,
+            championTeamName: championName
         )
         await reloadLeagues()
         return updated
@@ -1034,10 +1040,29 @@ final class AppState {
         (try? await remote.leagueHistory(leagueID: leagueID)) ?? []
     }
 
-    func headToHead(leagueID: String, meUserID: String, opponentUserID: String) async -> [HeadToHeadEntry] {
+    func headToHead(
+        leagueID: String, meUserID: String, opponentUserID: String,
+        myTeamID: String? = nil, opponentTeamID: String? = nil
+    ) async -> [HeadToHeadEntry] {
         (try? await remote.headToHead(
-            leagueID: leagueID, meUserID: meUserID, opponentUserID: opponentUserID
+            leagueID: leagueID, meUserID: meUserID, opponentUserID: opponentUserID,
+            myTeamID: myTeamID, opponentTeamID: opponentTeamID
         )) ?? []
+    }
+
+    // All-time franchise records + career head-to-head grid across the
+    // league chain, keyed on team lineage.
+    func allTimeHistory(
+        leagueID: String
+    ) async -> (records: [AllTimeFranchiseRecord], matrix: [String: [String: H2HRecord]]) {
+        let chain = await remote.chainLeagues(leagueID: leagueID)
+        guard !chain.isEmpty else { return ([], [:]) }
+        let archives = (try? await remote.leagueHistory(leagueID: leagueID)) ?? []
+        let matchups = await remote.chainMatchups(leagueID: leagueID, chain: chain)
+        return (
+            Fantasy.allTimeRecords(archives: archives, chain: chain),
+            Fantasy.headToHeadMatrix(matchups: matchups, chain: chain)
+        )
     }
 
     // MARK: - Play-by-play
@@ -1314,6 +1339,8 @@ final class AppState {
         scoringSettings: ScoringSettings?, divisionNames: [String],
         regularSeasonWeeks: Int, weeksPerRound: Int, schedule: [ScheduleWeek],
         keeperCount: Int,
+        keeperRoundCost: Bool = false,
+        keeperDeadline: Date? = nil,
         tiebreaker: TiebreakerMode = .pointsFor
     ) async throws -> League? {
         let updated = try await remote.updateLeague(
@@ -1321,7 +1348,9 @@ final class AppState {
             playoffTeams: playoffTeams, playoffReseed: playoffReseed,
             scoringSettings: scoringSettings, divisionNames: divisionNames,
             regularSeasonWeeks: regularSeasonWeeks, weeksPerRound: weeksPerRound,
-            schedule: schedule, keeperCount: keeperCount, tiebreaker: tiebreaker
+            schedule: schedule, keeperCount: keeperCount,
+            keeperRoundCost: keeperRoundCost, keeperDeadline: keeperDeadline,
+            tiebreaker: tiebreaker
         )
         await reloadLeagues()
         return updated
@@ -1341,6 +1370,12 @@ final class AppState {
         )
         await reloadLeagues()
         return updated
+    }
+
+    // Round-cost keepers: playerID → the round keeping them consumes (absent
+    // = last round).
+    func keeperRoundCosts(leagueID: String) async -> [String: Int] {
+        await remote.keeperRoundCosts(leagueID: leagueID)
     }
 
     // Persist a manually-set lineup (start/sit) and IR list for a specific
@@ -1512,15 +1547,28 @@ final class AppState {
     func proposeTrade(
         leagueID: String, proposerTeamID: String, recipientTeamID: String,
         proposerPlayerIDs: [String], recipientPlayerIDs: [String],
-        note: String?, parentTradeID: String? = nil
+        note: String?, parentTradeID: String? = nil,
+        proposerPickIDs: [String] = [], recipientPickIDs: [String] = []
     ) async throws -> Trade? {
         try await remote.proposeTrade(
             leagueID: leagueID,
             proposerTeamID: proposerTeamID, recipientTeamID: recipientTeamID,
             proposerPlayerIDs: proposerPlayerIDs,
             recipientPlayerIDs: recipientPlayerIDs,
-            note: note, parentTradeID: parentTradeID
+            note: note, parentTradeID: parentTradeID,
+            proposerPickIDs: proposerPickIDs, recipientPickIDs: recipientPickIDs
         )
+    }
+
+    // MARK: - Draft-pick assets (dynasty)
+
+    func pickAssets(leagueID: String) async -> [DraftPickAsset] {
+        await remote.pickAssets(leagueID: leagueID)
+    }
+
+    @discardableResult
+    func ensurePickAssets(leagueID: String, season: Int, rounds: Int = 4) async throws -> Int {
+        try await remote.ensurePickAssets(leagueID: leagueID, season: season, rounds: rounds)
     }
 
     @discardableResult
@@ -1663,7 +1711,10 @@ final class AppState {
         let teamPicks = await draftPicks(draftID: draft.id)
             .filter { $0.teamID == teamID }
             .map(\.playerID)
-        let team = FantasyTeam(id: teamID, name: "", roster: myKeepers + teamPicks)
+        // Round-cost leagues pre-fill keepers as real picks; don't count
+        // them twice when they already appear in teamPicks.
+        let pendingKeepers = myKeepers.filter { !teamPicks.contains($0) }
+        let team = FantasyTeam(id: teamID, name: "", roster: pendingKeepers + teamPicks)
         let config = league?.rosterConfig ?? .default
         let scoring = league?.scoring ?? .ppr
         // Queue strictly wins: if the team owner queued players, the first

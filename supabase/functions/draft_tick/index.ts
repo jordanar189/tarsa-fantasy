@@ -21,6 +21,7 @@ interface DraftRow {
     id: string; league_id: string; format: string; status: string;
     pick_seconds: number; current_pick: number; total_picks: number;
     pick_deadline: string | null; pick_order: string[];
+    pick_owner_overrides?: Record<string, string> | null;
 }
 interface RosterConfigRow {
     qb?: number; rb?: number; wr?: number; te?: number;
@@ -136,7 +137,8 @@ Deno.serve(async (_req: Request) => {
 });
 
 async function advanceDraft(d: DraftRow): Promise<string> {
-    // Which team is on the clock?
+    // Which team is on the clock? Traded picks override the snake math via
+    // the map start_draft materialized (mirrors public.team_on_clock).
     const teamCount = d.pick_order.length;
     if (teamCount === 0) return "no_pick_order";
     const roundIdx    = Math.floor((d.current_pick - 1) / teamCount);
@@ -144,7 +146,8 @@ async function advanceDraft(d: DraftRow): Promise<string> {
     if (d.format === "snake" && roundIdx % 2 === 1) {
         posInRound = teamCount - 1 - posInRound;
     }
-    const teamID = d.pick_order[posInRound];
+    const overrides = d.pick_owner_overrides ?? {};
+    const teamID = overrides[String(d.current_pick)] ?? d.pick_order[posInRound];
     if (!teamID) return "no_team";
 
     // League + roster config (drive total rounds + K-phase logic).
@@ -182,14 +185,19 @@ async function advanceDraft(d: DraftRow): Promise<string> {
     const allPicks = (pickedRows ?? []) as PickRow[];
     const pickedIDs = new Set([...allPicks.map(p => p.player_id), ...allKeepers]);
 
+    // Round-cost leagues pre-fill keepers as real draft_picks rows, so only
+    // count the ones NOT already among the team's picks (keeper-lite).
+    const myPicks = allPicks.filter(p => p.team_id === teamID);
+    const pickedByMe = new Set(myPicks.map(p => p.player_id));
+    const pendingKeepers = myKeepers.filter(k => !pickedByMe.has(k));
+
     // The team's roster round: keepers + picks so far + 1. Equals the
     // draft round (roundIdx + 1) in leagues without keepers.
-    const myPicks = allPicks.filter(p => p.team_id === teamID);
-    const round = myKeepers.length + myPicks.length + 1;
+    const round = pendingKeepers.length + myPicks.length + 1;
 
     // Player positions for the team's keepers + picks. Keepers sort first
     // (synthetic pick numbers below any real pick).
-    const myIds = [...myKeepers, ...myPicks.map(p => p.player_id)];
+    const myIds = [...pendingKeepers, ...myPicks.map(p => p.player_id)];
     let myPickRows: { pick_number: number; position: string }[] = [];
     if (myIds.length > 0) {
         const { data: rows } = await supa.from("players_cache")
@@ -199,7 +207,7 @@ async function advanceDraft(d: DraftRow): Promise<string> {
             ((rows ?? []) as CachePlayer[]).map(r => [r.id, (r.position ?? "").toUpperCase()])
         );
         myPickRows = [
-            ...myKeepers.map((pid, i) => ({
+            ...pendingKeepers.map((pid, i) => ({
                 pick_number: -1000 + i,
                 position: posByID.get(pid) ?? "",
             })),
