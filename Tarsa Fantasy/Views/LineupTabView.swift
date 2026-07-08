@@ -19,6 +19,7 @@ struct LineupTabView: View {
     @State private var pickingSlot: Int? = nil
     @State private var saving = false
     @State private var error: String? = nil
+    @State private var activeDraft: Draft? = nil
 
     private var league: League? { app.selectedLeague }
     private var team: FantasyTeam? { league.flatMap { app.myTeam(in: $0) } }
@@ -53,8 +54,9 @@ struct LineupTabView: View {
             // contextual links) routes here.
             .navigationDestination(for: LineupDestination.self) { dest in
                 switch dest {
-                case .matchup:           MatchupTabView()
-                case .league(let id):    LeagueDetailView(leagueID: id)
+                case .matchup:            MatchupTabView()
+                case .league(let id):     LeagueDetailView(leagueID: id)
+                case .draftRoom(let id):  DraftRoomView(leagueID: id)
                 }
             }
         }
@@ -62,6 +64,10 @@ struct LineupTabView: View {
             if !didInit { week = defaultWeek; didInit = true }
         }
         .task(id: contextKey) { await reload() }
+        // Draft status doesn't depend on the week, so it refreshes on league
+        // switch only — plus on pop-back (content.onAppear) so the callout
+        // clears right after a draft completes or a mock is discarded.
+        .task(id: app.selectedLeagueID) { await refreshDraftStatus() }
         // Live games: realtime pushes update the player snapshot, but the
         // WeekContext captured above is frozen — recompute it so actuals,
         // projections, and "yet to play" track the live banner. Debounced:
@@ -91,6 +97,51 @@ struct LineupTabView: View {
     enum LineupDestination: Hashable {
         case matchup
         case league(String)
+        case draftRoom(String)
+    }
+
+    private func refreshDraftStatus() async {
+        guard let league else { activeDraft = nil; return }
+        let draft = await app.draft(leagueID: league.id)
+        activeDraft = (draft?.status == .complete) ? nil : draft
+    }
+
+    // Prominent entry into the draft room whenever this league has an
+    // unfinished draft. LIVE gets the accent treatment; scheduled shows the
+    // start time.
+    @ViewBuilder
+    private var draftCallout: some View {
+        if let draft = activeDraft, let league {
+            NavigationLink(value: LineupDestination.draftRoom(league.id)) {
+                HStack(spacing: FFSpace.m) {
+                    Image(systemName: draft.status == .live ? "dot.radiowaves.left.and.right" : "calendar.badge.clock")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(draft.status == .live ? FFColor.accent : FFColor.warning)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(draft.status == .live ? "Draft is live" :
+                             draft.status == .paused ? "Draft paused" : "Draft scheduled")
+                            .font(.ffHeadline)
+                            .foregroundStyle(FFColor.textPrimary)
+                        Text(draft.status == .live
+                             ? "Jump into the draft room — picks are rolling."
+                             : "Starts \(draft.startsAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.ffCaption)
+                            .foregroundStyle(FFColor.textSecondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                .padding(FFSpace.l)
+                .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+                .overlay(
+                    RoundedRectangle(cornerRadius: FFRadius.m)
+                        .strokeBorder(draft.status == .live ? FFColor.accent.opacity(0.5) : FFColor.border, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     @ViewBuilder
@@ -102,6 +153,7 @@ struct LineupTabView: View {
         } else {
             ScrollView {
                 VStack(spacing: FFSpace.l) {
+                    draftCallout
                     scoreBanner
                     navPills
                     weekPicker
@@ -124,7 +176,11 @@ struct LineupTabView: View {
             .refreshable {
                 guard !saving else { return }
                 await reload()
+                await refreshDraftStatus()
             }
+            // Re-check on pop-back from the draft room so the callout clears
+            // as soon as a draft completes or a mock is discarded.
+            .onAppear { Task { await refreshDraftStatus() } }
         }
     }
 

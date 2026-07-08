@@ -1918,7 +1918,11 @@ final class AppState {
         yourTeamName: String,
         mode: SimulationDraftMode = .preDrafted,
         botCount: Int,
-        scoringSettings: ScoringSettings? = nil
+        scoringSettings: ScoringSettings? = nil,
+        pickSeconds: Int = 20,
+        startDelay: TimeInterval = 30,
+        myPickSlot: Int? = nil,
+        botsAutoPick: Bool = false
     ) async throws -> League {
         guard let session else { throw AppError.notSignedIn }
         let bots = max(1, botCount)
@@ -1937,7 +1941,10 @@ final class AppState {
         try await remote.markAsTestLeague(leagueID: league.id)
 
         // Every bot team's owner_id = creator's UID so they can act on
-        // their behalf through the normal RLS-protected RPCs.
+        // their behalf through the normal RLS-protected RPCs. Captured
+        // before claiming: afterwards every team looks like "mine".
+        let botTeamIDs = league.teams.filter { $0.ownerID == nil }.map(\.id)
+        let myTeamID = league.teams.first(where: { $0.ownerID != nil })?.id
         for team in league.teams where team.ownerID == nil {
             _ = try await remote.claimTeam(teamID: team.id, userID: session.userID)
         }
@@ -1969,17 +1976,30 @@ final class AppState {
             // restore it later.
             try await remote.snapshotTeams(leagueID: league.id, week: 0)
         case .liveDraft:
-            // Schedule a draft starting in 30s with a short pick clock
-            // so the user can walk through the full draft room flow.
-            let pickOrder = league.teams.map(\.id).shuffled()
-            _ = try await remote.upsertDraft(
+            // Schedule a draft with a short pick clock so the user can walk
+            // through the full draft room flow. Mock drafts pin the user's
+            // team to a chosen slot; plain sims shuffle.
+            var pickOrder = league.teams.map(\.id).shuffled()
+            if let slot = myPickSlot, let myTeamID,
+               let current = pickOrder.firstIndex(of: myTeamID) {
+                pickOrder.remove(at: current)
+                pickOrder.insert(myTeamID, at: min(max(slot - 1, 0), pickOrder.count))
+            }
+            let draft = try await remote.upsertDraft(
                 leagueID: league.id,
                 format: .snake,
-                pickSeconds: 20,
-                startsAt: Date().addingTimeInterval(30),
+                pickSeconds: pickSeconds,
+                startsAt: Date().addingTimeInterval(startDelay),
                 pickOrder: pickOrder,
                 rosterSize: league.rosterConfig.totalSize
             )
+            // Bots on auto-pick fire instantly when they hit the clock, so a
+            // mock draft moves at the user's pace instead of 20s per bot.
+            if botsAutoPick, let draft {
+                for teamID in botTeamIDs {
+                    _ = try? await remote.setAutoPick(draftID: draft.id, teamID: teamID, enabled: true)
+                }
+            }
             // Snapshot the empty-roster entry state so reset_all has
             // something to restore to. Without this, a live-draft sim
             // couldn't be wound back: reset would leave rosters wherever
@@ -1990,6 +2010,74 @@ final class AppState {
         await reloadLeagues()
         await selectLeague(league.id)
         return league
+    }
+
+    // MARK: - Mock drafts
+
+    // Mock drafts are ordinary is_test sim leagues flagged locally: the flag
+    // only changes what the draft room offers when the draft completes
+    // (grade sheet + discard/keep). Local-only is fine — mocks are single-
+    // user by construction, and an orphaned flag just means a sim league.
+    private(set) var mockLeagueIDs: Set<String> =
+        Set(UserDefaults.standard.stringArray(forKey: "mockLeagueIDs") ?? [])
+
+    func isMockLeague(_ leagueID: String) -> Bool {
+        mockLeagueIDs.contains(leagueID)
+    }
+
+    private func setMockFlag(_ leagueID: String, _ flagged: Bool) {
+        if flagged { mockLeagueIDs.insert(leagueID) } else { mockLeagueIDs.remove(leagueID) }
+        UserDefaults.standard.set(Array(mockLeagueIDs), forKey: "mockLeagueIDs")
+    }
+
+    // A mock is a live-draft sim at the user's chosen slot with bots on
+    // instant auto-pick. Selects the new league so the draft banner is the
+    // next thing the user sees.
+    @discardableResult
+    func createMockDraft(
+        season: Int,
+        scoring: Scoring,
+        rosterConfig: RosterConfig = .default,
+        teamCount: Int,
+        myPickSlot: Int?,
+        clockSeconds: Int
+    ) async throws -> League {
+        let league = try await createSimulation(
+            name: "Mock Draft",
+            season: season,
+            scoring: scoring,
+            rosterConfig: rosterConfig,
+            yourTeamName: "My Team",
+            mode: .liveDraft,
+            botCount: max(1, teamCount - 1),
+            pickSeconds: clockSeconds,
+            startDelay: 10,
+            myPickSlot: myPickSlot,
+            botsAutoPick: true
+        )
+        setMockFlag(league.id, true)
+        return league
+    }
+
+    // Discard deletes the throwaway league entirely; keep just demotes it
+    // to a regular sim league. The flag clears only after the delete
+    // succeeds: clearing it first would unmount the grade card (and its
+    // progress state) mid-delete, and a failed delete would strand a live
+    // mock disguised as a normal sim.
+    @discardableResult
+    func discardMock(leagueID: String) async -> Bool {
+        do {
+            try await remote.deleteLeague(leagueID)
+        } catch {
+            return false
+        }
+        setMockFlag(leagueID, false)
+        await reloadLeagues()   // drops the dead selection → root swaps home
+        return true
+    }
+
+    func keepMockAsSim(leagueID: String) {
+        setMockFlag(leagueID, false)
     }
 
     // MARK: - Simulation: time travel + bot orchestration
