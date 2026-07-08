@@ -1713,6 +1713,23 @@ struct Trade: Identifiable, Hashable {
     let resolvedAt: Date?
     let failureReason: String?
     let createdAt: Date
+    // Multi-team (3+ parties): participants is the source of truth for what
+    // moves; the legacy proposer/recipient arrays stay empty. acceptedCount
+    // includes the proposer (whose participant row is born accepted).
+    var isMulti: Bool = false
+    var acceptedCount: Int = 0
+    var participants: [TradeParticipant] = []
+}
+
+// One team's side of a multi-team trade: what it gives and receives.
+struct TradeParticipant: Identifiable, Hashable {
+    let id: String
+    let teamID: String
+    let givesPlayerIDs: [String]
+    let givesPickIDs: [String]
+    let receivesPlayerIDs: [String]
+    let receivesPickIDs: [String]
+    let acceptedAt: Date?
 }
 
 struct TradeVote: Hashable {

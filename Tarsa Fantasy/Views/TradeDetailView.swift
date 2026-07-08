@@ -29,8 +29,16 @@ struct TradeDetailView: View {
     private var isProposer:  Bool { trade.proposerTeamID == myTeam?.id }
     private var isRecipient: Bool { trade.recipientTeamID == myTeam?.id }
     private var isCommish:   Bool { league.creatorID == app.session?.userID }
+    // My side of a multi trade (nil for 2-party trades or non-participants).
+    private var myParticipant: TradeParticipant? {
+        guard trade.isMulti, let myID = myTeam?.id else { return nil }
+        return trade.participants.first(where: { $0.teamID == myID })
+    }
     private var canVote: Bool {
         guard trade.status == .voting, let myID = myTeam?.id else { return false }
+        if trade.isMulti {
+            return !trade.participants.contains { $0.teamID == myID }
+        }
         return myID != trade.proposerTeamID && myID != trade.recipientTeamID
     }
 
@@ -45,7 +53,8 @@ struct TradeDetailView: View {
                     VStack(spacing: FFSpace.l) {
                         statusBanner
                         sidesCard
-                        balanceCard
+                        // The balance gauge is inherently two-sided.
+                        if !trade.isMulti { balanceCard }
                         if let note = trade.note, !note.isEmpty {
                             Text("“\(note)”")
                                 .font(.ffBody.italic())
@@ -77,7 +86,9 @@ struct TradeDetailView: View {
             }
             .task(id: trade.id) {
                 await reloadVotes()
-                if !(trade.proposerPickIDs.isEmpty && trade.recipientPickIDs.isEmpty) {
+                let hasPicks = !(trade.proposerPickIDs.isEmpty && trade.recipientPickIDs.isEmpty)
+                    || trade.participants.contains { !$0.givesPickIDs.isEmpty }
+                if hasPicks {
                     assets = Dictionary(uniqueKeysWithValues:
                         await app.pickAssets(leagueID: league.id).map { ($0.id, $0) })
                 }
@@ -170,7 +181,12 @@ struct TradeDetailView: View {
 
     private var statusDescription: String {
         switch trade.status {
-        case .pending:           return "Awaiting \(recipientTeam?.name ?? "recipient")'s response."
+        case .pending:
+            if trade.isMulti {
+                let waiting = trade.participants.filter { $0.acceptedAt == nil }.count
+                return "Waiting on \(waiting) of \(trade.participants.count) teams to accept."
+            }
+            return "Awaiting \(recipientTeam?.name ?? "recipient")'s response."
         case .accepted:          return "Accepted — being routed to review."
         case .pendingApproval:   return "Waiting for the commissioner to approve."
         case .voting:            return "League members can veto. Majority of other owners required."
@@ -186,17 +202,94 @@ struct TradeDetailView: View {
     private var sidesCard: some View {
         let players = Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
         return VStack(spacing: 0) {
-            sideRow(team: proposerTeam, label: "Sends", ids: trade.proposerPlayerIDs,
-                    pickIDs: trade.proposerPickIDs, players: players)
-            Rectangle().fill(FFColor.border).frame(height: 1)
-            sideRow(team: recipientTeam, label: "Sends", ids: trade.recipientPlayerIDs,
-                    pickIDs: trade.recipientPickIDs, players: players)
+            if trade.isMulti {
+                ForEach(Array(trade.participants.enumerated()), id: \.element.id) { idx, part in
+                    if idx > 0 { Rectangle().fill(FFColor.border).frame(height: 1) }
+                    participantRow(part, players: players)
+                }
+            } else {
+                sideRow(team: proposerTeam, label: "Sends", ids: trade.proposerPlayerIDs,
+                        pickIDs: trade.proposerPickIDs, players: players)
+                Rectangle().fill(FFColor.border).frame(height: 1)
+                sideRow(team: recipientTeam, label: "Sends", ids: trade.recipientPlayerIDs,
+                        pickIDs: trade.recipientPickIDs, players: players)
+            }
         }
         .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
         .overlay(
             RoundedRectangle(cornerRadius: FFRadius.m)
                 .strokeBorder(FFColor.border, lineWidth: 1)
         )
+    }
+
+    // One multi-trade participant: acceptance state, what they send (full
+    // rows), and what they get back (compact line).
+    private func participantRow(_ part: TradeParticipant, players: [String: Player]) -> some View {
+        let team = league.teams.first(where: { $0.id == part.teamID })
+        let receives = part.receivesPlayerIDs.map { players[$0]?.name ?? $0 }
+            + part.receivesPickIDs.map { assets[$0]?.shortLabel ?? "a pick" }
+        return VStack(alignment: .leading, spacing: FFSpace.s) {
+            HStack(spacing: FFSpace.s) {
+                Text(team?.name ?? "—")
+                    .font(.ffHeadline)
+                    .foregroundStyle(FFColor.textPrimary)
+                if trade.status == .pending {
+                    Image(systemName: part.acceptedAt != nil ? "checkmark.circle.fill" : "clock")
+                        .font(.system(size: 13))
+                        .foregroundStyle(part.acceptedAt != nil ? FFColor.positive : FFColor.warning)
+                }
+                Spacer()
+                Text("SENDS").ffEyebrow(color: FFColor.textTertiary)
+            }
+            if part.givesPlayerIDs.isEmpty && part.givesPickIDs.isEmpty {
+                Text("Nothing")
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textTertiary)
+            } else {
+                ForEach(part.givesPlayerIDs, id: \.self) { pid in
+                    let p = players[pid]
+                    let summary = p.map { Fantasy.summary($0, scoring: league.scoring) }
+                    HStack(spacing: FFSpace.m) {
+                        PlayerAvatar(url: summary?.headshotURL ?? "",
+                                     fallback: (summary?.name ?? "?").initialsFromName, size: 32)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(summary?.name ?? pid)
+                                .font(.ffBody)
+                                .foregroundStyle(FFColor.textPrimary)
+                            if let summary {
+                                HStack(spacing: 6) {
+                                    PositionPill(position: summary.position)
+                                    Text(summary.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                                }
+                            }
+                        }
+                        .playerLink(pid)
+                        Spacer()
+                        Text(summary?.points.fpString ?? "—")
+                            .font(.ffStatSmall)
+                            .foregroundStyle(FFColor.textSecondary)
+                    }
+                }
+                ForEach(part.givesPickIDs, id: \.self) { pickID in
+                    HStack(spacing: FFSpace.m) {
+                        Image(systemName: "ticket")
+                            .font(.system(size: 16))
+                            .foregroundStyle(FFColor.accent)
+                            .frame(width: 32)
+                        Text(pickLabel(pickID))
+                            .font(.ffBody)
+                            .foregroundStyle(FFColor.textPrimary)
+                        Spacer()
+                    }
+                }
+            }
+            if !receives.isEmpty {
+                Text("Gets: \(receives.joined(separator: ", "))")
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textSecondary)
+            }
+        }
+        .padding(FFSpace.l)
     }
 
     private func sideRow(team: FantasyTeam?, label: String, ids: [String],
@@ -287,7 +380,29 @@ struct TradeDetailView: View {
 
     @ViewBuilder
     private var actionButtons: some View {
-        if isRecipient && trade.status == .pending {
+        if let mine = myParticipant, !isProposer, trade.status == .pending {
+            if mine.acceptedAt == nil {
+                VStack(spacing: FFSpace.s) {
+                    Button { Task { await act { try await app.acceptTrade(trade.id) } } } label: {
+                        Text("Accept")
+                    }.ffPrimaryButton().disabled(saving)
+                    Button { Task { await act { try await app.rejectTrade(trade.id) } } } label: {
+                        Text("Reject")
+                    }.ffSecondaryButton().disabled(saving)
+                }
+            } else {
+                VStack(spacing: FFSpace.s) {
+                    Text("You're in — waiting on the other teams.")
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button { Task { await act { try await app.rejectTrade(trade.id) } } } label: {
+                        Text("Back out")
+                    }.ffSecondaryButton().disabled(saving)
+                }
+            }
+        }
+        if !trade.isMulti && isRecipient && trade.status == .pending {
             VStack(spacing: FFSpace.s) {
                 Button { Task { await act { try await app.acceptTrade(trade.id) } } } label: {
                     Text("Accept")
