@@ -250,7 +250,10 @@ struct MatchupTabView: View {
             winProbHistory.append(new)
             if winProbHistory.count > 200 { winProbHistory.removeFirst() }
         }
-        .onChange(of: week) { _, _ in winProbHistory = [] }
+        // Keyed on league+week (not week alone): the view stays mounted
+        // across a league switch, and stale samples must not bleed into the
+        // new league's matchup.
+        .onChange(of: contextKey) { _, _ in winProbHistory = [] }
     }
 
     private func teamColumn(_ s: SideModel, alignment: HorizontalAlignment, winning: Bool) -> some View {
