@@ -8,6 +8,7 @@ struct LeagueOverviewView: View {
     @State private var showingCreate = false
     @State private var showingMessages = false
     @State private var showingSleeperImport = false
+    @State private var showingMockDraft = false
     @State private var importedSelection: String? = nil
     @State private var joinSheet: JoinSheet? = nil
 
@@ -45,6 +46,7 @@ struct LeagueOverviewView: View {
             .sheet(isPresented: $showingSleeperImport) {
                 SleeperImportView { id in importedSelection = id }
             }
+            .sheet(isPresented: $showingMockDraft) { MockDraftSetupView() }
             .sheet(item: $joinSheet) { sheet in
                 JoinLeagueView(initialCode: sheet.code) { id in
                     Task { await app.selectLeague(id) }
@@ -116,6 +118,9 @@ struct LeagueOverviewView: View {
                 }
                 actionRow(icon: "square.and.arrow.down", title: "Import from Sleeper", subtitle: "Bring in rosters, history & transactions") {
                     showingSleeperImport = true
+                }
+                actionRow(icon: "stopwatch", title: "Mock draft", subtitle: "Practice against instant-pick bots") {
+                    showingMockDraft = true
                 }
 
                 if !app.leagueSummaries.isEmpty {

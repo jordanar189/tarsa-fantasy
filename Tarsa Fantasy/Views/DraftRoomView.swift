@@ -344,9 +344,15 @@ struct DraftRoomView: View {
                     .font(.ffCaption)
                     .foregroundStyle(FFColor.textTertiary)
             }
-            Text("Rosters are set. Free agency and waivers are now open.")
-                .font(.ffCaption)
-                .foregroundStyle(FFColor.textSecondary)
+            if app.isMockLeague(leagueID) {
+                if let league {
+                    MockDraftGradeCard(league: league, draft: draft)
+                }
+            } else {
+                Text("Rosters are set. Free agency and waivers are now open.")
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textSecondary)
+            }
         }
     }
 
