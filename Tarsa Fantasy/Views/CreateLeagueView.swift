@@ -36,6 +36,7 @@ struct CreateLeagueView: View {
     @State private var waiverMode: WaiverMode = .priority
     @State private var faabBudget: Int = 100
     @State private var keeperCount: Int = 0
+    @State private var keeperRoundCost: Bool = false
     @State private var error: String? = nil
     @State private var saving: Bool = false
 
@@ -167,12 +168,18 @@ struct CreateLeagueView: View {
                             }
 
                             section("Keepers",
-                                    footer: keeperCount == 0
-                                        ? "Off — a full redraft every season."
-                                        : "Rosters carry into next season so each team can keep up to \(keeperCount) player\(keeperCount == 1 ? "" : "s") through the draft, which shrinks by that many rounds. Keepers are picked in the draft room before it starts.") {
+                                    footer: keeperFooter) {
                                 stepperRow("Keepers per team", value: $keeperCount,
                                            range: 0...max(0, rosterConfig.totalSize - 1)) {
                                     $0 == 0 ? "Off" : "\($0)"
+                                }
+                                if keeperCount > 0 {
+                                    Toggle(isOn: $keeperRoundCost) {
+                                        Text("Keepers cost draft rounds")
+                                            .font(.ffBody).foregroundStyle(FFColor.textSecondary)
+                                    }
+                                    .tint(FFColor.accent)
+                                    .padding(.horizontal, FFSpace.l).padding(.vertical, 10)
                                 }
                             }
 
@@ -272,6 +279,14 @@ struct CreateLeagueView: View {
     }
 
     // MARK: - Section builder
+
+    private var keeperFooter: String {
+        if keeperCount == 0 { return "Off — a full redraft every season." }
+        let base = "Rosters carry into next season so each team can keep up to \(keeperCount) player\(keeperCount == 1 ? "" : "s") through the draft. Keepers are picked in the draft room before it starts."
+        return keeperRoundCost
+            ? base + " Each keeper consumes the team's pick in the round the player cost last season (one round earlier per consecutive keep)."
+            : base + " The draft shrinks by that many rounds."
+    }
 
     @ViewBuilder
     private func section<Content: View>(_ title: String, footer: String? = nil, @ViewBuilder content: () -> Content) -> some View {
@@ -478,7 +493,8 @@ struct CreateLeagueView: View {
                         commissionerApproval: false,
                         mode: waiverMode, faabBudget: faabBudget
                     ),
-                    keeperCount: min(keeperCount, max(0, rosterConfig.totalSize - 1))
+                    keeperCount: min(keeperCount, max(0, rosterConfig.totalSize - 1)),
+                    keeperRoundCost: keeperCount > 0 && keeperRoundCost
                 )
             case .simulation:
                 _ = try await app.createSimulation(

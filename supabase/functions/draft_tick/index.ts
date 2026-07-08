@@ -185,14 +185,19 @@ async function advanceDraft(d: DraftRow): Promise<string> {
     const allPicks = (pickedRows ?? []) as PickRow[];
     const pickedIDs = new Set([...allPicks.map(p => p.player_id), ...allKeepers]);
 
+    // Round-cost leagues pre-fill keepers as real draft_picks rows, so only
+    // count the ones NOT already among the team's picks (keeper-lite).
+    const myPicks = allPicks.filter(p => p.team_id === teamID);
+    const pickedByMe = new Set(myPicks.map(p => p.player_id));
+    const pendingKeepers = myKeepers.filter(k => !pickedByMe.has(k));
+
     // The team's roster round: keepers + picks so far + 1. Equals the
     // draft round (roundIdx + 1) in leagues without keepers.
-    const myPicks = allPicks.filter(p => p.team_id === teamID);
-    const round = myKeepers.length + myPicks.length + 1;
+    const round = pendingKeepers.length + myPicks.length + 1;
 
     // Player positions for the team's keepers + picks. Keepers sort first
     // (synthetic pick numbers below any real pick).
-    const myIds = [...myKeepers, ...myPicks.map(p => p.player_id)];
+    const myIds = [...pendingKeepers, ...myPicks.map(p => p.player_id)];
     let myPickRows: { pick_number: number; position: string }[] = [];
     if (myIds.length > 0) {
         const { data: rows } = await supa.from("players_cache")
@@ -202,7 +207,7 @@ async function advanceDraft(d: DraftRow): Promise<string> {
             ((rows ?? []) as CachePlayer[]).map(r => [r.id, (r.position ?? "").toUpperCase()])
         );
         myPickRows = [
-            ...myKeepers.map((pid, i) => ({
+            ...pendingKeepers.map((pid, i) => ({
                 pick_number: -1000 + i,
                 position: posByID.get(pid) ?? "",
             })),

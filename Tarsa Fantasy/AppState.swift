@@ -734,7 +734,8 @@ final class AppState {
         scoringSettings: ScoringSettings? = nil,
         isDynasty: Bool = false,
         waiverSettings: WaiverSettings = .default,
-        keeperCount: Int = 0
+        keeperCount: Int = 0,
+        keeperRoundCost: Bool = false
     ) async throws -> League {
         guard let session else { throw AppError.notSignedIn }
         let league = try await remote.createLeague(
@@ -750,7 +751,8 @@ final class AppState {
             scoringSettings: scoringSettings,
             isDynasty: isDynasty,
             waiverSettings: waiverSettings,
-            keeperCount: keeperCount
+            keeperCount: keeperCount,
+            keeperRoundCost: keeperRoundCost
         )
         await reloadLeagues()
         await selectLeague(league.id)
@@ -1314,6 +1316,8 @@ final class AppState {
         scoringSettings: ScoringSettings?, divisionNames: [String],
         regularSeasonWeeks: Int, weeksPerRound: Int, schedule: [ScheduleWeek],
         keeperCount: Int,
+        keeperRoundCost: Bool = false,
+        keeperDeadline: Date? = nil,
         tiebreaker: TiebreakerMode = .pointsFor
     ) async throws -> League? {
         let updated = try await remote.updateLeague(
@@ -1321,7 +1325,9 @@ final class AppState {
             playoffTeams: playoffTeams, playoffReseed: playoffReseed,
             scoringSettings: scoringSettings, divisionNames: divisionNames,
             regularSeasonWeeks: regularSeasonWeeks, weeksPerRound: weeksPerRound,
-            schedule: schedule, keeperCount: keeperCount, tiebreaker: tiebreaker
+            schedule: schedule, keeperCount: keeperCount,
+            keeperRoundCost: keeperRoundCost, keeperDeadline: keeperDeadline,
+            tiebreaker: tiebreaker
         )
         await reloadLeagues()
         return updated
@@ -1341,6 +1347,12 @@ final class AppState {
         )
         await reloadLeagues()
         return updated
+    }
+
+    // Round-cost keepers: playerID → the round keeping them consumes (absent
+    // = last round).
+    func keeperRoundCosts(leagueID: String) async -> [String: Int] {
+        await remote.keeperRoundCosts(leagueID: leagueID)
     }
 
     // Persist a manually-set lineup (start/sit) and IR list for a specific
@@ -1676,7 +1688,10 @@ final class AppState {
         let teamPicks = await draftPicks(draftID: draft.id)
             .filter { $0.teamID == teamID }
             .map(\.playerID)
-        let team = FantasyTeam(id: teamID, name: "", roster: myKeepers + teamPicks)
+        // Round-cost leagues pre-fill keepers as real picks; don't count
+        // them twice when they already appear in teamPicks.
+        let pendingKeepers = myKeepers.filter { !teamPicks.contains($0) }
+        let team = FantasyTeam(id: teamID, name: "", roster: pendingKeepers + teamPicks)
         let config = league?.rosterConfig ?? .default
         let scoring = league?.scoring ?? .ppr
         // Queue strictly wins: if the team owner queued players, the first

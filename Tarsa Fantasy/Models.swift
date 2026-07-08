@@ -938,6 +938,14 @@ struct League: Codable, Identifiable, Hashable {
     // can pick keepers off last season's team; the draft shrinks by this
     // many rounds.
     var keeperCount: Int
+    // Full keeper rules: when true, each keeper consumes the team's draft
+    // pick in the round the player cost last season (escalating a round per
+    // consecutive keep; last round for undrafted pickups) and the draft runs
+    // the full roster-size rounds. False = keeper-lite (draft just shrinks).
+    var keeperRoundCost: Bool
+    // Owners may change keepers only until this instant (commish exempt).
+    // Nil = changeable until the draft starts.
+    var keeperDeadline: Date?
     // Standings tiebreaker among equal win% teams. Feeds playoff seeding.
     var tiebreaker: TiebreakerMode
 
@@ -964,6 +972,8 @@ struct League: Codable, Identifiable, Hashable {
          championTeamID: String? = nil,
          championTeamName: String? = nil,
          keeperCount: Int = 0,
+         keeperRoundCost: Bool = false,
+         keeperDeadline: Date? = nil,
          tiebreaker: TiebreakerMode = .pointsFor) {
         self.id = id; self.name = name; self.season = season; self.scoring = scoring
         self.createdAt = createdAt; self.teams = teams; self.schedule = schedule
@@ -990,6 +1000,8 @@ struct League: Codable, Identifiable, Hashable {
         self.championTeamID = championTeamID
         self.championTeamName = championTeamName
         self.keeperCount = max(0, keeperCount)
+        self.keeperRoundCost = keeperRoundCost
+        self.keeperDeadline = keeperDeadline
         self.tiebreaker = tiebreaker
     }
 

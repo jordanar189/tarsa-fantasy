@@ -238,7 +238,8 @@ actor RemoteService {
         scoringSettings: ScoringSettings? = nil,
         isDynasty: Bool = false,
         waiverSettings: WaiverSettings = .default,
-        keeperCount: Int = 0
+        keeperCount: Int = 0,
+        keeperRoundCost: Bool = false
     ) async throws -> League {
         guard let creatorUUID = UUID(uuidString: creatorID) else {
             throw RemoteError.invalidUserID
@@ -292,6 +293,7 @@ actor RemoteService {
             let waiver_mode: String
             let faab_budget: Int
             let keeper_count: Int
+            let keeper_round_cost: Bool
         }
         let leagueID = UUID()
         // Initial priority: reverse-order of team creation (last team picks
@@ -317,7 +319,8 @@ actor RemoteService {
             is_dynasty: isDynasty,
             waiver_mode: waiverSettings.mode.rawValue,
             faab_budget: waiverSettings.faabBudget,
-            keeper_count: max(0, keeperCount)
+            keeper_count: max(0, keeperCount),
+            keeper_round_cost: keeperRoundCost
         )
         let insertedLeague: LeagueRow = try await client.from("leagues")
             .insert(leagueInsert)
@@ -677,6 +680,8 @@ actor RemoteService {
             championTeamID: row.championTeamId?.uuidString,
             championTeamName: row.championTeamName,
             keeperCount: row.keeperCount ?? 0,
+            keeperRoundCost: row.keeperRoundCost ?? false,
+            keeperDeadline: row.keeperDeadline,
             tiebreaker: row.tiebreaker.flatMap(TiebreakerMode.init(rawValue:)) ?? .pointsFor
         )
     }
@@ -1128,6 +1133,8 @@ actor RemoteService {
         weeksPerRound: Int,
         schedule: [ScheduleWeek],
         keeperCount: Int,
+        keeperRoundCost: Bool = false,
+        keeperDeadline: Date? = nil,
         tiebreaker: TiebreakerMode = .pointsFor
     ) async throws -> League? {
         guard let uuid = UUID(uuidString: leagueID) else { return nil }
@@ -1147,6 +1154,9 @@ actor RemoteService {
             let regular_season_weeks: Int
             let weeks_per_round: Int
             let keeper_count: Int
+            let keeper_round_cost: Bool
+            // nil clears the deadline (owners can then edit until draft start).
+            let keeper_deadline: Date?
             let tiebreaker: String
             // Regenerated to match the regular-season length when the playoff
             // start week changes. The round-robin is prefix-stable, so already
@@ -1165,6 +1175,8 @@ actor RemoteService {
                 regular_season_weeks: max(1, regularSeasonWeeks),
                 weeks_per_round: min(max(weeksPerRound, 1), 2),
                 keeper_count: max(0, keeperCount),
+                keeper_round_cost: keeperRoundCost,
+                keeper_deadline: keeperDeadline,
                 tiebreaker: tiebreaker.rawValue,
                 schedule: scheduleAsAnyJSON(schedule)
             ))
@@ -1305,6 +1317,27 @@ actor RemoteService {
             p_league_id: lid, p_team_id: tid, p_keepers: playerIDs
         )).execute()
         return try await self.league(id: leagueID)
+    }
+
+    // Round-cost keepers: playerID → the draft round keeping them consumes,
+    // derived server-side from the parent league's draft (escalating one
+    // round per consecutive keep). Players absent from the map cost the
+    // last round.
+    func keeperRoundCosts(leagueID: String) async -> [String: Int] {
+        guard let uuid = UUID(uuidString: leagueID) else { return [:] }
+        struct Args: Encodable { let p_league_id: UUID }
+        struct Row: Decodable {
+            let playerId: String
+            let costRound: Int
+            enum CodingKeys: String, CodingKey {
+                case playerId = "player_id", costRound = "cost_round"
+            }
+        }
+        let rows: [Row] = (try? await client.rpc(
+            "keeper_round_costs", params: Args(p_league_id: uuid)
+        ).execute().value) ?? []
+        return Dictionary(rows.map { ($0.playerId, $0.costRound) },
+                          uniquingKeysWith: { a, _ in a })
     }
 
     // MARK: - Drafts
@@ -3624,6 +3657,8 @@ struct LeagueRow: Codable, Hashable {
     let championTeamId: UUID?
     let championTeamName: String?
     let keeperCount: Int?
+    let keeperRoundCost: Bool?
+    let keeperDeadline: Date?
     let tiebreaker: String?
 
     enum CodingKeys: String, CodingKey {
@@ -3658,6 +3693,8 @@ struct LeagueRow: Codable, Hashable {
         case championTeamId       = "champion_team_id"
         case championTeamName     = "champion_team_name"
         case keeperCount          = "keeper_count"
+        case keeperRoundCost      = "keeper_round_cost"
+        case keeperDeadline       = "keeper_deadline"
     }
 
     init(from decoder: Decoder) throws {
@@ -3699,6 +3736,8 @@ struct LeagueRow: Codable, Hashable {
         championTeamId       = try c.decodeIfPresent(UUID.self,    forKey: .championTeamId)
         championTeamName     = try c.decodeIfPresent(String.self,  forKey: .championTeamName)
         keeperCount          = try c.decodeIfPresent(Int.self,     forKey: .keeperCount)
+        keeperRoundCost      = try c.decodeIfPresent(Bool.self,    forKey: .keeperRoundCost)
+        keeperDeadline       = try c.decodeIfPresent(Date.self,    forKey: .keeperDeadline)
         tiebreaker           = try c.decodeIfPresent(String.self,  forKey: .tiebreaker)
     }
 }
