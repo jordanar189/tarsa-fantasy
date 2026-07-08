@@ -282,7 +282,6 @@ export const LIVE_PLAY_ID_BASE = 9_000_000;
 
 export interface LivePlayRow {
     game_id: string; play_id: number; season: number; week: number;
-    home_team: string; away_team: string;
     posteam: string | null; defteam: string | null;
     qtr: number | null; game_seconds_remaining: number | null;
     down: number | null; ydstogo: number | null; yardline_100: number | null;
@@ -319,7 +318,6 @@ export function parseLivePlays(
                 : null;
             out.push({
                 game_id: gameID, play_id: LIVE_PLAY_ID_BASE + seq, season, week,
-                home_team: homeAbbr, away_team: awayAbbr,
                 posteam: pos, defteam: def,
                 qtr, game_seconds_remaining: gsr,
                 down: p.start?.down ?? null,
