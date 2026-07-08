@@ -167,6 +167,7 @@ struct MockDraftGradeCard: View {
     @State private var bestValuePick: (name: String, delta: Double)? = nil
     @State private var discarding: Bool = false
     @State private var confirmingDiscard: Bool = false
+    @State private var discardError: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: FFSpace.m) {
@@ -216,12 +217,25 @@ struct MockDraftGradeCard: View {
                 .disabled(discarding)
             }
             .padding(.top, FFSpace.s)
+            if let discardError {
+                Text(discardError)
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.negative)
+            }
         }
         .confirmationDialog("Discard this mock draft?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
             Button("Discard", role: .destructive) {
                 Task {
                     discarding = true
-                    await app.discardMock(leagueID: league.id)
+                    discardError = nil
+                    // On success the delete drops the league selection and
+                    // the root swaps home, tearing this screen down for us.
+                    let deleted = await app.discardMock(leagueID: league.id)
+                    if !deleted {
+                        discarding = false
+                        discardError = "Couldn't delete the mock — check your connection and try again."
+                        Haptics.error()
+                    }
                 }
             }
             Button("Cancel", role: .cancel) {}

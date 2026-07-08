@@ -64,6 +64,10 @@ struct LineupTabView: View {
             if !didInit { week = defaultWeek; didInit = true }
         }
         .task(id: contextKey) { await reload() }
+        // Draft status doesn't depend on the week, so it refreshes on league
+        // switch only — plus on pop-back (content.onAppear) so the callout
+        // clears right after a draft completes or a mock is discarded.
+        .task(id: app.selectedLeagueID) { await refreshDraftStatus() }
         // Live games: realtime pushes update the player snapshot, but the
         // WeekContext captured above is frozen — recompute it so actuals,
         // projections, and "yet to play" track the live banner. Debounced:
@@ -94,6 +98,12 @@ struct LineupTabView: View {
         case matchup
         case league(String)
         case draftRoom(String)
+    }
+
+    private func refreshDraftStatus() async {
+        guard let league else { activeDraft = nil; return }
+        let draft = await app.draft(leagueID: league.id)
+        activeDraft = (draft?.status == .complete) ? nil : draft
     }
 
     // Prominent entry into the draft room whenever this league has an
@@ -166,7 +176,11 @@ struct LineupTabView: View {
             .refreshable {
                 guard !saving else { return }
                 await reload()
+                await refreshDraftStatus()
             }
+            // Re-check on pop-back from the draft room so the callout clears
+            // as soon as a draft completes or a mock is discarded.
+            .onAppear { Task { await refreshDraftStatus() } }
         }
     }
 
@@ -900,10 +914,6 @@ struct LineupTabView: View {
         // disabled taxi doesn't strand players off the bench (matches the
         // resolveLineup / optimalWeekPoints / WaiverClaimSheet guards).
         taxi = config.taxi > 0 ? team.taxi.filter { team.roster.contains($0) } : []
-        // Surface a scheduled/live draft so the room is one tap away instead
-        // of buried behind the League drill-in (mock drafts land here too).
-        let draft = await app.draft(leagueID: league.id)
-        activeDraft = (draft?.status == .complete) ? nil : draft
         loadingContext = true
         context = await app.weekContext(league: league, week: week)
         loadingContext = false

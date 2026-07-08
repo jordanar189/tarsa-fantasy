@@ -2060,10 +2060,20 @@ final class AppState {
     }
 
     // Discard deletes the throwaway league entirely; keep just demotes it
-    // to a regular sim league.
-    func discardMock(leagueID: String) async {
+    // to a regular sim league. The flag clears only after the delete
+    // succeeds: clearing it first would unmount the grade card (and its
+    // progress state) mid-delete, and a failed delete would strand a live
+    // mock disguised as a normal sim.
+    @discardableResult
+    func discardMock(leagueID: String) async -> Bool {
+        do {
+            try await remote.deleteLeague(leagueID)
+        } catch {
+            return false
+        }
         setMockFlag(leagueID, false)
-        await deleteLeague(leagueID)
+        await reloadLeagues()   // drops the dead selection → root swaps home
+        return true
     }
 
     func keepMockAsSim(leagueID: String) {
