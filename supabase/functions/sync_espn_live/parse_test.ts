@@ -134,3 +134,87 @@ Deno.test("makeRow computes offense-only preset points", () => {
 Deno.test("team abbreviation fixup", () => {
     expect(fixTeam("WSH") === "WAS" && fixTeam("KC") === "KC" && fixTeam("la") === "LAR", "fixups");
 });
+
+// ---- Live play-by-play + red zone ----
+
+import { parseLivePlays, currentRedZone, LIVE_PLAY_ID_BASE, EspnSummary as Summary } from "./parse.ts";
+
+function assertEquals<T>(actual: T, expected: T, msg?: string) {
+    const a = JSON.stringify(actual), e = JSON.stringify(expected);
+    if (a !== e) throw new Error(msg ?? `expected ${e}, got ${a}`);
+}
+
+const DRIVES_FIXTURE: Summary = {
+    drives: {
+        previous: [{
+            id: "1",
+            team: { abbreviation: "WSH" },       // fixup → WAS
+            plays: [
+                {
+                    id: "p1", text: "J. Daniels pass complete for 12 yards",
+                    period: { number: 1 }, clock: { displayValue: "12:34" },
+                    type: { text: "Pass Reception" },
+                    awayScore: 0, homeScore: 0,
+                    start: { down: 1, distance: 10, yardsToEndzone: 75 },
+                    end: { yardsToEndzone: 63 },
+                },
+                {
+                    id: "p2", text: "B. Robinson 63 Yd Touchdown Run",
+                    period: { number: 1 }, clock: { displayValue: "11:50" },
+                    type: { text: "Rushing Touchdown" }, scoringPlay: true,
+                    awayScore: 6, homeScore: 0,
+                    start: { down: 2, distance: 10, yardsToEndzone: 63 },
+                    end: { yardsToEndzone: 0 },
+                },
+            ],
+        }],
+        current: {
+            id: "2",
+            team: { abbreviation: "KC" },
+            plays: [{
+                id: "p3", text: "P. Mahomes pass complete to the 15",
+                period: { number: 2 }, clock: { displayValue: "8:00" },
+                type: { text: "Pass Reception" },
+                awayScore: 7, homeScore: 7,
+                start: { down: 1, distance: 10, yardsToEndzone: 40 },
+                end: { yardsToEndzone: 15 },
+            }],
+        },
+    },
+};
+
+Deno.test("parseLivePlays maps drives to sequential synthetic play rows", () => {
+    const rows = parseLivePlays(DRIVES_FIXTURE, "2026_01_WAS_KC", 2026, 1, "KC", "WAS");
+    assertEquals(rows.length, 3);
+    assertEquals(rows[0].play_id, LIVE_PLAY_ID_BASE + 1);
+    assertEquals(rows[2].play_id, LIVE_PLAY_ID_BASE + 3);
+    // Away (WSH → WAS) possession: defteam is the home side.
+    assertEquals(rows[0].posteam, "WAS");
+    assertEquals(rows[0].defteam, "KC");
+    assertEquals(rows[0].qtr, 1);
+    assertEquals(rows[0].game_seconds_remaining, 3 * 900 + 12 * 60 + 34);
+    assertEquals(rows[0].down, 1);
+    assertEquals(rows[0].yardline_100, 75);
+    assertEquals(rows[0].touchdown, false);
+    assertEquals(rows[1].touchdown, true);
+    // KC possession play: scores flip to the possessing side's perspective.
+    assertEquals(rows[2].posteam, "KC");
+    assertEquals(rows[2].posteam_score, 7);
+});
+
+Deno.test("currentRedZone fires only inside the 20 on the current drive", () => {
+    const rz = currentRedZone(DRIVES_FIXTURE);
+    if (rz === null) throw new Error("expected red zone");
+    assertEquals(rz.team, "KC");
+    assertEquals(rz.driveID, "2");
+
+    // Outside the 20 → null.
+    const cold: Summary = {
+        drives: { current: { id: "3", team: { abbreviation: "KC" }, plays: [{
+            start: { yardsToEndzone: 60 }, end: { yardsToEndzone: 45 },
+        }] } },
+    };
+    assertEquals(currentRedZone(cold), null);
+    // No current drive → null.
+    assertEquals(currentRedZone({}), null);
+});

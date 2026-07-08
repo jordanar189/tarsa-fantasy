@@ -63,6 +63,11 @@ struct PlayerDetailView: View {
     @State private var dropped: [DroppedPlayer] = []
     @State private var claimTarget: AddClaimTarget? = nil
     @State private var tradeTarget: AcquireTradeTarget? = nil
+    // Recent headlines tagging this player (Overview card).
+    @State private var newsItems: [PlayerNewsItem] = []
+    // Market context (Overview card): draft ADP and MFL add/drop percentages.
+    @State private var adpByID: [String: Double] = [:]
+    @State private var trendingByID: [String: TrendingPlayer] = [:]
 
     private var player: Player? { app.displaySelectedPlayers()[playerID] }
     private var isProjected: Bool { app.isProjectedSeason(app.selectedSeason) }
@@ -154,6 +159,12 @@ struct PlayerDetailView: View {
                     playerID: playerID, season: app.selectedSeason, scoring: scoring
                 )
                 nicknameHistory = await app.playerNicknameHistory(playerID: playerID)
+                newsItems = await app.news(playerID: playerID, limit: 5)
+                adpByID = await app.adp(season: app.selectedSeason, scoring: scoring)
+                trendingByID = Dictionary(
+                    uniqueKeysWithValues: await app.trendingPlayers(for: app.selectedLeague)
+                        .map { ($0.playerID, $0) }
+                )
                 if section == .career, let player {
                     await loadCareer(for: player)
                 }
@@ -669,6 +680,7 @@ struct PlayerDetailView: View {
                 best: weekly.max() ?? 0, worst: weekly.min() ?? 0,
                 trend: Fantasy.trendDirection(games: games, scoring: scoring, settings: scoringSettings)
             )
+            marketCard(for: p)
             if !games.isEmpty {
                 VStack(alignment: .leading, spacing: FFSpace.s) {
                     Text("WEEKLY POINTS").ffEyebrow().padding(.leading, FFSpace.s)
@@ -681,7 +693,79 @@ struct PlayerDetailView: View {
                         )
                 }
             }
+            if !newsItems.isEmpty {
+                VStack(alignment: .leading, spacing: FFSpace.s) {
+                    Text("NEWS").ffEyebrow().padding(.leading, FFSpace.s)
+                    ForEach(newsItems.prefix(3)) { item in
+                        NewsCard(item: item, compact: true)
+                    }
+                }
+            }
         }
+    }
+
+    // ADP · add/drop market movement · next-4-games schedule strength.
+    // All three are optional data sources — the card renders whatever is
+    // available and disappears entirely when none are.
+    @ViewBuilder
+    private func marketCard(for p: Player) -> some View {
+        let adp = adpByID[p.id]
+        let trend = trendingByID[p.id]
+        let sos = upcomingSOS(for: p)
+        if adp != nil || trend != nil || sos != nil {
+            HStack(spacing: FFSpace.l) {
+                if let adp {
+                    marketColumn("ADP", String(format: "%.1f", adp), FFColor.textPrimary)
+                }
+                if let trend {
+                    let rising = trend.adds >= trend.drops
+                    marketColumn(
+                        rising ? "ADDS 24H" : "DROPS 24H",
+                        String(format: "%.0f%%", rising ? trend.adds : trend.drops),
+                        rising ? FFColor.positive : FFColor.negative
+                    )
+                }
+                if let sos {
+                    marketColumn("NEXT \(sos.games)", sos.label, sos.color)
+                }
+                Spacer()
+            }
+            .ffCard()
+        }
+    }
+
+    private func marketColumn(_ label: String, _ value: String, _ color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).ffEyebrow(color: FFColor.textTertiary)
+            Text(value).font(.ffStatMedium).foregroundStyle(color)
+        }
+    }
+
+    // Average DvP rank of the next few opponents at this player's position.
+    // Rank 1 = allows the most fantasy points, so LOW average = soft slate.
+    private func upcomingSOS(for p: Player) -> (label: String, color: Color, games: Int)? {
+        guard !p.team.isEmpty else { return nil }
+        let dvp = dvpByPosition[p.position.uppercased()] ?? [:]
+        guard !dvp.isEmpty else { return nil }
+        let now = Date()
+        let upcoming = schedules
+            .filter { g in (g.home == p.team || g.away == p.team) && (g.kickoff.map { $0 > now } ?? false) }
+            .sorted { ($0.kickoff ?? .distantFuture) < ($1.kickoff ?? .distantFuture) }
+            .prefix(4)
+        let ranks = upcoming.compactMap { g -> Int? in
+            let opp = g.home == p.team ? g.away : g.home
+            return dvp[opp]?.rank
+        }
+        guard !ranks.isEmpty else { return nil }
+        let avg = Double(ranks.reduce(0, +)) / Double(ranks.count)
+        let label: String
+        let color: Color
+        switch avg {
+        case ..<12:  label = "Soft";  color = FFColor.positive
+        case ..<21:  label = "Even";  color = FFColor.warning
+        default:     label = "Tough"; color = FFColor.negative
+        }
+        return (label, color, ranks.count)
     }
 
     private func acquisitionCard(_ acq: PlayerAcquisition, player p: Player) -> some View {

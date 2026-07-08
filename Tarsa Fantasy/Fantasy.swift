@@ -872,7 +872,7 @@ enum Fantasy {
             components.append(ScoreComponent(
                 label: "Points Allowed",
                 detail: "\(pa.statString) allowed",
-                points: Game.pointsAllowedBonus(pa)
+                points: s.pointsAllowedBonus(pa)
             ))
         }
 
@@ -1239,6 +1239,17 @@ enum Fantasy {
         }
         let teamsByID = Dictionary(uniqueKeysWithValues: league.teams.map { ($0.id, $0) })
         let settings = league.scoringSettings
+        // Head-to-head results per (team, opponent), for the h2h tiebreaker.
+        var h2h: [String: [String: (w: Int, l: Int, t: Int)]] = [:]
+        func recordH2H(winner: String, loser: String, tie: Bool) {
+            if tie {
+                h2h[winner, default: [:]][loser, default: (0, 0, 0)].t += 1
+                h2h[loser, default: [:]][winner, default: (0, 0, 0)].t += 1
+            } else {
+                h2h[winner, default: [:]][loser, default: (0, 0, 0)].w += 1
+                h2h[loser, default: [:]][winner, default: (0, 0, 0)].l += 1
+            }
+        }
         // Only head-to-head regular-season weeks count toward the standings.
         for plan in league.schedule where plan.week <= league.regularSeasonWeeks {
             for pair in plan.matchups {
@@ -1255,12 +1266,15 @@ enum Fantasy {
                 if h.total > a.total {
                     rows[home.id]!.w += 1
                     rows[away.id]!.l += 1
+                    recordH2H(winner: home.id, loser: away.id, tie: false)
                 } else if a.total > h.total {
                     rows[away.id]!.w += 1
                     rows[home.id]!.l += 1
+                    recordH2H(winner: away.id, loser: home.id, tie: false)
                 } else {
                     rows[home.id]!.t += 1
                     rows[away.id]!.t += 1
+                    recordH2H(winner: home.id, loser: away.id, tie: true)
                 }
             }
         }
@@ -1273,13 +1287,56 @@ enum Fantasy {
             guard games > 0 else { return 0 }
             return (Double(acc.w) + 0.5 * Double(acc.t)) / Double(games)
         }
-        let sorted = rows.map { (id: $0.key, acc: $0.value) }
+        var sorted = rows.map { (id: $0.key, acc: $0.value) }
             .sorted { lhs, rhs in
                 let lp = winPct(lhs.acc), rp = winPct(rhs.acc)
                 if lp != rp { return lp > rp }
                 if lhs.acc.pf != rhs.acc.pf { return lhs.acc.pf > rhs.acc.pf }
                 return lhs.id < rhs.id
             }
+        // Configured tiebreaker: reorder each exact win% tie group by a
+        // per-team scalar (group h2h win%, or points against) instead of a
+        // pairwise comparator, so the ordering stays transitive even when
+        // three-way h2h cycles exist. Points-for remains the inner fallback.
+        if league.tiebreaker != .pointsFor {
+            var regrouped: [(id: String, acc: Acc)] = []
+            var i = 0
+            while i < sorted.count {
+                var j = i
+                while j < sorted.count, winPct(sorted[j].acc) == winPct(sorted[i].acc) { j += 1 }
+                var group = Array(sorted[i..<j])
+                if group.count > 1 {
+                    let groupIDs = Set(group.map(\.id))
+                    func groupKey(_ id: String) -> Double {
+                        switch league.tiebreaker {
+                        case .headToHead:
+                            var w = 0, l = 0, t = 0
+                            for (opp, rec) in h2h[id] ?? [:] where groupIDs.contains(opp) {
+                                w += rec.w; l += rec.l; t += rec.t
+                            }
+                            let games = w + l + t
+                            // No meetings yet → neutral, falls to points-for.
+                            guard games > 0 else { return 0.5 }
+                            return (Double(w) + 0.5 * Double(t)) / Double(games)
+                        case .pointsAgainst:
+                            // Tougher schedule (more points against) wins.
+                            return rows[id]?.pa ?? 0
+                        case .pointsFor:
+                            return 0
+                        }
+                    }
+                    group.sort { lhs, rhs in
+                        let lk = groupKey(lhs.id), rk = groupKey(rhs.id)
+                        if lk != rk { return lk > rk }
+                        if lhs.acc.pf != rhs.acc.pf { return lhs.acc.pf > rhs.acc.pf }
+                        return lhs.id < rhs.id
+                    }
+                }
+                regrouped.append(contentsOf: group)
+                i = j
+            }
+            sorted = regrouped
+        }
         let orderedIDs = sorted.map(\.id)
 
         // Division rank: position within the team's own division, in overall order.

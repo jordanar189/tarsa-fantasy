@@ -214,6 +214,15 @@ struct ScoringSettings: Codable, Hashable {
     var defFumbleRecovery: Double
     var defTouchdown: Double
     var defSafety: Double
+    // Points-allowed tier values (DST). Thresholds are fixed (shutout, <7,
+    // <14, <21, <28, <35, 35+); each tier's point value is configurable.
+    var paShutout: Double
+    var paUnder7: Double
+    var paUnder14: Double
+    var paUnder21: Double
+    var paUnder28: Double
+    var paUnder35: Double
+    var pa35Plus: Double
 
     static let standard = ScoringSettings(
         passingYardsPerPoint: 25, passingTD: 4, interception: -2,
@@ -255,12 +264,27 @@ struct ScoringSettings: Codable, Hashable {
     // 2-pt conversions / return TDs that the raw Game line omits).
     func matchesPreset(_ scoring: Scoring) -> Bool { self == ScoringSettings.preset(scoring) }
 
+    // The tier bonus for a DST row's points allowed, from this league's
+    // configured tier values.
+    func pointsAllowedBonus(_ pointsAllowed: Double) -> Double {
+        switch pointsAllowed {
+        case ..<1:   return paShutout
+        case ..<7:   return paUnder7
+        case ..<14:  return paUnder14
+        case ..<21:  return paUnder21
+        case ..<28:  return paUnder28
+        case ..<35:  return paUnder35
+        default:     return pa35Plus
+        }
+    }
+
     private enum CodingKeys: String, CodingKey {
         case passingYardsPerPoint, passingTD, interception,
              rushingYardsPerPoint, rushingTD, receivingYardsPerPoint,
              receivingTD, reception, fumbleLost,
              fgUnder40, fg40to49, fg50plus, patMade, fgMissed, patMissed,
-             defSack, defInterception, defFumbleRecovery, defTouchdown, defSafety
+             defSack, defInterception, defFumbleRecovery, defTouchdown, defSafety,
+             paShutout, paUnder7, paUnder14, paUnder21, paUnder28, paUnder35, pa35Plus
     }
 
     // New params default to standard K/DST so existing call sites (the offense
@@ -272,7 +296,10 @@ struct ScoringSettings: Codable, Hashable {
          fgUnder40: Double = 3, fg40to49: Double = 4, fg50plus: Double = 5,
          patMade: Double = 1, fgMissed: Double = -1, patMissed: Double = -1,
          defSack: Double = 1, defInterception: Double = 2, defFumbleRecovery: Double = 2,
-         defTouchdown: Double = 6, defSafety: Double = 2) {
+         defTouchdown: Double = 6, defSafety: Double = 2,
+         paShutout: Double = 10, paUnder7: Double = 7, paUnder14: Double = 4,
+         paUnder21: Double = 1, paUnder28: Double = 0, paUnder35: Double = -1,
+         pa35Plus: Double = -4) {
         self.passingYardsPerPoint = passingYardsPerPoint
         self.passingTD = passingTD
         self.interception = interception
@@ -293,6 +320,13 @@ struct ScoringSettings: Codable, Hashable {
         self.defFumbleRecovery = defFumbleRecovery
         self.defTouchdown = defTouchdown
         self.defSafety = defSafety
+        self.paShutout = paShutout
+        self.paUnder7 = paUnder7
+        self.paUnder14 = paUnder14
+        self.paUnder21 = paUnder21
+        self.paUnder28 = paUnder28
+        self.paUnder35 = paUnder35
+        self.pa35Plus = pa35Plus
     }
 
     init(from decoder: Decoder) throws {
@@ -318,6 +352,13 @@ struct ScoringSettings: Codable, Hashable {
         defFumbleRecovery = try c.decodeIfPresent(Double.self, forKey: .defFumbleRecovery) ?? d.defFumbleRecovery
         defTouchdown      = try c.decodeIfPresent(Double.self, forKey: .defTouchdown)      ?? d.defTouchdown
         defSafety         = try c.decodeIfPresent(Double.self, forKey: .defSafety)         ?? d.defSafety
+        paShutout  = try c.decodeIfPresent(Double.self, forKey: .paShutout)  ?? d.paShutout
+        paUnder7   = try c.decodeIfPresent(Double.self, forKey: .paUnder7)   ?? d.paUnder7
+        paUnder14  = try c.decodeIfPresent(Double.self, forKey: .paUnder14)  ?? d.paUnder14
+        paUnder21  = try c.decodeIfPresent(Double.self, forKey: .paUnder21)  ?? d.paUnder21
+        paUnder28  = try c.decodeIfPresent(Double.self, forKey: .paUnder28)  ?? d.paUnder28
+        paUnder35  = try c.decodeIfPresent(Double.self, forKey: .paUnder35)  ?? d.paUnder35
+        pa35Plus   = try c.decodeIfPresent(Double.self, forKey: .pa35Plus)   ?? d.pa35Plus
     }
 }
 
@@ -420,7 +461,7 @@ struct Game: Codable, Hashable, Identifiable {
     }
 
     // Team-defense scoring. Only DST rows (non-nil pointsAllowed) score; event
-    // values come from the league settings, plus the points-allowed tier bonus.
+    // values and the points-allowed tier bonus both come from league settings.
     func defensePoints(_ s: ScoringSettings) -> Double {
         guard let pa = pointsAllowed else { return 0 }
         return defSacks * s.defSack
@@ -428,19 +469,12 @@ struct Game: Codable, Hashable, Identifiable {
             + defFumbleRecoveries * s.defFumbleRecovery
             + defTouchdowns * s.defTouchdown
             + defSafeties * s.defSafety
-            + Game.pointsAllowedBonus(pa)
+            + s.pointsAllowedBonus(pa)
     }
 
+    // Standard-tier bonus, kept for callers without league settings.
     static func pointsAllowedBonus(_ pointsAllowed: Double) -> Double {
-        switch pointsAllowed {
-        case ..<1:   return 10   // shutout
-        case ..<7:   return 7
-        case ..<14:  return 4
-        case ..<21:  return 1
-        case ..<28:  return 0
-        case ..<35:  return -1
-        default:     return -4
-        }
+        ScoringSettings.standard.pointsAllowedBonus(pointsAllowed)
     }
 }
 
@@ -828,6 +862,24 @@ struct TradeSettings: Codable, Hashable {
     static let `default` = TradeSettings(approval: .none, deadline: nil, voteHours: 24)
 }
 
+// Standings tiebreaker among teams tied on win% (ties count as half a win).
+// pointsFor is the classic default; headToHead compares the tied group's
+// record against each other (falling back to points-for); pointsAgainst
+// ranks the tougher schedule — more points against — first.
+enum TiebreakerMode: String, Codable, CaseIterable, Identifiable, Hashable {
+    case pointsFor     = "points_for"
+    case headToHead    = "h2h"
+    case pointsAgainst = "points_against"
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .pointsFor:     return "Points for"
+        case .headToHead:    return "Head-to-head"
+        case .pointsAgainst: return "Points against"
+        }
+    }
+}
+
 struct League: Codable, Identifiable, Hashable {
     var id: String
     var name: String
@@ -886,6 +938,8 @@ struct League: Codable, Identifiable, Hashable {
     // can pick keepers off last season's team; the draft shrinks by this
     // many rounds.
     var keeperCount: Int
+    // Standings tiebreaker among equal win% teams. Feeds playoff seeding.
+    var tiebreaker: TiebreakerMode
 
     init(id: String, name: String, season: Int, scoring: Scoring, createdAt: Date,
          teams: [FantasyTeam], schedule: [ScheduleWeek],
@@ -909,7 +963,8 @@ struct League: Codable, Identifiable, Hashable {
          divisionNames: [String] = [],
          championTeamID: String? = nil,
          championTeamName: String? = nil,
-         keeperCount: Int = 0) {
+         keeperCount: Int = 0,
+         tiebreaker: TiebreakerMode = .pointsFor) {
         self.id = id; self.name = name; self.season = season; self.scoring = scoring
         self.createdAt = createdAt; self.teams = teams; self.schedule = schedule
         self.rosterConfig = rosterConfig
@@ -935,6 +990,7 @@ struct League: Codable, Identifiable, Hashable {
         self.championTeamID = championTeamID
         self.championTeamName = championTeamName
         self.keeperCount = max(0, keeperCount)
+        self.tiebreaker = tiebreaker
     }
 
     // Effective scoring used by league computations: custom settings if set,
@@ -1010,6 +1066,18 @@ struct LeagueMatchupArchive: Hashable {
     let awayUserID: String?
     let homePoints: Double
     let awayPoints: Double
+}
+
+// One mirrored ESPN headline (player_news, synced hourly). playerIDs are
+// the local ids of tagged athletes; empty = league-wide story.
+struct PlayerNewsItem: Identifiable, Hashable {
+    let id: String
+    let headline: String
+    let description: String?
+    let published: Date
+    let url: String?
+    let imageURL: String?
+    let playerIDs: [String]
 }
 
 // One row from the play-by-play table. Every field except game_id /

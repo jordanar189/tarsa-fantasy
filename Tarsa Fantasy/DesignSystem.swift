@@ -142,18 +142,35 @@ enum FFRadius {
 
 // MARK: - Typography
 
+// Dynamic-Type-aware: each font keeps its design size at the default setting
+// and scales with the user's text-size preference via UIFontMetrics, capped
+// at 1.6× so accessibility sizes don't shatter the data-dense layouts.
+// Computed vars (not stored lets) so a mid-session Dynamic Type change —
+// which re-renders every view — re-derives the scaled sizes.
+private func ffScaled(
+    size: CGFloat, weight: UIFont.Weight,
+    relativeTo style: UIFont.TextStyle,
+    monospaced: Bool = false
+) -> Font {
+    let base = monospaced
+        ? UIFont.monospacedSystemFont(ofSize: size, weight: weight)
+        : UIFont.systemFont(ofSize: size, weight: weight)
+    let metrics = UIFontMetrics(forTextStyle: style)
+    return Font(metrics.scaledFont(for: base, maximumPointSize: size * 1.6))
+}
+
 extension Font {
-    static let ffDisplay  = Font.system(size: 32, weight: .bold,     design: .default)
-    static let ffTitle    = Font.system(size: 22, weight: .semibold, design: .default)
-    static let ffHeadline = Font.system(size: 17, weight: .semibold, design: .default)
-    static let ffBody     = Font.system(size: 15, weight: .regular,  design: .default)
-    static let ffCaption  = Font.system(size: 13, weight: .regular,  design: .default)
-    static let ffMicro    = Font.system(size: 11, weight: .semibold, design: .default)
+    static var ffDisplay:  Font { ffScaled(size: 32, weight: .bold,     relativeTo: .largeTitle) }
+    static var ffTitle:    Font { ffScaled(size: 22, weight: .semibold, relativeTo: .title2) }
+    static var ffHeadline: Font { ffScaled(size: 17, weight: .semibold, relativeTo: .headline) }
+    static var ffBody:     Font { ffScaled(size: 15, weight: .regular,  relativeTo: .subheadline) }
+    static var ffCaption:  Font { ffScaled(size: 13, weight: .regular,  relativeTo: .footnote) }
+    static var ffMicro:    Font { ffScaled(size: 11, weight: .semibold, relativeTo: .caption2) }
 
     // Monospaced — for stats, scores, codes
-    static let ffStatLarge  = Font.system(size: 26, weight: .bold,     design: .monospaced)
-    static let ffStatMedium = Font.system(size: 18, weight: .semibold, design: .monospaced)
-    static let ffStatSmall  = Font.system(size: 14, weight: .medium,   design: .monospaced)
+    static var ffStatLarge:  Font { ffScaled(size: 26, weight: .bold,     relativeTo: .title1, monospaced: true) }
+    static var ffStatMedium: Font { ffScaled(size: 18, weight: .semibold, relativeTo: .body,   monospaced: true) }
+    static var ffStatSmall:  Font { ffScaled(size: 14, weight: .medium,   relativeTo: .footnote, monospaced: true) }
 }
 
 // MARK: - View modifiers
@@ -388,6 +405,40 @@ struct WinBar: View {
                 Text("\(oppPct)%").font(.ffMicro.bold()).foregroundStyle(FFColor.textSecondary)
             }
         }
+    }
+}
+
+// Win-probability movement: a small sparkline of live samples under the
+// WinBar. History is session-local (0...1 per sample); the 50% guide line
+// shows which side of even the swing sits on.
+struct WinProbTrend: View {
+    let history: [Double]
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            let n = history.count
+            ZStack {
+                Path { p in
+                    p.move(to: CGPoint(x: 0, y: h * 0.5))
+                    p.addLine(to: CGPoint(x: w, y: h * 0.5))
+                }
+                .stroke(FFColor.border, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                if n >= 2 {
+                    Path { p in
+                        for (i, v) in history.enumerated() {
+                            let x = w * CGFloat(i) / CGFloat(n - 1)
+                            let y = h * (1 - CGFloat(max(0, min(1, v))))
+                            if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
+                            else      { p.addLine(to: CGPoint(x: x, y: y)) }
+                        }
+                    }
+                    .stroke(FFColor.accent, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                }
+            }
+        }
+        .frame(height: 28)
+        .accessibilityLabel("Win probability trend")
     }
 }
 

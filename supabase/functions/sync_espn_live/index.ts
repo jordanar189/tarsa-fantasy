@@ -30,6 +30,7 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import {
     makeRow, extractPlayerStats, applyFieldGoalDistances, synthesizeDST, fixTeam,
+    parseLivePlays, currentRedZone, LIVE_PLAY_ID_BASE,
 } from "./parse.ts";
 import type { LiveRow, EspnSummary } from "./parse.ts";
 
@@ -139,8 +140,39 @@ async function processGame(
             status: isFinal ? "final" : "in_progress",
             updated_at: new Date().toISOString(),
         }).eq("game_id", gameID);
+
+        if (!isFinal) {
+            // Live play-by-play: mirror the summary's drives into plays under
+            // synthetic high ids so the Gamecast works during the game. Never
+            // fatal — the score pipeline matters more than the play feed.
+            try {
+                const livePlays = parseLivePlays(summary, gameID, season, week, home.team, away.team);
+                if (livePlays.length > 0) {
+                    const { error } = await supa.from("plays")
+                        .upsert(livePlays, { onConflict: "game_id,play_id" });
+                    if (error) console.error(`live plays: ${error.message}`);
+                }
+            } catch (err) {
+                console.error(`live plays: ${err}`);
+            }
+            try {
+                await maybeRedZoneAlert(summary, ev.id);
+            } catch (err) {
+                console.error(`red zone: ${err}`);
+            }
+        } else {
+            // Sweep the synthetic live rows; nflverse's authoritative
+            // play-by-play lands the next morning.
+            await supa.from("plays").delete()
+                .eq("game_id", gameID)
+                .gte("play_id", LIVE_PLAY_ID_BASE);
+        }
     }
 
+    if (isFinal) {
+        // Red-zone dedupe rows for this game are done with.
+        await supa.from("red_zone_alerts").delete().eq("event_id", ev.id);
+    }
     if (isFinal && rows.length > 0) {
         // Persist the full final stat line — better than nothing for the
         // hours until nflverse's authoritative sync overwrites it.
@@ -162,6 +194,54 @@ async function processGame(
         }, { onConflict: "event_id" });
     }
     return { rows: rows.length, final: isFinal };
+}
+
+// One push per (game, drive): "your starter's offense is inside the 20".
+// The red_zone_alerts insert doubles as the claim — a concurrent run that
+// loses the PK race just skips.
+async function maybeRedZoneAlert(summary: EspnSummary, eventID: string) {
+    const rz = currentRedZone(summary);
+    if (!rz) return;
+
+    const { error: claimErr } = await supa.from("red_zone_alerts")
+        .insert({ event_id: eventID, drive_id: rz.driveID });
+    if (claimErr) return;   // already alerted for this drive
+
+    const { data: teamPlayers } = await supa.from("players_cache")
+        .select("id, name")
+        .eq("team", rz.team);
+    const nameByID = new Map(
+        ((teamPlayers ?? []) as Array<{ id: string; name: string }>).map(p => [p.id, p.name])
+    );
+    if (nameByID.size === 0) return;
+
+    const { data: teams } = await supa.from("teams")
+        .select("owner_id, league_id, starters, leagues!inner(is_test, season_completed)")
+        .overlaps("starters", [...nameByID.keys()])
+        .not("owner_id", "is", null)
+        .eq("leagues.is_test", false)
+        .eq("leagues.season_completed", false);
+
+    const events: Array<{ user_id: string; title: string; body: string; deep_link: string }> = [];
+    const seen = new Set<string>();
+    for (const t of (teams ?? []) as Array<{ owner_id: string; league_id: string; starters: string[] }>) {
+        if (!t.owner_id || seen.has(t.owner_id)) continue;
+        const mine = (t.starters ?? []).filter(pid => nameByID.has(pid));
+        if (mine.length === 0) continue;
+        seen.add(t.owner_id);
+        const first = nameByID.get(mine[0]) ?? mine[0];
+        const who = mine.length === 1 ? first : `${first} +${mine.length - 1}`;
+        events.push({
+            user_id: t.owner_id,
+            title: "Red zone",
+            body: `${rz.team} is inside the 20 — ${who} in range to score.`,
+            deep_link: `tarsafantasy://league/${t.league_id}`,
+        });
+    }
+    if (events.length > 0) {
+        const { error } = await supa.from("push_events").insert(events);
+        if (error) console.error(`red zone push: ${error.message}`);
+    }
 }
 
 // ----------- Fetch helpers -----------

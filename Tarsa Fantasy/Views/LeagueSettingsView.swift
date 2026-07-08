@@ -27,6 +27,7 @@ struct LeagueSettingsView: View {
     // Playoffs
     @State private var playoffTeams: Int
     @State private var playoffReseed: Bool
+    @State private var tiebreaker: TiebreakerMode
     @State private var playoffStartWeek: Int
     @State private var weeksPerRound: Int
     // Custom scoring
@@ -80,6 +81,7 @@ struct LeagueSettingsView: View {
         _hasTradeDeadline = State(initialValue: league.tradeSettings.deadline != nil)
         _playoffTeams = State(initialValue: league.playoffTeams)
         _playoffReseed = State(initialValue: league.playoffReseed)
+        _tiebreaker = State(initialValue: league.tiebreaker)
         _playoffStartWeek = State(initialValue: league.playoffStartWeek)
         _weeksPerRound = State(initialValue: league.weeksPerRound)
         _useCustomScoring = State(initialValue: league.scoringSettings != nil)
@@ -373,6 +375,16 @@ struct LeagueSettingsView: View {
                 }
             }
             .tint(FFColor.accent)
+            // Tiebreaker among equal-win% teams; drives standings + seeding.
+            Picker(selection: $tiebreaker) {
+                ForEach(TiebreakerMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            } label: {
+                Text("Tiebreaker").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+            }
+            .pickerStyle(.menu)
+            .tint(FFColor.accent)
             if playoffTeams >= 2 {
                 Toggle("Re-seed each round", isOn: $playoffReseed)
                     .tint(FFColor.accent)
@@ -477,12 +489,21 @@ struct LeagueSettingsView: View {
                 scoringStepper("Fumble recovery",  value: $scoringSettings.defFumbleRecovery,   range: 0...10, step: 1)
                 scoringStepper("Defensive TD",     value: $scoringSettings.defTouchdown,        range: 0...10, step: 1)
                 scoringStepper("Safety",           value: $scoringSettings.defSafety,           range: 0...10, step: 1)
+
+                Text("DST points allowed").ffEyebrow()
+                scoringStepper("Shutout",          value: $scoringSettings.paShutout,           range: 0...15, step: 1)
+                scoringStepper("1–6 allowed",      value: $scoringSettings.paUnder7,            range: 0...12, step: 1)
+                scoringStepper("7–13 allowed",     value: $scoringSettings.paUnder14,           range: 0...10, step: 1)
+                scoringStepper("14–20 allowed",    value: $scoringSettings.paUnder21,           range: -3...6, step: 1)
+                scoringStepper("21–27 allowed",    value: $scoringSettings.paUnder28,           range: -4...4, step: 1)
+                scoringStepper("28–34 allowed",    value: $scoringSettings.paUnder35,           range: -6...2, step: 1)
+                scoringStepper("35+ allowed",      value: $scoringSettings.pa35Plus,            range: -8...0, step: 1)
             }
         } header: {
             Text("Scoring").ffEyebrow()
         } footer: {
             Text(useCustomScoring
-                 ? "Custom weights are applied to every game retroactively, computed from raw stat lines. Any player scores for any action they record. Defense points-allowed tiers use standard scoring."
+                 ? "Custom weights are applied to every game retroactively, computed from raw stat lines. Any player scores for any action they record."
                  : "Using the \(scoring.label) preset. Turn on custom scoring to set per-stat values.")
                 .foregroundStyle(FFColor.textTertiary)
         }
@@ -1038,7 +1059,8 @@ struct LeagueSettingsView: View {
                 regularSeasonWeeks: newRegularSeasonWeeks,
                 weeksPerRound: weeksPerRound,
                 schedule: newSchedule,
-                keeperCount: min(keeperCount, max(0, cfg.totalSize - 1))
+                keeperCount: min(keeperCount, max(0, cfg.totalSize - 1)),
+                tiebreaker: tiebreaker
             )
             // Push per-team division assignments when divisions are on.
             if divisionsEnabled, divisions.count >= 2 {

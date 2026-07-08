@@ -17,6 +17,8 @@ struct MatchupTabView: View {
     @State private var context: WeekContext = .empty
     @State private var h2h: [HeadToHeadEntry] = []
     @State private var expanded: Set<String> = []
+    // Session-local win-probability samples for the live movement sparkline.
+    @State private var winProbHistory: [Double] = []
 
     private var league: League? { app.selectedLeague }
     private var myTeam: FantasyTeam? { league.flatMap { app.myTeam(in: $0) } }
@@ -236,8 +238,22 @@ struct MatchupTabView: View {
             }
 
             WinBar(myPercent: myWin)
+            if anyPlayed && !allDone && winProbHistory.count >= 2 {
+                WinProbTrend(history: winProbHistory)
+            }
         }
         .ffHeroCard(accentStripe: leadActual && anyPlayed)
+        // Win-probability movement: sample every recompute while the matchup
+        // is live (session-local — resets with the view/week).
+        .onChange(of: myWin) { _, new in
+            guard anyPlayed, !allDone else { return }
+            winProbHistory.append(new)
+            if winProbHistory.count > 200 { winProbHistory.removeFirst() }
+        }
+        // Keyed on league+week (not week alone): the view stays mounted
+        // across a league switch, and stale samples must not bleed into the
+        // new league's matchup.
+        .onChange(of: contextKey) { _, _ in winProbHistory = [] }
     }
 
     private func teamColumn(_ s: SideModel, alignment: HorizontalAlignment, winning: Bool) -> some View {

@@ -676,7 +676,8 @@ actor RemoteService {
             divisionNames: row.divisionNames,
             championTeamID: row.championTeamId?.uuidString,
             championTeamName: row.championTeamName,
-            keeperCount: row.keeperCount ?? 0
+            keeperCount: row.keeperCount ?? 0,
+            tiebreaker: row.tiebreaker.flatMap(TiebreakerMode.init(rawValue:)) ?? .pointsFor
         )
     }
 
@@ -701,18 +702,14 @@ actor RemoteService {
         ])
     }
 
+    // Serializes through Codable so every ScoringSettings field round-trips.
+    // The previous hand-written literal only carried the nine offense fields,
+    // silently resetting custom kicking / DST weights on every save.
     private func scoringSettingsAsAnyJSON(_ s: ScoringSettings) -> AnyJSON {
-        .object([
-            "passingYardsPerPoint":   .double(s.passingYardsPerPoint),
-            "passingTD":              .double(s.passingTD),
-            "interception":           .double(s.interception),
-            "rushingYardsPerPoint":   .double(s.rushingYardsPerPoint),
-            "rushingTD":              .double(s.rushingTD),
-            "receivingYardsPerPoint": .double(s.receivingYardsPerPoint),
-            "receivingTD":            .double(s.receivingTD),
-            "reception":              .double(s.reception),
-            "fumbleLost":             .double(s.fumbleLost),
-        ])
+        guard let data = try? JSONEncoder().encode(s),
+              let json = try? JSONDecoder().decode(AnyJSON.self, from: data)
+        else { return .object([:]) }
+        return json
     }
 
     private func stringsAsAnyJSON(_ items: [String]) -> AnyJSON {
@@ -1130,7 +1127,8 @@ actor RemoteService {
         regularSeasonWeeks: Int,
         weeksPerRound: Int,
         schedule: [ScheduleWeek],
-        keeperCount: Int
+        keeperCount: Int,
+        tiebreaker: TiebreakerMode = .pointsFor
     ) async throws -> League? {
         guard let uuid = UUID(uuidString: leagueID) else { return nil }
         let cleaned = name.trimmingCharacters(in: .whitespaces)
@@ -1149,6 +1147,7 @@ actor RemoteService {
             let regular_season_weeks: Int
             let weeks_per_round: Int
             let keeper_count: Int
+            let tiebreaker: String
             // Regenerated to match the regular-season length when the playoff
             // start week changes. The round-robin is prefix-stable, so already
             // played weeks keep their matchups.
@@ -1166,6 +1165,7 @@ actor RemoteService {
                 regular_season_weeks: max(1, regularSeasonWeeks),
                 weeks_per_round: min(max(weeksPerRound, 1), 2),
                 keeper_count: max(0, keeperCount),
+                tiebreaker: tiebreaker.rawValue,
                 schedule: scheduleAsAnyJSON(schedule)
             ))
             .eq("id", value: uuid)
@@ -1250,6 +1250,43 @@ actor RemoteService {
             .eq("id", value: uuid)
             .execute()
         return try await self.league(id: leagueID)
+    }
+
+    // MARK: - Player news
+
+    // Recent headlines, newest first. playerID filters to articles tagging
+    // that player; nil = the league-wide feed.
+    func news(playerID: String? = nil, limit: Int = 50) async -> [PlayerNewsItem] {
+        struct Row: Decodable {
+            let id: String
+            let headline: String
+            let description: String?
+            let published: Date
+            let url: String?
+            let imageUrl: String?
+            let playerIds: [String]
+            enum CodingKeys: String, CodingKey {
+                case id, headline, description, published, url
+                case imageUrl  = "image_url"
+                case playerIds = "player_ids"
+            }
+        }
+        var builder = client.from("player_news").select()
+        if let playerID {
+            builder = builder.contains("player_ids", value: [playerID])
+        }
+        let rows: [Row] = (try? await builder
+            .order("published", ascending: false)
+            .limit(limit)
+            .execute()
+            .value) ?? []
+        return rows.map {
+            PlayerNewsItem(
+                id: $0.id, headline: $0.headline, description: $0.description,
+                published: $0.published, url: $0.url, imageURL: $0.imageUrl,
+                playerIDs: $0.playerIds
+            )
+        }
     }
 
     // Keeper-lite: owner (or commish) locks in up to keeper_count players
@@ -3523,9 +3560,10 @@ struct LeagueRow: Codable, Hashable {
     let championTeamId: UUID?
     let championTeamName: String?
     let keeperCount: Int?
+    let tiebreaker: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, season, scoring, schedule
+        case id, name, season, scoring, schedule, tiebreaker
         case rosterConfig         = "roster_config"
         case joinCode             = "join_code"
         case creatorId            = "creator_id"
@@ -3597,6 +3635,7 @@ struct LeagueRow: Codable, Hashable {
         championTeamId       = try c.decodeIfPresent(UUID.self,    forKey: .championTeamId)
         championTeamName     = try c.decodeIfPresent(String.self,  forKey: .championTeamName)
         keeperCount          = try c.decodeIfPresent(Int.self,     forKey: .keeperCount)
+        tiebreaker           = try c.decodeIfPresent(String.self,  forKey: .tiebreaker)
     }
 }
 

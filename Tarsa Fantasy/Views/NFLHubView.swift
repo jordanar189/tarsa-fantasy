@@ -11,6 +11,7 @@ struct NFLHubView: View {
         case players = "Players"
         case teams   = "Teams"
         case trending = "Trending"
+        case news    = "News"
         var id: String { rawValue }
     }
 
@@ -33,6 +34,7 @@ struct NFLHubView: View {
                         case .players:  PlayersBrowser()
                         case .teams:    TeamsView()
                         case .trending: TrendingView()
+                        case .news:     NewsFeedView()
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
