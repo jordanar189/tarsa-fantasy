@@ -160,24 +160,30 @@ async function syncDepth(year: number) {
     };
     if (ix.gsis < 0 || ix.team < 0) return { error: "missing key columns" };
 
+    // nflverse publishes several chart snapshots within a week, so the same
+    // (season, week, team, position, player) key repeats — two of those in
+    // one upsert batch fail with "ON CONFLICT DO UPDATE command cannot
+    // affect row a second time" (same failure the injuries feed dedupes for
+    // above). Keep the best (lowest) depth seen for the key.
     const skill = new Set(["QB", "RB", "WR", "TE", "K"]);
-    const out: Array<Record<string, unknown>> = [];
+    const byKey = new Map<string, Record<string, unknown>>();
     for (const r of rows) {
         if (ix.gameType >= 0 && (r[ix.gameType] ?? "").toUpperCase() !== "REG") continue;
         const pid = r[ix.gsis]?.trim();
         if (!pid || pid === "NA") continue;
         const pos = (r[ix.position] ?? "").toUpperCase();
         if (!skill.has(pos)) continue;
-        const depth = numOrNull(r[ix.depth]);
-        out.push({
-            season: Math.trunc(num(r[ix.season])),
-            week:   Math.trunc(num(r[ix.week])),
-            team:   (r[ix.team] ?? "").toUpperCase(),
-            player_id: pid,
-            position: pos,
-            depth: depth != null ? Math.round(depth) : 99,
-        });
+        const depthRaw = numOrNull(r[ix.depth]);
+        const depth = depthRaw != null ? Math.round(depthRaw) : 99;
+        const season = Math.trunc(num(r[ix.season]));
+        const week   = Math.trunc(num(r[ix.week]));
+        const team   = (r[ix.team] ?? "").toUpperCase();
+        const key = `${season}|${week}|${team}|${pos}|${pid}`;
+        const prev = byKey.get(key);
+        if (prev && (prev.depth as number) <= depth) continue;
+        byKey.set(key, { season, week, team, player_id: pid, position: pos, depth });
     }
+    const out = [...byKey.values()];
     await supa.from("depth_charts").delete().eq("season", year);
     await upsertChunks("depth_charts", out, 500, "season,week,team,position,player_id");
     return { received: rows.length, written: out.length };
@@ -205,21 +211,22 @@ async function syncInactives(year: number) {
     const inactiveCodes = new Set([
         "RES", "IR", "PUP", "SUS", "EXE", "NON", "NWT", "RET", "INA",
     ]);
-    const out: Array<Record<string, unknown>> = [];
+    // A mid-week trade can list the same player on two teams' roster rows
+    // for one week — same PK, same in-batch upsert failure as depth charts.
+    const byKey = new Map<string, Record<string, unknown>>();
     for (const r of rows) {
         if (ix.game >= 0 && (r[ix.game] ?? "").toUpperCase() !== "REG") continue;
         const pid = r[ix.gsis]?.trim();
         if (!pid || pid === "NA") continue;
         const status = (r[ix.status] ?? "").toUpperCase().trim();
         if (!inactiveCodes.has(status)) continue;
-        out.push({
-            season: Math.trunc(num(r[ix.season])),
-            week:   Math.trunc(num(r[ix.week])),
-            player_id: pid,
-            status,
-            reason: null,
-        });
+        const season = Math.trunc(num(r[ix.season]));
+        const week   = Math.trunc(num(r[ix.week]));
+        const key = `${season}|${week}|${pid}`;
+        if (byKey.has(key)) continue;
+        byKey.set(key, { season, week, player_id: pid, status, reason: null });
     }
+    const out = [...byKey.values()];
     await supa.from("inactives").delete().eq("season", year);
     await upsertChunks("inactives", out, 500, "season,week,player_id");
     return { received: rows.length, written: out.length };
