@@ -580,7 +580,10 @@ struct MatchupTabView: View {
         // Head-to-head only meaningful in real leagues with distinct owners.
         if !league.isTest, let meUID = mine.ownerID,
            let sides = resolveSides(), let opp = sides.opp, let oppUID = opp.ownerID, oppUID != meUID {
-            h2h = await app.headToHead(leagueID: league.id, meUserID: meUID, opponentUserID: oppUID)
+            h2h = await app.headToHead(
+                leagueID: league.id, meUserID: meUID, opponentUserID: oppUID,
+                myTeamID: mine.id, opponentTeamID: opp.id
+            )
         } else {
             h2h = []
         }

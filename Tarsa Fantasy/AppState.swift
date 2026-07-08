@@ -1008,9 +1008,13 @@ final class AppState {
             }
         }
 
-        // Crown the playoff champion (winner of the final), when the bracket
-        // has resolved. Falls back to nil if the postseason isn't finished.
+        // Crown the playoff champion (winner of the final). When the bracket
+        // hasn't resolved — no postseason configured, or the season was
+        // completed early — fall back to the standings leader so every
+        // archived season carries a champion.
         let bracket = Fantasy.playoffBracket(league: league, players: snap)
+        let championID   = bracket.championTeamID   ?? standings.first?.id
+        let championName = bracket.championTeamName ?? standings.first?.name
 
         let updated = try await remote.completeLeagueSeason(
             leagueID: league.id,
@@ -1018,8 +1022,8 @@ final class AppState {
             scoringLeaderTeamID: leader?.id,
             scoringLeaderTeamName: leader?.name,
             matchups: archived,
-            championTeamID: bracket.championTeamID,
-            championTeamName: bracket.championTeamName
+            championTeamID: championID,
+            championTeamName: championName
         )
         await reloadLeagues()
         return updated
@@ -1036,10 +1040,29 @@ final class AppState {
         (try? await remote.leagueHistory(leagueID: leagueID)) ?? []
     }
 
-    func headToHead(leagueID: String, meUserID: String, opponentUserID: String) async -> [HeadToHeadEntry] {
+    func headToHead(
+        leagueID: String, meUserID: String, opponentUserID: String,
+        myTeamID: String? = nil, opponentTeamID: String? = nil
+    ) async -> [HeadToHeadEntry] {
         (try? await remote.headToHead(
-            leagueID: leagueID, meUserID: meUserID, opponentUserID: opponentUserID
+            leagueID: leagueID, meUserID: meUserID, opponentUserID: opponentUserID,
+            myTeamID: myTeamID, opponentTeamID: opponentTeamID
         )) ?? []
+    }
+
+    // All-time franchise records + career head-to-head grid across the
+    // league chain, keyed on team lineage.
+    func allTimeHistory(
+        leagueID: String
+    ) async -> (records: [AllTimeFranchiseRecord], matrix: [String: [String: H2HRecord]]) {
+        let chain = await remote.chainLeagues(leagueID: leagueID)
+        guard !chain.isEmpty else { return ([], [:]) }
+        let archives = (try? await remote.leagueHistory(leagueID: leagueID)) ?? []
+        let matchups = await remote.chainMatchups(leagueID: leagueID, chain: chain)
+        return (
+            Fantasy.allTimeRecords(archives: archives, chain: chain),
+            Fantasy.headToHeadMatrix(matchups: matchups, chain: chain)
+        )
     }
 
     // MARK: - Play-by-play

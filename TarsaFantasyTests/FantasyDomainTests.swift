@@ -365,3 +365,108 @@ struct LineupTests {
         #expect(starters == ["q1"])
     }
 }
+
+// MARK: - Franchise lineage (all-time history)
+
+struct LineageTests {
+
+    /// Two-season chain: the child's teams point at their parent-season
+    /// selves through priorTeamID, so both seasons' ids resolve to the same
+    /// franchise root and records aggregate across the rollover — even when
+    /// the team changed owners between seasons.
+    @Test func allTimeRecordsAggregateAcrossRollover() {
+        let parent = league(teams: [
+            FantasyTeam(id: "A1", name: "Alpha", ownerID: "u1"),
+            FantasyTeam(id: "B1", name: "Bravo", ownerID: "u2")
+        ], schedule: [])
+        var childTeams = [
+            FantasyTeam(id: "A2", name: "Alpha II", ownerID: "u3"),   // re-owned
+            FantasyTeam(id: "B2", name: "Bravo", ownerID: nil)        // unclaimed
+        ]
+        childTeams[0].priorTeamID = "A1"
+        childTeams[1].priorTeamID = "B1"
+        var child = league(teams: childTeams, schedule: [])
+        child.parentLeagueID = parent.id
+
+        let chain = [child, parent]     // newest first
+        let roots = Fantasy.franchiseRoots(chain: chain)
+        #expect(roots["A2"] == "A1" && roots["B2"] == "B1")
+
+        let archives = [
+            LeagueSeasonArchive(
+                id: "s2", leagueID: child.id, season: 2026,
+                standings: [
+                    StandingsRow(id: "A2", name: "Alpha II", wins: 8, losses: 6, ties: 0,
+                                 pointsFor: 1400, pointsAgainst: 1300, games: 14, rank: 1),
+                    StandingsRow(id: "B2", name: "Bravo", wins: 6, losses: 8, ties: 0,
+                                 pointsFor: 1200, pointsAgainst: 1300, games: 14, rank: 2)
+                ],
+                scoringLeaderTeamID: nil, scoringLeaderTeamName: nil,
+                championTeamID: "A2", championTeamName: "Alpha II",
+                archivedAt: Date(timeIntervalSince1970: 0)
+            ),
+            LeagueSeasonArchive(
+                id: "s1", leagueID: parent.id, season: 2025,
+                standings: [
+                    StandingsRow(id: "A1", name: "Alpha", wins: 10, losses: 4, ties: 0,
+                                 pointsFor: 1500, pointsAgainst: 1200, games: 14, rank: 1),
+                    StandingsRow(id: "B1", name: "Bravo", wins: 4, losses: 10, ties: 0,
+                                 pointsFor: 1100, pointsAgainst: 1400, games: 14, rank: 2)
+                ],
+                scoringLeaderTeamID: nil, scoringLeaderTeamName: nil,
+                championTeamID: "B1", championTeamName: "Bravo",
+                archivedAt: Date(timeIntervalSince1970: 0)
+            )
+        ]
+        let records = Fantasy.allTimeRecords(archives: archives, chain: chain)
+        #expect(records.count == 2, "two franchises, not four fragmented teams")
+
+        let alpha = records.first { $0.id == "A1" }!
+        #expect(alpha.wins == 18 && alpha.losses == 10 && alpha.seasons == 2)
+        #expect(alpha.championships == 1)
+        #expect(alpha.name == "Alpha II", "newest name wins")
+
+        let bravo = records.first { $0.id == "B1" }!
+        #expect(bravo.wins == 10 && bravo.losses == 18 && bravo.championships == 1)
+    }
+
+    /// The H2H matrix keys matchups from both seasons to franchise roots,
+    /// and each cell is from the row franchise's perspective.
+    @Test func headToHeadMatrixMergesLineage() {
+        let parent = league(teams: [
+            FantasyTeam(id: "A1", name: "Alpha", ownerID: "u1"),
+            FantasyTeam(id: "B1", name: "Bravo", ownerID: "u2")
+        ], schedule: [])
+        var childTeams = [
+            FantasyTeam(id: "A2", name: "Alpha", ownerID: "u1"),
+            FantasyTeam(id: "B2", name: "Bravo", ownerID: nil)
+        ]
+        childTeams[0].priorTeamID = "A1"
+        childTeams[1].priorTeamID = "B1"
+        var child = league(teams: childTeams, schedule: [])
+        child.parentLeagueID = parent.id
+        let chain = [child, parent]
+
+        let matchups = [
+            // Parent season: A beats B, then they tie.
+            ArchivedMatchup(leagueID: parent.id, season: 2025, week: 1,
+                            homeTeamID: "A1", awayTeamID: "B1",
+                            homeUserID: "u1", awayUserID: "u2",
+                            homePoints: 100, awayPoints: 90),
+            ArchivedMatchup(leagueID: parent.id, season: 2025, week: 2,
+                            homeTeamID: "B1", awayTeamID: "A1",
+                            homeUserID: "u2", awayUserID: "u1",
+                            homePoints: 80, awayPoints: 80),
+            // Child season (new ids, B unclaimed): B beats A.
+            ArchivedMatchup(leagueID: child.id, season: 2026, week: 1,
+                            homeTeamID: "B2", awayTeamID: "A2",
+                            homeUserID: nil, awayUserID: "u1",
+                            homePoints: 120, awayPoints: 110)
+        ]
+        let grid = Fantasy.headToHeadMatrix(matchups: matchups, chain: chain)
+        let aVsB = grid["A1"]?["B1"]
+        #expect(aVsB == H2HRecord(wins: 1, losses: 1, ties: 1))
+        let bVsA = grid["B1"]?["A1"]
+        #expect(bVsA == H2HRecord(wins: 1, losses: 1, ties: 1))
+    }
+}

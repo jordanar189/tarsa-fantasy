@@ -643,7 +643,8 @@ actor RemoteService {
                     colorHex: t.colorHex,
                     abbreviation: t.abbreviation,
                     faabSpent: t.faabSpent ?? 0,
-                    keepers: t.keepers ?? []
+                    keepers: t.keepers ?? [],
+                    priorTeamID: t.priorTeamId?.uuidString
                 )
             },
             schedule: row.schedule,
@@ -2344,28 +2345,37 @@ actor RemoteService {
         }
     }
 
-    // All historical matchups between two users in the league chain that
-    // contains `leagueID`. Each entry is from `meUserID`'s perspective.
-    func headToHead(leagueID: String, meUserID: String, opponentUserID: String) async throws -> [HeadToHeadEntry] {
-        // League chain.
-        var chain: [UUID] = []
+    // Every league in the chain containing `leagueID`, newest first (walks
+    // parent_league_id upward). Powers lineage-aware history features.
+    func chainLeagues(leagueID: String) async -> [League] {
+        var chain: [League] = []
+        var seen: Set<String> = []
         var cursor: String? = leagueID
-        while let id = cursor, let uuid = UUID(uuidString: id) {
-            chain.append(uuid)
-            guard let lg = try await self.league(id: id) else { break }
+        while let id = cursor, !seen.contains(id) {
+            seen.insert(id)
+            guard let fetched = try? await self.league(id: id),
+                  let lg = fetched else { break }
+            chain.append(lg)
             cursor = lg.parentLeagueID
         }
-        guard !chain.isEmpty else { return [] }
-        guard let me = UUID(uuidString: meUserID),
-              let opp = UUID(uuidString: opponentUserID) else { return [] }
+        return chain
+    }
 
+    // Every archived matchup row across the chain, newest season first.
+    // Paginated: a long-running league's history exceeds PostgREST's
+    // 1000-row default cap.
+    func chainMatchups(leagueID: String, chain: [League]) async -> [ArchivedMatchup] {
+        let ids = chain.compactMap { UUID(uuidString: $0.id) }
+        guard !ids.isEmpty else { return [] }
         struct Row: Decodable {
+            let leagueId: UUID
             let season: Int; let week: Int
             let homeTeamId: UUID; let awayTeamId: UUID
             let homeUserId: UUID?; let awayUserId: UUID?
             let homePoints: Double; let awayPoints: Double
             enum CodingKeys: String, CodingKey {
                 case season, week
+                case leagueId     = "league_id"
                 case homeTeamId   = "home_team_id"
                 case awayTeamId   = "away_team_id"
                 case homeUserId   = "home_user_id"
@@ -2374,26 +2384,79 @@ actor RemoteService {
                 case awayPoints   = "away_points"
             }
         }
-        let rows: [Row] = (try? await client.from("league_matchups")
-            .select()
-            .in("league_id", values: chain)
-            .or("and(home_user_id.eq.\(me),away_user_id.eq.\(opp)),and(home_user_id.eq.\(opp),away_user_id.eq.\(me))")
-            .order("season", ascending: false)
-            .order("week",   ascending: true)
-            .execute().value) ?? []
+        var out: [ArchivedMatchup] = []
+        var from = 0
+        while true {
+            let page: [Row] = (try? await client.from("league_matchups")
+                .select()
+                .in("league_id", values: ids)
+                .order("season", ascending: false)
+                .order("week",   ascending: true)
+                .order("home_team_id", ascending: true)
+                .range(from: from, to: from + 999)
+                .execute().value) ?? []
+            out.append(contentsOf: page.map {
+                ArchivedMatchup(
+                    leagueID: $0.leagueId.uuidString,
+                    season: $0.season, week: $0.week,
+                    homeTeamID: $0.homeTeamId.uuidString,
+                    awayTeamID: $0.awayTeamId.uuidString,
+                    homeUserID: $0.homeUserId?.uuidString,
+                    awayUserID: $0.awayUserId?.uuidString,
+                    homePoints: $0.homePoints, awayPoints: $0.awayPoints
+                )
+            })
+            if page.count < 1000 { break }
+            from += 1000
+        }
+        return out
+    }
+
+    // All historical matchups between two franchises in the league chain
+    // that contains `leagueID`, from `meUserID`'s perspective. Matching is
+    // keyed on team lineage (prior_team_id chains) so history survives
+    // owner changes and unclaimed stretches; rows that predate the lineage
+    // column fall back to the old user-id match.
+    func headToHead(
+        leagueID: String, meUserID: String, opponentUserID: String,
+        myTeamID: String? = nil, opponentTeamID: String? = nil
+    ) async throws -> [HeadToHeadEntry] {
+        let chain = await chainLeagues(leagueID: leagueID)
+        guard !chain.isEmpty else { return [] }
+        let rows = await chainMatchups(leagueID: leagueID, chain: chain)
+
+        let roots = Fantasy.franchiseRoots(chain: chain)
+        let myF  = myTeamID.map { roots[$0] ?? $0 }
+        let oppF = opponentTeamID.map { roots[$0] ?? $0 }
 
         // Lookup opponent username (one read).
-        let oppRow: ProfileRow? = try? await client.from("profiles")
-            .select("id, username").eq("id", value: opp)
-            .single().execute().value
-        let oppName = oppRow?.username
+        var oppName: String? = nil
+        if let opp = UUID(uuidString: opponentUserID) {
+            let oppRow: ProfileRow? = try? await client.from("profiles")
+                .select("id, username").eq("id", value: opp)
+                .single().execute().value
+            oppName = oppRow?.username
+        }
 
-        return rows.map { r in
-            let iAmHome = (r.homeUserId == me)
+        return rows.compactMap { r in
+            let homeF = roots[r.homeTeamID] ?? r.homeTeamID
+            let awayF = roots[r.awayTeamID] ?? r.awayTeamID
+            let iAmHome: Bool
+            if let myF, let oppF, homeF == myF, awayF == oppF {
+                iAmHome = true
+            } else if let myF, let oppF, homeF == oppF, awayF == myF {
+                iAmHome = false
+            } else if r.homeUserID == meUserID, r.awayUserID == opponentUserID {
+                iAmHome = true
+            } else if r.homeUserID == opponentUserID, r.awayUserID == meUserID {
+                iAmHome = false
+            } else {
+                return nil
+            }
             return HeadToHeadEntry(
                 season: r.season, week: r.week,
-                myTeamID:       iAmHome ? r.homeTeamId.uuidString : r.awayTeamId.uuidString,
-                opponentTeamID: iAmHome ? r.awayTeamId.uuidString : r.homeTeamId.uuidString,
+                myTeamID:       iAmHome ? r.homeTeamID : r.awayTeamID,
+                opponentTeamID: iAmHome ? r.awayTeamID : r.homeTeamID,
                 opponentUsername: oppName,
                 myPoints:       iAmHome ? r.homePoints : r.awayPoints,
                 opponentPoints: iAmHome ? r.awayPoints : r.homePoints
@@ -3757,13 +3820,15 @@ struct TeamRow: Codable, Hashable {
     let logoUrl: String?
     let colorHex: String?
     let abbreviation: String?
-    // Optional: columns land with the FAAB / keeper migrations; older rows
-    // decode nil.
+    // Optional: columns land with the FAAB / keeper / lineage migrations;
+    // older rows decode nil.
     let faabSpent: Int?
     let keepers: [String]?
+    let priorTeamId: UUID?
 
     enum CodingKeys: String, CodingKey {
         case id, name, roster, starters, ir, taxi, division, abbreviation, keepers
+        case priorTeamId   = "prior_team_id"
         case leagueId      = "league_id"
         case ownerId       = "owner_id"
         case sortIndex     = "sort_index"
@@ -3794,6 +3859,7 @@ struct TeamRow: Codable, Hashable {
         // updates all computed from 0.
         faabSpent = try c.decodeIfPresent(Int.self, forKey: .faabSpent)
         keepers   = try c.decodeIfPresent([String].self, forKey: .keepers)
+        priorTeamId = try c.decodeIfPresent(UUID.self, forKey: .priorTeamId)
     }
 }
 

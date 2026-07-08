@@ -739,6 +739,10 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
     // next draft. Chosen pre-draft via set_keepers; start_draft trims the
     // roster down to these. Empty in leagues with keeperCount == 0.
     var keepers: [String]
+    // Lineage: the previous season's team this one was rolled over from
+    // (nil for a league's first season). Chains across rollovers so
+    // franchise history survives owner changes and unclaimed stretches.
+    var priorTeamID: String?
 
     init(id: String, name: String, roster: [String] = [],
          starters: [String] = [], ownerID: String? = nil,
@@ -746,17 +750,18 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
          division: Int? = nil,
          logoURL: String? = nil, colorHex: String? = nil,
          abbreviation: String? = nil, faabSpent: Int = 0,
-         keepers: [String] = []) {
+         keepers: [String] = [], priorTeamID: String? = nil) {
         self.id = id; self.name = name; self.roster = roster
         self.starters = starters; self.ownerID = ownerID
         self.ir = ir; self.taxi = taxi; self.weeklyLineups = weeklyLineups; self.division = division
         self.logoURL = logoURL; self.colorHex = colorHex
         self.abbreviation = abbreviation; self.faabSpent = faabSpent
         self.keepers = keepers
+        self.priorTeamID = priorTeamID
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, roster, starters, ownerID, ir, taxi, weeklyLineups, division, logoURL, colorHex, abbreviation, faabSpent, keepers
+        case id, name, roster, starters, ownerID, ir, taxi, weeklyLineups, division, logoURL, colorHex, abbreviation, faabSpent, keepers, priorTeamID
     }
 
     init(from decoder: Decoder) throws {
@@ -775,6 +780,7 @@ struct FantasyTeam: Codable, Identifiable, Hashable {
         abbreviation = try c.decodeIfPresent(String.self, forKey: .abbreviation)
         faabSpent = try c.decodeIfPresent(Int.self, forKey: .faabSpent) ?? 0
         keepers   = try c.decodeIfPresent([String].self, forKey: .keepers) ?? []
+        priorTeamID = try c.decodeIfPresent(String.self, forKey: .priorTeamID)
     }
 
     // The short tag for compact contexts (scoreboard, bracket), or nil when
@@ -1078,6 +1084,55 @@ struct LeagueMatchupArchive: Hashable {
     let awayUserID: String?
     let homePoints: Double
     let awayPoints: Double
+}
+
+// One row read back from the league_matchups history across a league chain.
+struct ArchivedMatchup: Hashable {
+    let leagueID: String
+    let season: Int
+    let week: Int
+    let homeTeamID: String
+    let awayTeamID: String
+    let homeUserID: String?
+    let awayUserID: String?
+    let homePoints: Double
+    let awayPoints: Double
+}
+
+// Career aggregate for one franchise (team lineage across rollovers) over
+// every archived season. Built by Fantasy.allTimeRecords.
+struct AllTimeFranchiseRecord: Identifiable, Hashable {
+    // Franchise root: the oldest team id in the lineage chain.
+    let id: String
+    // Most recent team name seen for the franchise.
+    let name: String
+    let ownerID: String?
+    let seasons: Int
+    let wins: Int
+    let losses: Int
+    let ties: Int
+    let pointsFor: Double
+    let championships: Int
+
+    var winPct: Double {
+        let games = wins + losses + ties
+        guard games > 0 else { return 0 }
+        return (Double(wins) + 0.5 * Double(ties)) / Double(games)
+    }
+    var record: String {
+        ties > 0 ? "\(wins)-\(losses)-\(ties)" : "\(wins)-\(losses)"
+    }
+}
+
+// Career head-to-head tally between two franchises, from the row
+// franchise's perspective.
+struct H2HRecord: Hashable {
+    var wins: Int = 0
+    var losses: Int = 0
+    var ties: Int = 0
+    var label: String {
+        ties > 0 ? "\(wins)-\(losses)-\(ties)" : "\(wins)-\(losses)"
+    }
 }
 
 // One mirrored ESPN headline (player_news, synced hourly). playerIDs are
