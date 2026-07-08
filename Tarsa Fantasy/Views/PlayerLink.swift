@@ -66,3 +66,84 @@ extension EnvironmentValues {
         set { self[PlayerProfilePresenterKey.self] = newValue }
     }
 }
+
+// MARK: - NFL team links
+
+// The team twin of `.playerLink`: makes an NFL team abbreviation (or logo)
+// tap-to-open TeamProfileView. Same presenter/host split — screens that are
+// themselves sheets add `.hostsTeamProfileSheet()`.
+struct TeamLinkModifier: ViewModifier {
+    @Environment(AppState.self) private var app
+    @Environment(\.teamProfilePresenter) private var presenter
+    let abbr: String?
+
+    func body(content: Content) -> some View {
+        let active = !(abbr ?? "").isEmpty
+        return content
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard active, let abbr else { return }
+                if let presenter { presenter(abbr) } else { app.showTeam(abbr) }
+            }
+            .accessibilityAddTraits(active ? .isButton : [])
+    }
+}
+
+extension View {
+    func teamLink(_ abbr: String?) -> some View {
+        modifier(TeamLinkModifier(abbr: abbr))
+    }
+
+    func hostsTeamProfileSheet() -> some View {
+        modifier(TeamProfileSheetHost())
+    }
+}
+
+private struct TeamProfileSheetHost: ViewModifier {
+    @State private var abbr: String?
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.teamProfilePresenter) { abbr = $0 }
+            .sheet(item: $abbr.asIdentifiable) { id in
+                TeamProfileLoaderView(abbr: id.id)
+            }
+    }
+}
+
+// Resolves an abbreviation to its NFLTeamMeta (cached in the data actor)
+// before showing the profile — links only carry the abbr string.
+struct TeamProfileLoaderView: View {
+    @Environment(AppState.self) private var app
+    let abbr: String
+
+    @State private var meta: NFLTeamMeta? = nil
+
+    var body: some View {
+        Group {
+            if let meta {
+                TeamProfileView(team: meta)
+            } else {
+                ZStack {
+                    FFColor.bg.ignoresSafeArea()
+                    ProgressView().tint(FFColor.accent)
+                }
+            }
+        }
+        .task(id: abbr) {
+            meta = await app.nflTeams().first(where: { $0.abbr == abbr })
+        }
+        .presentationDetents([.large])
+    }
+}
+
+private struct TeamProfilePresenterKey: EnvironmentKey {
+    static let defaultValue: ((String) -> Void)? = nil
+}
+
+extension EnvironmentValues {
+    var teamProfilePresenter: ((String) -> Void)? {
+        get { self[TeamProfilePresenterKey.self] }
+        set { self[TeamProfilePresenterKey.self] = newValue }
+    }
+}

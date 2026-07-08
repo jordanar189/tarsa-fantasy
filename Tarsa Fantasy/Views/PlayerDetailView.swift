@@ -105,6 +105,9 @@ struct PlayerDetailView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+            // This screen is itself a sheet — host the team profile locally
+            // so the header's team abbreviation can link out.
+            .hostsTeamProfileSheet()
             .navigationTitle(player?.name ?? "Player")
             .navigationBarTitleDisplayMode(.inline)
             .leagueSwitcher()
@@ -278,6 +281,7 @@ struct PlayerDetailView: View {
                     HStack(spacing: 6) {
                         PositionPill(position: p.position)
                         Text(p.team).font(.ffCaption).foregroundStyle(FFColor.textSecondary)
+                            .teamLink(p.team)
                         if let n = p.profile?.jerseyNumber {
                             Text("· #\(n)").font(.ffCaption).foregroundStyle(FFColor.textTertiary)
                         }

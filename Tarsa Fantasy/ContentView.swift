@@ -49,6 +49,9 @@ struct ContentView: View {
             PlayerDetailView(playerID: id.id)
                 .presentationDetents([.large])
         }
+        .sheet(item: $app.presentedTeamAbbr.asIdentifiable) { id in
+            TeamProfileLoaderView(abbr: id.id)
+        }
     }
 
     private var mainTabs: some View {

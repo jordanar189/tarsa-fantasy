@@ -217,6 +217,8 @@ struct TradesView: View {
             } else {
                 ForEach(ids, id: \.self) { pid in
                     let p = players[pid]
+                    // The card's tap opens the trade detail; the player row is
+                    // a profile link (deepest gesture wins).
                     HStack(spacing: 4) {
                         if let p {
                             PlayerAvatar(url: p.headshotURL, fallback: p.name.initialsFromName, size: 24)
@@ -227,6 +229,7 @@ struct TradesView: View {
                             .foregroundStyle(FFColor.textPrimary)
                             .lineLimit(1)
                     }
+                    .playerLink(pid)
                 }
             }
         }

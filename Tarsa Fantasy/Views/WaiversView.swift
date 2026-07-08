@@ -208,6 +208,7 @@ struct WaiversView: View {
                             .font(.ffCaption)
                             .foregroundStyle(FFColor.textTertiary)
                         Text(drop.name).font(.ffCaption).foregroundStyle(FFColor.textSecondary).lineLimit(1)
+                            .playerLink(claim.dropPlayerID)
                     }
                 }
             }

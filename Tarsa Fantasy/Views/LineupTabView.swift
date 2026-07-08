@@ -403,6 +403,9 @@ struct LineupTabView: View {
         let pid = idx < starters.count ? starters[idx] : ""
         let player = pid.isEmpty ? nil : leaguePlayers[pid]
         let locked = !pid.isEmpty && context.isLocked(pid)
+        // The row button edits the slot; the avatar+name region is a player
+        // link (inner gesture wins). No `.disabled` — that would also kill
+        // the inner link on locked rows, which used to make them dead taps.
         return Button {
             if canEdit && !locked { pickingSlot = idx }
         } label: {
@@ -412,11 +415,14 @@ struct LineupTabView: View {
                     .foregroundStyle(FFColor.positionTint(slot.label))
                     .frame(width: 38, alignment: .leading)
                 if let player {
-                    PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 34)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(name(pid, player)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
-                        contextLine(pid: pid, player: player)
+                    HStack(spacing: FFSpace.m) {
+                        PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 34)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(name(pid, player)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                            contextLine(pid: pid, player: player)
+                        }
                     }
+                    .playerLink(pid)
                 } else {
                     emptyDot
                     Text("Empty").font(.ffBody).foregroundStyle(FFColor.textTertiary)
@@ -433,7 +439,6 @@ struct LineupTabView: View {
             .ffHairlineBottom()
         }
         .buttonStyle(.plain)
-        .disabled(!canEdit || locked)
     }
 
     // MARK: - Bench
@@ -724,15 +729,19 @@ struct LineupTabView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { pickingSlot = nil }.foregroundStyle(FFColor.accent) } }
+            .hostsPlayerProfileSheet()
         }
         .presentationDetents([.medium, .large])
     }
 
+    // Tapping the row picks the player for the slot; the avatar alone is the
+    // profile link so the primary action keeps the big tap target.
     private func candidateRow(_ pid: String) -> some View {
         let player = leaguePlayers[pid]
         return HStack(spacing: FFSpace.m) {
             if let player {
                 PlayerAvatar(url: player.headshotURL, fallback: player.name.initialsFromName, size: 32)
+                    .playerLink(pid)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name(pid, player)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
                     contextLine(pid: pid, player: player)

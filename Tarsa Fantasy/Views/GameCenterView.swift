@@ -203,9 +203,12 @@ struct GameCenterView: View {
             } else {
                 Circle().fill(FFColor.surfaceElevated).frame(width: 44, height: 44)
             }
+            // The card tap opens the game; the abbreviation alone links to
+            // the team profile (inner gesture wins).
             Text(abbr)
                 .font(.ffCaption.bold())
                 .foregroundStyle(FFColor.textPrimary)
+                .teamLink(abbr)
             if let s = score, status != .scheduled {
                 Text("\(s)")
                     .font(.ffStatLarge)
