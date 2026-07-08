@@ -391,6 +391,40 @@ struct WinBar: View {
     }
 }
 
+// Win-probability movement: a small sparkline of live samples under the
+// WinBar. History is session-local (0...1 per sample); the 50% guide line
+// shows which side of even the swing sits on.
+struct WinProbTrend: View {
+    let history: [Double]
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            let n = history.count
+            ZStack {
+                Path { p in
+                    p.move(to: CGPoint(x: 0, y: h * 0.5))
+                    p.addLine(to: CGPoint(x: w, y: h * 0.5))
+                }
+                .stroke(FFColor.border, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                if n >= 2 {
+                    Path { p in
+                        for (i, v) in history.enumerated() {
+                            let x = w * CGFloat(i) / CGFloat(n - 1)
+                            let y = h * (1 - CGFloat(max(0, min(1, v))))
+                            if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
+                            else      { p.addLine(to: CGPoint(x: x, y: y)) }
+                        }
+                    }
+                    .stroke(FFColor.accent, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                }
+            }
+        }
+        .frame(height: 28)
+        .accessibilityLabel("Win probability trend")
+    }
+}
+
 // MARK: - Button styles
 
 // The styling lives in ButtonStyle.makeBody (applied to configuration.label)

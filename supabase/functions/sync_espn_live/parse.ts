@@ -43,6 +43,29 @@ export interface EspnSummary {
         team?: { abbreviation?: string };
         type?: { text?: string };
     }>;
+    drives?: {
+        previous?: EspnDrive[];
+        current?: EspnDrive;
+    };
+}
+
+export interface EspnDrive {
+    id?: string | number;
+    team?: { abbreviation?: string };
+    plays?: EspnPlay[];
+}
+
+export interface EspnPlay {
+    id?: string | number;
+    text?: string;
+    period?: { number?: number };
+    clock?: { displayValue?: string };
+    type?: { text?: string };
+    scoringPlay?: boolean;
+    awayScore?: number;
+    homeScore?: number;
+    start?: { down?: number; distance?: number; yardsToEndzone?: number };
+    end?: { yardsToEndzone?: number };
 }
 
 export interface Side { team: string; homeAway: string; score: number }
@@ -248,3 +271,81 @@ export function synthesizeDST(
 }
 
 function round2(x: number): number { return Math.round(x * 100) / 100; }
+
+// ---- Live play-by-play from the summary's drives ----
+
+// Synthetic play ids for live rows: far above nflverse's small per-game
+// ids so there's no collision space, still int4-safe, and sweepable with
+// one `play_id >= LIVE_PLAY_ID_BASE` delete when the game goes final (the
+// authoritative nflverse rows land the next morning).
+export const LIVE_PLAY_ID_BASE = 9_000_000;
+
+export interface LivePlayRow {
+    game_id: string; play_id: number; season: number; week: number;
+    home_team: string; away_team: string;
+    posteam: string | null; defteam: string | null;
+    qtr: number | null; game_seconds_remaining: number | null;
+    down: number | null; ydstogo: number | null; yardline_100: number | null;
+    posteam_score: number | null; defteam_score: number | null;
+    play_type: string | null; description: string | null;
+    touchdown: boolean;
+}
+
+function clockSeconds(display: string | undefined): number | null {
+    const m = /^(\d+):(\d{2})$/.exec((display ?? "").trim());
+    if (!m) return null;
+    return Number(m[1]) * 60 + Number(m[2]);
+}
+
+export function parseLivePlays(
+    summary: EspnSummary, gameID: string, season: number, week: number,
+    homeAbbr: string, awayAbbr: string,
+): LivePlayRow[] {
+    const drives: EspnDrive[] = [
+        ...(summary.drives?.previous ?? []),
+        ...(summary.drives?.current ? [summary.drives.current] : []),
+    ];
+    const out: LivePlayRow[] = [];
+    let seq = 0;
+    for (const d of drives) {
+        const pos = d.team?.abbreviation ? fixTeam(d.team.abbreviation) : null;
+        const def = pos ? (pos === homeAbbr ? awayAbbr : homeAbbr) : null;
+        for (const p of d.plays ?? []) {
+            seq += 1;
+            const qtr = p.period?.number ?? null;
+            const cs = clockSeconds(p.clock?.displayValue);
+            const gsr = qtr != null && qtr <= 4 && cs != null
+                ? (4 - qtr) * 900 + cs
+                : null;
+            out.push({
+                game_id: gameID, play_id: LIVE_PLAY_ID_BASE + seq, season, week,
+                home_team: homeAbbr, away_team: awayAbbr,
+                posteam: pos, defteam: def,
+                qtr, game_seconds_remaining: gsr,
+                down: p.start?.down ?? null,
+                ydstogo: p.start?.distance ?? null,
+                yardline_100: p.start?.yardsToEndzone ?? null,
+                posteam_score: (pos === homeAbbr ? p.homeScore : p.awayScore) ?? null,
+                defteam_score: (pos === homeAbbr ? p.awayScore : p.homeScore) ?? null,
+                play_type: p.type?.text?.toLowerCase() ?? null,
+                description: p.text ?? null,
+                touchdown: p.scoringPlay === true && /touchdown/i.test(p.text ?? ""),
+            });
+        }
+    }
+    return out;
+}
+
+// Red-zone state from the current drive: the possessing team + drive id
+// when the latest play snapshot has the ball inside the opponent's 20.
+export function currentRedZone(
+    summary: EspnSummary
+): { team: string; driveID: string } | null {
+    const d = summary.drives?.current;
+    if (!d?.team?.abbreviation || d.id == null) return null;
+    const plays = d.plays ?? [];
+    const last = plays[plays.length - 1];
+    const ytez = last?.end?.yardsToEndzone ?? last?.start?.yardsToEndzone;
+    if (ytez == null || ytez > 20 || ytez <= 0) return null;
+    return { team: fixTeam(d.team.abbreviation), driveID: String(d.id) };
+}
