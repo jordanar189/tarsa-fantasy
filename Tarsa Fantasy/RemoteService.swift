@@ -2421,8 +2421,7 @@ actor RemoteService {
         var cursor: String? = leagueID
         while let id = cursor, !seen.contains(id) {
             seen.insert(id)
-            guard let fetched = try? await self.league(id: id),
-                  let lg = fetched else { break }
+            guard let lg = try? await self.league(id: id) else { break }
             chain.append(lg)
             cursor = lg.parentLeagueID
         }
