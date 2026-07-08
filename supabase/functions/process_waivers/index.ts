@@ -95,7 +95,9 @@ async function loadDueLeagues(now: Date): Promise<LeagueRow[]> {
         "last_waivers_run_at, commissioner_approval, waiver_mode, faab_budget, " +
         "waiver_period_hours, roster_config, is_test, season_completed"
     );
-    if (error) throw error;
+    // PostgrestError is a plain object — thrown as-is it logs as
+    // "[object Object]", which hid a missing-column failure for hours.
+    if (error) throw new Error(`loadDueLeagues: ${error.message}`);
     const all = (data ?? []) as LeagueRow[];
     return all.filter(l => {
         // Sim leagues run on simulated time; completed seasons are frozen.
