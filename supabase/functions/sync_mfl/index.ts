@@ -155,11 +155,36 @@ async function syncInjuries(resolve: (id: string) => string | null) {
             updated_at: new Date().toISOString(),
         }];
     });
+    // Capture the previous snapshot so status changes can push to the
+    // owners rostering the player (skipped when the table is empty — a
+    // first run would otherwise notify for every injury in the league).
+    const prev = new Map<string, string>();
+    for (let from = 0; ; from += 1000) {
+        const { data: page } = await supa.from("injuries")
+            .select("player_id, status")
+            .order("player_id")
+            .range(from, from + 999);
+        if (!page || page.length === 0) break;
+        for (const r of page as Array<{ player_id: string; status: string }>) {
+            prev.set(r.player_id, r.status);
+        }
+        if (page.length < 1000) break;
+    }
+
     // Snapshot semantics: wipe then insert.
     await supa.from("injuries").delete().neq("player_id", "");
     if (out.length > 0) {
         const { error } = await supa.from("injuries").insert(out);
         if (error) throw new Error(`injuries insert: ${error.message}`);
+    }
+
+    if (prev.size > 0) {
+        const changed = out.filter(r => prev.get(r.player_id) !== r.status);
+        try {
+            await notifyInjuryChanges(changed);
+        } catch (err) {
+            console.error(`injury push: ${err}`);   // never fail the sync over pushes
+        }
     }
     // Also accumulate into injury_history at the current NFL week so future
     // simulations of *this* season have the same information environment.
@@ -178,6 +203,61 @@ async function syncInjuries(resolve: (id: string) => string | null) {
         if (error) console.error(`injury_history upsert: ${error.message}`);
     }
     return { received: rows.length, written: out.length, history_week: week };
+}
+
+// Queue a push (via the push_events outbox, drained by send_push) to every
+// owner rostering a player whose injury status just changed, across active
+// non-test leagues. One push per (owner, player) even when rostered in
+// several leagues.
+async function notifyInjuryChanges(
+    changed: Array<{ player_id: string; status: string; details: string | null }>
+) {
+    if (changed.length === 0) return;
+    // Cut-day style bulk swings are league news, not personal alerts — bail
+    // rather than blast everyone.
+    if (changed.length > 150) {
+        console.error(`injury push: ${changed.length} changes, skipping as bulk`);
+        return;
+    }
+
+    const names = new Map<string, string>();
+    const ids = changed.map(c => c.player_id);
+    for (let i = 0; i < ids.length; i += 200) {
+        const { data } = await supa.from("players_cache")
+            .select("id, name")
+            .in("id", ids.slice(i, i + 200));
+        for (const r of (data ?? []) as Array<{ id: string; name: string }>) {
+            names.set(r.id, r.name);
+        }
+    }
+
+    const events: Array<{ user_id: string; title: string; body: string; deep_link: string }> = [];
+    const seen = new Set<string>();
+    for (const c of changed) {
+        const { data: teams } = await supa.from("teams")
+            .select("owner_id, league_id, leagues!inner(is_test, season_completed)")
+            .contains("roster", [c.player_id])
+            .not("owner_id", "is", null)
+            .eq("leagues.is_test", false)
+            .eq("leagues.season_completed", false);
+        for (const t of (teams ?? []) as Array<{ owner_id: string; league_id: string }>) {
+            const key = `${t.owner_id}:${c.player_id}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const name = names.get(c.player_id) ?? c.player_id;
+            const detail = c.details ? ` (${c.details})` : "";
+            events.push({
+                user_id: t.owner_id,
+                title: "Injury update",
+                body: `${name} is now ${c.status}${detail}.`,
+                deep_link: `tarsafantasy://league/${t.league_id}`,
+            });
+        }
+    }
+    for (let i = 0; i < events.length; i += 200) {
+        const { error } = await supa.from("push_events").insert(events.slice(i, i + 200));
+        if (error) console.error(`push_events insert: ${error.message}`);
+    }
 }
 
 async function syncTrending(resolve: (id: string) => string | null) {

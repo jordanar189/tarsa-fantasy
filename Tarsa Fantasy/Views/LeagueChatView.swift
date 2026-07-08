@@ -40,6 +40,10 @@ struct LeagueChatView: View {
             composer
         }
         .background(FFColor.bg)
+        // Local player-profile host: chat is reached both from the league
+        // shell and (pushed) from the chat inbox, where the root host lives
+        // under a different stack and player chips silently no-op'd.
+        .hostsPlayerProfileSheet()
         .task(id: league.id) {
             await initialLoad()
         }

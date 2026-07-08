@@ -138,9 +138,9 @@ struct GameCenterView: View {
             Image(systemName: "sportscourt")
                 .font(.system(size: 28, weight: .light))
                 .foregroundStyle(FFColor.textTertiary)
-            Text("No schedule loaded")
+            Text("No schedule yet")
                 .font(.ffHeadline).foregroundStyle(FFColor.textPrimary)
-            Text("Run sync_schedules on the server to populate this view.")
+            Text("The NFL schedule for this season hasn't been published yet. Pull to refresh or check back soon.")
                 .font(.ffCaption).foregroundStyle(FFColor.textSecondary)
                 .multilineTextAlignment(.center)
         }
@@ -203,9 +203,12 @@ struct GameCenterView: View {
             } else {
                 Circle().fill(FFColor.surfaceElevated).frame(width: 44, height: 44)
             }
+            // The card tap opens the game; the abbreviation alone links to
+            // the team profile (inner gesture wins).
             Text(abbr)
                 .font(.ffCaption.bold())
                 .foregroundStyle(FFColor.textPrimary)
+                .teamLink(abbr)
             if let s = score, status != .scheduled {
                 Text("\(s)")
                     .font(.ffStatLarge)

@@ -978,11 +978,16 @@ struct LeagueSeasonArchive: Identifiable, Hashable {
     let championTeamID: String?
     let championTeamName: String?
     let archivedAt: Date
+    // Archived team id → owner user id, resolved across the whole league
+    // chain. Standings rows reference the ARCHIVED season's team ids (each
+    // rollover mints new ones), so matching against the current league's
+    // teams silently fails for past seasons.
+    let ownerByTeamID: [String: String]
 
     init(id: String, leagueID: String, season: Int, standings: [StandingsRow],
          scoringLeaderTeamID: String?, scoringLeaderTeamName: String?,
          championTeamID: String? = nil, championTeamName: String? = nil,
-         archivedAt: Date) {
+         archivedAt: Date, ownerByTeamID: [String: String] = [:]) {
         self.id = id; self.leagueID = leagueID; self.season = season
         self.standings = standings
         self.scoringLeaderTeamID = scoringLeaderTeamID
@@ -990,6 +995,7 @@ struct LeagueSeasonArchive: Identifiable, Hashable {
         self.championTeamID = championTeamID
         self.championTeamName = championTeamName
         self.archivedAt = archivedAt
+        self.ownerByTeamID = ownerByTeamID
     }
 }
 

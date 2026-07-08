@@ -18,6 +18,15 @@ final class AppState {
         presentedPlayerID = playerID
     }
 
+    // Globally-presented NFL team profile (the team twin of showPlayer).
+    // Carries the abbreviation; the host resolves it to NFLTeamMeta.
+    var presentedTeamAbbr: String? = nil
+
+    func showTeam(_ abbr: String?) {
+        guard let abbr, !abbr.isEmpty else { return }
+        presentedTeamAbbr = abbr
+    }
+
     // The league currently in focus. nil = show the league overview/landing
     // screen; non-nil = the tabbed (NFL + League) experience for this league.
     // selectedLeague holds the fully-loaded League so league-specific numbers

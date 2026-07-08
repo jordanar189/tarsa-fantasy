@@ -2140,11 +2140,19 @@ actor RemoteService {
     // archived (league, season) snapshot, newest season first.
     func leagueHistory(leagueID: String) async throws -> [LeagueSeasonArchive] {
         // Collect the chain of league_ids: this league + every ancestor.
+        // Rollover mints new team IDs each season, so archived standings
+        // reference the ARCHIVED league's teams — capture each chain
+        // league's team → owner mapping while walking so the history view
+        // can resolve "YOU" and head-to-head against the right identity.
         var chain: [UUID] = []
+        var ownerByTeamID: [String: String] = [:]
         var cursor: String? = leagueID
         while let id = cursor, let uuid = UUID(uuidString: id) {
             chain.append(uuid)
             guard let lg = try await self.league(id: id) else { break }
+            for team in lg.teams {
+                if let owner = team.ownerID { ownerByTeamID[team.id] = owner }
+            }
             cursor = lg.parentLeagueID
         }
         if chain.isEmpty { return [] }
@@ -2196,7 +2204,8 @@ actor RemoteService {
                 scoringLeaderTeamName: r.scoringLeaderTeamName,
                 championTeamID: r.championTeamId?.uuidString,
                 championTeamName: r.championTeamName,
-                archivedAt: r.archivedAt
+                archivedAt: r.archivedAt,
+                ownerByTeamID: ownerByTeamID
             )
         }
     }

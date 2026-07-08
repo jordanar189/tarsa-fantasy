@@ -270,9 +270,11 @@ struct ProposeTradeView: View {
                 parentTradeID: counterOf?.id
             )
             onDone(trade)
+            Haptics.success()
             dismiss()
         } catch {
             self.error = error.localizedDescription
+            Haptics.error()
         }
     }
 }

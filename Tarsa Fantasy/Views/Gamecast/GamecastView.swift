@@ -290,7 +290,7 @@ struct GamecastView: View {
                 .foregroundStyle(FFColor.textTertiary)
             Text("No plays to chart")
                 .font(.ffHeadline).foregroundStyle(FFColor.textPrimary)
-            Text("Run sync_pbp for this week to enable the Gamecast.")
+            Text("Play-by-play isn't available for this game yet. It usually lands shortly after kickoff — pull to refresh.")
                 .font(.ffCaption).foregroundStyle(FFColor.textSecondary)
                 .multilineTextAlignment(.center)
         }

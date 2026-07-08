@@ -304,8 +304,11 @@ struct MatchupTabView: View {
                 if expanded.contains(e.playerID) { expanded.remove(e.playerID) } else { expanded.insert(e.playerID) }
             } label: {
                 HStack(spacing: FFSpace.s) {
+                    // Row tap expands the box score; the avatar is the
+                    // profile link (inner gesture wins over the button).
                     if alignment == .leading {
                         PlayerAvatar(url: e.headshotURL, fallback: e.name.initialsFromName, size: 30)
+                            .playerLink(e.playerID)
                     }
                     VStack(alignment: alignment, spacing: 3) {
                         Text(displayName(e)).font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
@@ -324,6 +327,7 @@ struct MatchupTabView: View {
                     .frame(maxWidth: .infinity)
                     if alignment == .trailing {
                         PlayerAvatar(url: e.headshotURL, fallback: e.name.initialsFromName, size: 30)
+                            .playerLink(e.playerID)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: frameAlign)

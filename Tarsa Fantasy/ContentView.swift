@@ -49,6 +49,9 @@ struct ContentView: View {
             PlayerDetailView(playerID: id.id)
                 .presentationDetents([.large])
         }
+        .sheet(item: $app.presentedTeamAbbr.asIdentifiable) { id in
+            TeamProfileLoaderView(abbr: id.id)
+        }
     }
 
     private var mainTabs: some View {
@@ -111,6 +114,7 @@ struct LeagueShellView: View {
     @Environment(AppState.self) private var app
 
     @State private var chatExpanded = false
+    @State private var showingInbox = false
     @State private var isDragging = false
     @State private var dragOffset: CGFloat = 0   // live drag: positive = dragged up
     @State private var keyboardHeight: CGFloat = 0
@@ -245,13 +249,17 @@ struct LeagueShellView: View {
             bottomTrailingRadius: 0, topTrailingRadius: 18
         )
         return VStack(spacing: 0) {
-            LeagueChatTopBar(onClose: chatExpanded ? { collapse() } : nil)
+            LeagueChatTopBar(
+                onClose: chatExpanded ? { collapse() } : nil,
+                onOpenInbox: { showingInbox = true }
+            )
                 .contentShape(Rectangle())
                 .onTapGesture { chatExpanded ? collapse() : expand() }
                 .gesture(dragGesture(collapseDist: collapseDist))
             Divider().background(FFColor.border)
             LeagueChatView(league: lg)
         }
+        .sheet(isPresented: $showingInbox) { ChatView() }
         .frame(height: height, alignment: .top)
         .frame(maxWidth: .infinity)
         .background(FFColor.surface)
@@ -355,6 +363,7 @@ struct CustomTabBar: View {
 // `onClose` is nil for the peek and set when expanded (collapse button).
 struct LeagueChatTopBar: View {
     var onClose: (() -> Void)? = nil
+    var onOpenInbox: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 8) {
@@ -370,6 +379,18 @@ struct LeagueChatTopBar: View {
                     .font(.ffHeadline)
                     .foregroundStyle(FFColor.textPrimary)
                 Spacer()
+                // Direct line to the full inbox (DMs + other leagues) — the
+                // only other path is buried in the all-leagues overview.
+                if let onOpenInbox {
+                    Button(action: onOpenInbox) {
+                        Image(systemName: "envelope")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(FFColor.textSecondary)
+                            .padding(.trailing, onClose != nil ? FFSpace.s : 0)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Messages")
+                }
                 if let onClose {
                     Button(action: onClose) {
                         Image(systemName: "chevron.down")

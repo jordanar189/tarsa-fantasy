@@ -12,7 +12,8 @@ struct TeamRosterSheet: View {
 
     let league: League
     let team: FantasyTeam
-    let onEdit: () -> Void
+    // nil = read-only context (e.g. playoff bracket) — no edit affordance.
+    var onEdit: (() -> Void)? = nil
     var onCustomize: (() -> Void)? = nil
 
     var body: some View {
@@ -90,7 +91,7 @@ struct TeamRosterSheet: View {
             // window, no claims), and the server-side roster guard now
             // rejects raw owner writes anyway. Owners manage rosters through
             // add/drop, waivers, trades, and the draft.
-            if isCommish {
+            if isCommish, let onEdit {
                 Button {
                     dismiss()
                     onEdit()

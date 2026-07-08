@@ -67,6 +67,8 @@ struct GameDetailView: View {
                 }
                 .refreshable { await refresh() }
             }
+            // This screen is itself a sheet — host the team profile locally.
+            .hostsTeamProfileSheet()
             .navigationTitle("\(game.away) @ \(game.home)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
@@ -157,10 +159,12 @@ struct GameDetailView: View {
                     else { Color.clear }
                 }
                 .frame(width: 44, height: 44)
+                .teamLink(abbr)
             }
             Text(abbr)
                 .font(.ffCaption.bold())
                 .foregroundStyle(FFColor.textPrimary)
+                .teamLink(abbr)
             if let s = score, liveGame.status != .scheduled {
                 Text("\(s)").font(.ffStatLarge)
                     .foregroundStyle(winning ? FFColor.accent : FFColor.textPrimary)

@@ -8,6 +8,9 @@ struct PlayoffBracketView: View {
     @Environment(AppState.self) private var app
     let league: League
 
+    // Tapping a bracket/seed row opens that team's roster (read-only).
+    @State private var rosterTeam: FantasyTeam? = nil
+
     private var players: [String: Player] {
         Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
     }
@@ -39,6 +42,9 @@ struct PlayoffBracketView: View {
                 }
                 seedsCard(bracket.seeds)
             }
+        }
+        .sheet(item: $rosterTeam) { team in
+            TeamRosterSheet(league: league, team: team)
         }
     }
 
@@ -98,7 +104,17 @@ struct PlayoffBracketView: View {
 
     private func sideRow(_ side: PlayoffSide, isWinner: Bool, isLoser: Bool = false) -> some View {
         let team = teamByID(side.teamID)
-        return HStack(spacing: FFSpace.s) {
+        return Button {
+            if let team { rosterTeam = team }
+        } label: {
+            sideRowLabel(side, team: team, isWinner: isWinner, isLoser: isLoser)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func sideRowLabel(_ side: PlayoffSide, team: FantasyTeam?,
+                              isWinner: Bool, isLoser: Bool) -> some View {
+        HStack(spacing: FFSpace.s) {
             if let seed = side.seed {
                 Text("\(seed)")
                     .font(.ffMicro.bold())
@@ -137,26 +153,31 @@ struct PlayoffBracketView: View {
             Text("SEEDS").ffEyebrow()
             VStack(spacing: 0) {
                 ForEach(seeds) { s in
-                    HStack(spacing: FFSpace.s) {
-                        Text("\(s.seed)")
-                            .font(.ffStatSmall)
-                            .foregroundStyle(s.seed == 1 ? FFColor.accent : FFColor.textTertiary)
-                            .frame(width: 24, alignment: .leading)
-                        if let team = teamByID(s.teamID) { TeamCrestView(team: team, size: 24) }
-                        Text(s.teamName)
-                            .font(.ffBody)
-                            .foregroundStyle(FFColor.textPrimary)
-                            .lineLimit(1)
-                        if s.isDivisionWinner {
-                            Text("DIV").font(.ffMicro.bold())
-                                .padding(.horizontal, 5).padding(.vertical, 2)
-                                .background(FFColor.positive.opacity(0.18), in: Capsule())
-                                .foregroundStyle(FFColor.positive)
+                    Button {
+                        if let team = teamByID(s.teamID) { rosterTeam = team }
+                    } label: {
+                        HStack(spacing: FFSpace.s) {
+                            Text("\(s.seed)")
+                                .font(.ffStatSmall)
+                                .foregroundStyle(s.seed == 1 ? FFColor.accent : FFColor.textTertiary)
+                                .frame(width: 24, alignment: .leading)
+                            if let team = teamByID(s.teamID) { TeamCrestView(team: team, size: 24) }
+                            Text(s.teamName)
+                                .font(.ffBody)
+                                .foregroundStyle(FFColor.textPrimary)
+                                .lineLimit(1)
+                            if s.isDivisionWinner {
+                                Text("DIV").font(.ffMicro.bold())
+                                    .padding(.horizontal, 5).padding(.vertical, 2)
+                                    .background(FFColor.positive.opacity(0.18), in: Capsule())
+                                    .foregroundStyle(FFColor.positive)
+                            }
+                            Spacer()
                         }
-                        Spacer()
+                        .padding(.vertical, FFSpace.s)
+                        .ffHairlineBottom()
                     }
-                    .padding(.vertical, FFSpace.s)
-                    .ffHairlineBottom()
+                    .buttonStyle(.plain)
                 }
             }
         }

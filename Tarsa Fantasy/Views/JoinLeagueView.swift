@@ -12,6 +12,7 @@ struct JoinLeagueView: View {
     @State private var lookingUp: Bool = false
     @State private var claiming: Bool = false
     @State private var didAutoLookup: Bool = false
+    @FocusState private var codeFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -33,7 +34,12 @@ struct JoinLeagueView: View {
                 }
             }
             .task {
-                guard !didAutoLookup, let initial = initialCode else { return }
+                guard !didAutoLookup, let initial = initialCode else {
+                    // Manual entry: put the cursor in the code field right
+                    // away instead of making the user tap it first.
+                    codeFocused = true
+                    return
+                }
                 didAutoLookup = true
                 code = String(initial.uppercased()
                     .filter { $0.isLetter || $0.isNumber }
@@ -57,6 +63,7 @@ struct JoinLeagueView: View {
                 TextField("", text: $code, prompt:
                     Text("ABC123").foregroundColor(FFColor.textTertiary)
                 )
+                .focused($codeFocused)
                 .textInputAutocapitalization(.characters)
                 .autocorrectionDisabled()
                 .font(.system(size: 44, weight: .bold, design: .monospaced))
