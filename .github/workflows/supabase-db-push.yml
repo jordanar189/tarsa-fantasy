@@ -33,4 +33,11 @@ jobs:
         run: supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
 
       - name: Push migrations
-        run: supabase db push
+        # --include-all: the 20260515000000_baseline_core.sql baseline sorts
+        # before migrations that were already applied to prod by hand, and
+        # without the flag the CLI refuses the out-of-order insert and exits 1
+        # — which silently blocked every migration push after the baseline
+        # merged. The baseline is fully idempotent (if-not-exists guards) so
+        # applying it out of order against prod is a designed no-op; it can't
+        # be renamed to sort last because fresh-database replays need it first.
+        run: supabase db push --include-all
