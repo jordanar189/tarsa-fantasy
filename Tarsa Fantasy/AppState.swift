@@ -1512,15 +1512,28 @@ final class AppState {
     func proposeTrade(
         leagueID: String, proposerTeamID: String, recipientTeamID: String,
         proposerPlayerIDs: [String], recipientPlayerIDs: [String],
-        note: String?, parentTradeID: String? = nil
+        note: String?, parentTradeID: String? = nil,
+        proposerPickIDs: [String] = [], recipientPickIDs: [String] = []
     ) async throws -> Trade? {
         try await remote.proposeTrade(
             leagueID: leagueID,
             proposerTeamID: proposerTeamID, recipientTeamID: recipientTeamID,
             proposerPlayerIDs: proposerPlayerIDs,
             recipientPlayerIDs: recipientPlayerIDs,
-            note: note, parentTradeID: parentTradeID
+            note: note, parentTradeID: parentTradeID,
+            proposerPickIDs: proposerPickIDs, recipientPickIDs: recipientPickIDs
         )
+    }
+
+    // MARK: - Draft-pick assets (dynasty)
+
+    func pickAssets(leagueID: String) async -> [DraftPickAsset] {
+        await remote.pickAssets(leagueID: leagueID)
+    }
+
+    @discardableResult
+    func ensurePickAssets(leagueID: String, season: Int, rounds: Int = 4) async throws -> Int {
+        try await remote.ensurePickAssets(leagueID: leagueID, season: season, rounds: rounds)
     }
 
     @discardableResult

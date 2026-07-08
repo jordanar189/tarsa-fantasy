@@ -21,6 +21,7 @@ interface DraftRow {
     id: string; league_id: string; format: string; status: string;
     pick_seconds: number; current_pick: number; total_picks: number;
     pick_deadline: string | null; pick_order: string[];
+    pick_owner_overrides?: Record<string, string> | null;
 }
 interface RosterConfigRow {
     qb?: number; rb?: number; wr?: number; te?: number;
@@ -136,7 +137,8 @@ Deno.serve(async (_req: Request) => {
 });
 
 async function advanceDraft(d: DraftRow): Promise<string> {
-    // Which team is on the clock?
+    // Which team is on the clock? Traded picks override the snake math via
+    // the map start_draft materialized (mirrors public.team_on_clock).
     const teamCount = d.pick_order.length;
     if (teamCount === 0) return "no_pick_order";
     const roundIdx    = Math.floor((d.current_pick - 1) / teamCount);
@@ -144,7 +146,8 @@ async function advanceDraft(d: DraftRow): Promise<string> {
     if (d.format === "snake" && roundIdx % 2 === 1) {
         posInRound = teamCount - 1 - posInRound;
     }
-    const teamID = d.pick_order[posInRound];
+    const overrides = d.pick_owner_overrides ?? {};
+    const teamID = overrides[String(d.current_pick)] ?? d.pick_order[posInRound];
     if (!teamID) return "no_team";
 
     // League + roster config (drive total rounds + K-phase logic).

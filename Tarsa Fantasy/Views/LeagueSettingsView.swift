@@ -51,6 +51,9 @@ struct LeagueSettingsView: View {
     @State private var rolloverSeason: Int = Calendar.current.component(.year, from: Date())
     @State private var confirmingComplete: Bool = false
     @State private var confirmingRetroactive: Bool = false
+    // Draft picks
+    @State private var generatingPicks: Bool = false
+    @State private var pickGenResult: String? = nil
     // Members
     @State private var editingTeamID: String? = nil
     @State private var editingTeamName: String = ""
@@ -110,6 +113,9 @@ struct LeagueSettingsView: View {
                     divisionsSection
                     waiversSection
                     tradesSection
+                    if league.isDynasty || league.keeperCount > 0 {
+                        pickAssetsSection
+                    }
                     membersSection
                     seasonSection
                     dangerSection
@@ -726,6 +732,57 @@ struct LeagueSettingsView: View {
             return "Every accepted trade waits for you to approve in the Trades tab before executing."
         case .leagueVote:
             return "Accepted trades open for league veto for the configured window. Majority of other owners can reverse them."
+        }
+    }
+
+    // MARK: - Draft picks
+
+    private var pickAssetsSection: some View {
+        Section {
+            Button {
+                Task { await generatePicks() }
+            } label: {
+                HStack {
+                    Image(systemName: "ticket")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FFColor.accent)
+                    Text("Generate \(league.season + 1) picks (4 rounds)")
+                        .font(.ffBody)
+                        .foregroundStyle(FFColor.textPrimary)
+                    Spacer()
+                    if generatingPicks {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+            }
+            .disabled(generatingPicks)
+            if let pickGenResult {
+                Text(pickGenResult)
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textSecondary)
+            }
+        } header: {
+            Text("Draft picks").ffEyebrow()
+        } footer: {
+            Text("Creates one tradeable pick per team and round for next season's draft. Safe to run again — existing picks aren't duplicated.")
+                .foregroundStyle(FFColor.textTertiary)
+        }
+        .listRowBackground(FFColor.surface)
+    }
+
+    private func generatePicks() async {
+        generatingPicks = true; defer { generatingPicks = false }
+        do {
+            let created = try await app.ensurePickAssets(
+                leagueID: league.id, season: league.season + 1
+            )
+            pickGenResult = created > 0
+                ? "Created \(created) new pick\(created == 1 ? "" : "s")."
+                : "All \(league.season + 1) picks already exist."
+            Haptics.success()
+        } catch {
+            pickGenResult = nil
+            self.error = "Couldn't generate picks: \(error.localizedDescription)"
         }
     }
 

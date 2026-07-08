@@ -1634,6 +1634,9 @@ struct Trade: Identifiable, Hashable {
     let recipientTeamID: String
     let proposerPlayerIDs: [String]
     let recipientPlayerIDs: [String]
+    // Draft-pick assets riding along (dynasty). Empty for player-only deals.
+    let proposerPickIDs: [String]
+    let recipientPickIDs: [String]
     let note: String?
     let parentTradeID: String?
     let status: TradeStatus
@@ -1677,6 +1680,9 @@ struct Draft: Identifiable, Hashable {
     var pickOrder: [String]    // ordered team-id strings (round 1)
     var pausedRemaining: Int?
     var autoPickTeamIDs: [String]  // teams whose picks fire automatically
+    // Traded picks: {pick number: owning team id}, materialized server-side
+    // at draft start. Empty when no picks changed hands.
+    var pickOwnerOverrides: [Int: String] = [:]
 
     func isOnAutoPick(teamID: String) -> Bool {
         // Why: pick_order stores team IDs in Swift's UUID.uuidString format
@@ -1691,6 +1697,9 @@ struct Draft: Identifiable, Hashable {
     func teamOnClock(forPick pick: Int) -> String? {
         let teamCount = pickOrder.count
         guard teamCount > 0, pick >= 1, pick <= totalPicks else { return nil }
+        // Traded picks route to the asset owner (same map team_on_clock and
+        // draft_tick consult server-side).
+        if let owner = pickOwnerOverrides[pick] { return owner }
         let roundIdx    = (pick - 1) / teamCount
         var posInRound  = (pick - 1) % teamCount
         if format == .snake && roundIdx.isMultiple(of: 2) == false {
@@ -1713,6 +1722,20 @@ struct DraftPick: Identifiable, Hashable {
     let playerID: String
     let autoPick: Bool
     let pickedAt: Date
+}
+
+// A tradeable future-draft pick (dynasty). originalTeamID is whose schedule
+// slot the pick occupies (never changes); ownerTeamID moves on trade.
+struct DraftPickAsset: Identifiable, Hashable {
+    let id: String
+    let leagueID: String
+    let season: Int
+    let round: Int
+    let originalTeamID: String
+    let ownerTeamID: String
+
+    // "2027 Round 2" (+ " (via <team>)" appended by views when traded).
+    var shortLabel: String { "\(season) Round \(round)" }
 }
 
 // MARK: - NFL data (stats overhaul Phase 1)

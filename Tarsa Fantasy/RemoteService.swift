@@ -1533,7 +1533,13 @@ actor RemoteService {
             pickDeadline: r.pickDeadline,
             pickOrder: r.pickOrder,
             pausedRemaining: r.pausedRemaining,
-            autoPickTeamIDs: r.autoPickTeamIds
+            autoPickTeamIDs: r.autoPickTeamIds,
+            pickOwnerOverrides: Dictionary(uniqueKeysWithValues:
+                r.pickOwnerOverrides.compactMap { key, value in
+                    guard let pick = Int(key),
+                          let owner = UUID(uuidString: value)?.uuidString else { return nil }
+                    return (pick, owner)
+                })
         )
     }
 
@@ -1587,7 +1593,9 @@ actor RemoteService {
         proposerPlayerIDs: [String],
         recipientPlayerIDs: [String],
         note: String?,
-        parentTradeID: String? = nil
+        parentTradeID: String? = nil,
+        proposerPickIDs: [String] = [],
+        recipientPickIDs: [String] = []
     ) async throws -> Trade? {
         guard let lid = UUID(uuidString: leagueID),
               let pid = UUID(uuidString: proposerTeamID),
@@ -1600,6 +1608,8 @@ actor RemoteService {
             let p_recipient_player_ids: [String]
             let p_note: String?
             let p_parent_trade_id: UUID?
+            let p_proposer_pick_ids: [UUID]
+            let p_recipient_pick_ids: [UUID]
         }
         let row: TradeRow = try await client.rpc("propose_trade", params: Args(
             p_league_id: lid,
@@ -1608,9 +1618,58 @@ actor RemoteService {
             p_proposer_player_ids: proposerPlayerIDs,
             p_recipient_player_ids: recipientPlayerIDs,
             p_note: note,
-            p_parent_trade_id: parentTradeID.flatMap { UUID(uuidString: $0) }
+            p_parent_trade_id: parentTradeID.flatMap { UUID(uuidString: $0) },
+            p_proposer_pick_ids: proposerPickIDs.compactMap(UUID.init(uuidString:)),
+            p_recipient_pick_ids: recipientPickIDs.compactMap(UUID.init(uuidString:))
         )).execute().value
         return Self.toTrade(row)
+    }
+
+    // All tradeable pick assets in a league (label lookups + propose pickers).
+    func pickAssets(leagueID: String) async -> [DraftPickAsset] {
+        guard let lid = UUID(uuidString: leagueID) else { return [] }
+        struct Row: Decodable {
+            let id: UUID
+            let leagueId: UUID
+            let season: Int
+            let round: Int
+            let originalTeamId: UUID
+            let ownerTeamId: UUID
+            enum CodingKeys: String, CodingKey {
+                case id, season, round
+                case leagueId       = "league_id"
+                case originalTeamId = "original_team_id"
+                case ownerTeamId    = "owner_team_id"
+            }
+        }
+        let rows: [Row] = (try? await client.from("draft_pick_assets")
+            .select()
+            .eq("league_id", value: lid)
+            .order("season").order("round")
+            .execute().value) ?? []
+        return rows.map {
+            DraftPickAsset(
+                id: $0.id.uuidString, leagueID: $0.leagueId.uuidString,
+                season: $0.season, round: $0.round,
+                originalTeamID: $0.originalTeamId.uuidString,
+                ownerTeamID: $0.ownerTeamId.uuidString
+            )
+        }
+    }
+
+    // Commissioner: generate one asset per team × round for a future season.
+    @discardableResult
+    func ensurePickAssets(leagueID: String, season: Int, rounds: Int = 4) async throws -> Int {
+        guard let lid = UUID(uuidString: leagueID) else { return 0 }
+        struct Args: Encodable {
+            let p_league_id: UUID
+            let p_season: Int
+            let p_rounds: Int
+        }
+        let created: Int = try await client.rpc("ensure_pick_assets", params: Args(
+            p_league_id: lid, p_season: season, p_rounds: rounds
+        )).execute().value
+        return created
     }
 
     @discardableResult
@@ -1923,6 +1982,8 @@ actor RemoteService {
             recipientTeamID: r.recipientTeamId.uuidString,
             proposerPlayerIDs: r.proposerPlayerIds,
             recipientPlayerIDs: r.recipientPlayerIds,
+            proposerPickIDs: (r.proposerPickIds ?? []).map(\.uuidString),
+            recipientPickIDs: (r.recipientPickIds ?? []).map(\.uuidString),
             note: r.note,
             parentTradeID: r.parentTradeId?.uuidString,
             status: TradeStatus(rawValue: r.status) ?? .pending,
@@ -2169,7 +2230,10 @@ actor RemoteService {
             "taxi":         stringsAsAnyJSON(carryRosters ? team.taxi : []),
             "logo_url":     team.logoURL.map { AnyJSON.string($0) } ?? .null,
             "color_hex":    team.colorHex.map { AnyJSON.string($0) } ?? .null,
-            "abbreviation": team.abbreviation.map { AnyJSON.string($0) } ?? .null
+            "abbreviation": team.abbreviation.map { AnyJSON.string($0) } ?? .null,
+            // Lineage: links the new team to its previous-season self, which
+            // also lets the RPC translate traded pick assets into the child.
+            "prior_team_id": .string(team.id)
         ])
     }
 
@@ -3762,6 +3826,7 @@ struct DraftRow: Codable, Hashable {
     let pickOrder: [String]
     let pausedRemaining: Int?
     let autoPickTeamIds: [String]
+    let pickOwnerOverrides: [String: String]
 
     enum CodingKeys: String, CodingKey {
         case id, format, status
@@ -3776,6 +3841,7 @@ struct DraftRow: Codable, Hashable {
         case pickOrder        = "pick_order"
         case pausedRemaining  = "paused_remaining"
         case autoPickTeamIds  = "auto_pick_team_ids"
+        case pickOwnerOverrides = "pick_owner_overrides"
     }
 
     init(from decoder: Decoder) throws {
@@ -3794,6 +3860,7 @@ struct DraftRow: Codable, Hashable {
         pickOrder       = try c.decode([String].self,       forKey: .pickOrder)
         pausedRemaining = try c.decodeIfPresent(Int.self,   forKey: .pausedRemaining)
         autoPickTeamIds = try c.decodeIfPresent([String].self, forKey: .autoPickTeamIds) ?? []
+        pickOwnerOverrides = try c.decodeIfPresent([String: String].self, forKey: .pickOwnerOverrides) ?? [:]
     }
 }
 
@@ -3824,6 +3891,8 @@ struct TradeRow: Codable, Hashable {
     let recipientTeamId: UUID
     let proposerPlayerIds: [String]
     let recipientPlayerIds: [String]
+    let proposerPickIds: [UUID]?
+    let recipientPickIds: [UUID]?
     let note: String?
     let parentTradeId: UUID?
     let status: String
@@ -3841,6 +3910,8 @@ struct TradeRow: Codable, Hashable {
         case recipientTeamId     = "recipient_team_id"
         case proposerPlayerIds   = "proposer_player_ids"
         case recipientPlayerIds  = "recipient_player_ids"
+        case proposerPickIds     = "proposer_pick_ids"
+        case recipientPickIds    = "recipient_pick_ids"
         case parentTradeId       = "parent_trade_id"
         case votingEndsAt        = "voting_ends_at"
         case acceptedAt          = "accepted_at"

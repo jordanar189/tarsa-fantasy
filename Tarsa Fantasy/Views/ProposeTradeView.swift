@@ -19,6 +19,10 @@ struct ProposeTradeView: View {
     @State private var recipientID: String? = nil
     @State private var sendingPlayerIDs: Set<String> = []
     @State private var requestingPlayerIDs: Set<String> = []
+    // Draft-pick assets (dynasty). Empty league assets → sections hidden.
+    @State private var assets: [DraftPickAsset] = []
+    @State private var sendingPickIDs: Set<String> = []
+    @State private var requestingPickIDs: Set<String> = []
     @State private var note: String = ""
     @State private var saving: Bool = false
     @State private var error: String? = nil
@@ -38,6 +42,8 @@ struct ProposeTradeView: View {
             _recipientID         = State(initialValue: counterOf.proposerTeamID)
             _sendingPlayerIDs    = State(initialValue: Set(counterOf.recipientPlayerIDs))
             _requestingPlayerIDs = State(initialValue: Set(counterOf.proposerPlayerIDs))
+            _sendingPickIDs      = State(initialValue: Set(counterOf.recipientPickIDs))
+            _requestingPickIDs   = State(initialValue: Set(counterOf.proposerPickIDs))
         } else if let requestPlayer {
             // Started from a player's profile / the Players list: pre-select that
             // player's team as the partner and put them on the request side.
@@ -56,7 +62,9 @@ struct ProposeTradeView: View {
     }
 
     private var canSend: Bool {
-        recipientID != nil && (!sendingPlayerIDs.isEmpty || !requestingPlayerIDs.isEmpty)
+        recipientID != nil
+            && (!sendingPlayerIDs.isEmpty || !requestingPlayerIDs.isEmpty
+                || !sendingPickIDs.isEmpty || !requestingPickIDs.isEmpty)
     }
 
     var body: some View {
@@ -68,7 +76,9 @@ struct ProposeTradeView: View {
                         recipientPicker
                         if recipientTeam != nil {
                             rosterSection(team: fromTeam, label: "YOU SEND", selected: $sendingPlayerIDs)
+                            pickSection(teamID: fromTeam.id, label: "YOUR PICKS", selected: $sendingPickIDs)
                             rosterSection(team: recipientTeam!, label: "YOU REQUEST", selected: $requestingPlayerIDs)
+                            pickSection(teamID: recipientTeam!.id, label: "THEIR PICKS", selected: $requestingPickIDs)
                             balanceCard
                             noteField
                         }
@@ -99,6 +109,7 @@ struct ProposeTradeView: View {
                 }
             }
             .task {
+                assets = await app.pickAssets(leagueID: league.id)
                 await app.ensureProjectedSnapshot(season: league.season)
                 let snapshot = Fantasy.playersFor(league: league, snapshot: app.displayPlayers(season: league.season))
                 valuationPlayers = snapshot
@@ -111,6 +122,55 @@ struct ProposeTradeView: View {
             }
         }
         .hostsPlayerProfileSheet()
+    }
+
+    // Future draft picks the given team owns, as toggle rows. Hidden when the
+    // league has no pick assets (non-dynasty leagues).
+    @ViewBuilder
+    private func pickSection(teamID: String, label: String, selected: Binding<Set<String>>) -> some View {
+        let owned = assets.filter { $0.ownerTeamID == teamID }
+        if !owned.isEmpty {
+            VStack(alignment: .leading, spacing: FFSpace.s) {
+                Text(label).ffEyebrow()
+                VStack(spacing: 0) {
+                    ForEach(owned) { asset in
+                        Button {
+                            if selected.wrappedValue.contains(asset.id) {
+                                selected.wrappedValue.remove(asset.id)
+                            } else {
+                                selected.wrappedValue.insert(asset.id)
+                            }
+                        } label: {
+                            HStack(spacing: FFSpace.s) {
+                                Image(systemName: "ticket")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(FFColor.accent)
+                                Text(pickLabel(asset))
+                                    .font(.ffBody)
+                                    .foregroundStyle(FFColor.textPrimary)
+                                Spacer()
+                                Image(systemName: selected.wrappedValue.contains(asset.id)
+                                      ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selected.wrappedValue.contains(asset.id)
+                                                     ? FFColor.accent : FFColor.textTertiary)
+                            }
+                            .padding(.horizontal, FFSpace.m).padding(.vertical, FFSpace.s)
+                            .ffHairlineBottom()
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+                .overlay(RoundedRectangle(cornerRadius: FFRadius.m).strokeBorder(FFColor.border, lineWidth: 1))
+            }
+        }
+    }
+
+    private func pickLabel(_ asset: DraftPickAsset) -> String {
+        guard asset.originalTeamID != asset.ownerTeamID,
+              let origin = league.teams.first(where: { $0.id == asset.originalTeamID })
+        else { return asset.shortLabel }
+        return "\(asset.shortLabel) (via \(origin.name))"
     }
 
     // Live fairness gauge. Each side is valued by what it *receives*: you get the
@@ -267,7 +327,9 @@ struct ProposeTradeView: View {
                 proposerPlayerIDs: Array(sendingPlayerIDs),
                 recipientPlayerIDs: Array(requestingPlayerIDs),
                 note: note.isEmpty ? nil : note,
-                parentTradeID: counterOf?.id
+                parentTradeID: counterOf?.id,
+                proposerPickIDs: Array(sendingPickIDs),
+                recipientPickIDs: Array(requestingPickIDs)
             )
             onDone(trade)
             Haptics.success()
