@@ -30,6 +30,7 @@ struct WaiversView: View {
     @State private var loading: Bool = false
     @State private var refreshTick: Int = 0
     @State private var claimContext: ClaimContext? = nil
+    @State private var claimToCancel: WaiverClaim? = nil
     @State private var error: String? = nil
 
     // MARK: - Body
@@ -54,6 +55,23 @@ struct WaiversView: View {
         }
         .task(id: league.id) { await reload() }
         .task(id: refreshTick) { await reload() }
+        .alert(item: $claimToCancel) { claim in
+            Alert(
+                title: Text("Cancel this claim?"),
+                message: Text("Your waiver claim will be withdrawn. You can submit a new one while the player is still on waivers."),
+                primaryButton: .destructive(Text("Cancel claim")) {
+                    Task {
+                        do {
+                            try await app.cancelWaiverClaim(claim.id)
+                            refreshTick &+= 1
+                        } catch {
+                            self.error = error.localizedDescription
+                        }
+                    }
+                },
+                secondaryButton: .cancel(Text("Keep claim"))
+            )
+        }
         .sheet(item: $claimContext) { ctx in
             WaiverClaimSheet(
                 league: league, team: ctx.team,
@@ -220,10 +238,7 @@ struct WaiversView: View {
                     .foregroundStyle(FFColor.accent)
             }
             Button {
-                Task {
-                    try? await app.cancelWaiverClaim(claim.id)
-                    refreshTick &+= 1
-                }
+                claimToCancel = claim
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 18))

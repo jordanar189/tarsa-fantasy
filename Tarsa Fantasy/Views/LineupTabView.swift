@@ -876,6 +876,11 @@ struct LineupTabView: View {
                 }
             } catch {
                 self.error = error.localizedDescription
+                Haptics.error()
+                // The edit was applied optimistically — roll the UI back to
+                // the server's lineup instead of showing a state that never
+                // persisted.
+                await reload()
             }
             saving = false
         }

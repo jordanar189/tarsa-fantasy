@@ -138,9 +138,9 @@ struct GameCenterView: View {
             Image(systemName: "sportscourt")
                 .font(.system(size: 28, weight: .light))
                 .foregroundStyle(FFColor.textTertiary)
-            Text("No schedule loaded")
+            Text("No schedule yet")
                 .font(.ffHeadline).foregroundStyle(FFColor.textPrimary)
-            Text("Run sync_schedules on the server to populate this view.")
+            Text("The NFL schedule for this season hasn't been published yet. Pull to refresh or check back soon.")
                 .font(.ffCaption).foregroundStyle(FFColor.textSecondary)
                 .multilineTextAlignment(.center)
         }

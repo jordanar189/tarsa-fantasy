@@ -276,9 +276,11 @@ struct WaiverClaimSheet: View {
                 )
                 onComplete(updated)
             }
+            Haptics.success()
             dismiss()
         } catch {
             self.error = error.localizedDescription
+            Haptics.error()
         }
     }
 }

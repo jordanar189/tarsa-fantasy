@@ -888,9 +888,11 @@ struct DraftRoomView: View {
                 draftID: draft.id, teamID: myTeam.id, playerID: player.id
             )
             if let updated { self.draft = updated }
+            Haptics.success()
             await reload()
         } catch {
             self.error = error.localizedDescription
+            Haptics.error()
         }
     }
 

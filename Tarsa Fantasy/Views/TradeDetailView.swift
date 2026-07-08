@@ -305,9 +305,11 @@ struct TradeDetailView: View {
         do {
             let updated = try await op()
             onChange(updated)
+            Haptics.success()
             dismiss()
         } catch {
             self.error = error.localizedDescription
+            Haptics.error()
         }
     }
 
