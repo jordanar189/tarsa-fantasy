@@ -242,7 +242,13 @@ begin
         return t;
     end if;
 
-    -- ...and still own the picks they're sending.
+    -- ...and still own the picks they're sending. Lock the asset rows first
+    -- (mirroring the team locks above): two pending trades offering the same
+    -- pick could otherwise both pass this check under concurrent execution
+    -- and both mark themselves executed.
+    perform 1 from public.draft_pick_assets a
+     where a.id = any(t.proposer_pick_ids || t.recipient_pick_ids)
+     for update;
     if exists (select 1 from public.draft_pick_assets a
                 where a.id = any(t.proposer_pick_ids)
                   and a.owner_team_id <> t.proposer_team_id)
