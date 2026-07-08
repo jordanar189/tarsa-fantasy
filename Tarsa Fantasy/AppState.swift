@@ -1560,6 +1560,19 @@ final class AppState {
         )
     }
 
+    // 3+ team trade: each side lists what it gives and receives; the server
+    // validates ownership and conservation.
+    @discardableResult
+    func proposeMultiTrade(
+        leagueID: String, proposerTeamID: String,
+        sides: [RemoteService.MultiTradeSide], note: String?
+    ) async throws -> Trade? {
+        try await remote.proposeMultiTrade(
+            leagueID: leagueID, proposerTeamID: proposerTeamID,
+            sides: sides, note: note
+        )
+    }
+
     // MARK: - Draft-pick assets (dynasty)
 
     func pickAssets(leagueID: String) async -> [DraftPickAsset] {

@@ -19,6 +19,7 @@ struct TradesView: View {
     @State private var loading: Bool = false
     @State private var refreshTick: Int = 0
     @State private var showingPropose: Bool = false
+    @State private var showingMultiPropose: Bool = false
     @State private var selectedTrade: Trade? = nil
     @State private var counterOf: Trade? = nil
     @State private var error: String? = nil
@@ -54,6 +55,13 @@ struct TradesView: View {
         .sheet(isPresented: $showingPropose) {
             if let myTeam {
                 ProposeTradeView(league: league, fromTeam: myTeam, counterOf: nil) { _ in
+                    refreshTick &+= 1
+                }
+            }
+        }
+        .sheet(isPresented: $showingMultiPropose) {
+            if let myTeam {
+                MultiTradeBuilderView(league: league, fromTeam: myTeam) { _ in
                     refreshTick &+= 1
                 }
             }
@@ -96,6 +104,20 @@ struct TradesView: View {
             }
             .ffPrimaryButton(disabled: !canPropose)
             .disabled(!canPropose)
+            // 3+ owned teams unlocks the multi-team composer.
+            if league.teams.filter({ $0.ownerID != nil }).count >= 3 {
+                Button {
+                    showingMultiPropose = true
+                } label: {
+                    HStack {
+                        Image(systemName: "arrow.triangle.swap")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text("Multi-team trade")
+                    }
+                }
+                .ffSecondaryButton()
+                .disabled(!canPropose)
+            }
             if !canPropose, let deadline = league.tradeSettings.deadline, deadline < Date() {
                 Text("Trade deadline passed \(deadline.shortRelative).")
                     .font(.ffCaption)
@@ -120,12 +142,29 @@ struct TradesView: View {
     @ViewBuilder
     private var content: some View {
         let myID = myTeam?.id
-        let incoming = trades.filter { $0.status == .pending && $0.recipientTeamID == myID }
-        let outgoing = trades.filter { $0.status == .pending && $0.proposerTeamID == myID }
-        let underReview = trades.filter {
-            ($0.status == .pendingApproval || $0.status == .voting || $0.status == .pendingExecution)
-            && ($0.proposerTeamID == myID || $0.recipientTeamID == myID || isCommissioner
-                || $0.status == .voting)
+        // Multi trades land in Incoming while my acceptance is still pending.
+        let incoming = trades.filter { t in
+            guard t.status == .pending else { return false }
+            if t.isMulti {
+                return t.proposerTeamID != myID
+                    && t.participants.contains { $0.teamID == myID && $0.acceptedAt == nil }
+            }
+            return t.recipientTeamID == myID
+        }
+        let outgoing = trades.filter { t in
+            guard t.status == .pending, t.proposerTeamID == myID else { return false }
+            return true
+        }
+        // Multi trades I've already accepted but others haven't yet.
+        let waitingOnOthers = trades.filter { t in
+            t.isMulti && t.status == .pending && t.proposerTeamID != myID
+                && t.participants.contains { $0.teamID == myID && $0.acceptedAt != nil }
+        }
+        let underReview = trades.filter { t in
+            (t.status == .pendingApproval || t.status == .voting || t.status == .pendingExecution)
+            && (t.proposerTeamID == myID || t.recipientTeamID == myID || isCommissioner
+                || t.status == .voting
+                || t.participants.contains { $0.teamID == myID })
         }
         let recent = trades.filter { !$0.status.isOpen }.prefix(15)
 
@@ -135,6 +174,7 @@ struct TradesView: View {
             VStack(alignment: .leading, spacing: FFSpace.xl) {
                 section(title: "Incoming", count: incoming.count, items: incoming)
                 section(title: "Outgoing", count: outgoing.count, items: outgoing)
+                section(title: "Waiting on others", count: waitingOnOthers.count, items: waitingOnOthers)
                 section(title: "Under review", count: underReview.count, items: underReview)
                 section(title: "Recent", count: recent.count, items: Array(recent))
             }
@@ -171,23 +211,45 @@ struct TradesView: View {
         let proposer = league.teams.first(where: { $0.id == trade.proposerTeamID })
         let recipient = league.teams.first(where: { $0.id == trade.recipientTeamID })
         let mine = trade.proposerTeamID == myTeam?.id || trade.recipientTeamID == myTeam?.id
+            || trade.participants.contains { $0.teamID == myTeam?.id }
 
         return VStack(alignment: .leading, spacing: FFSpace.s) {
             HStack(spacing: FFSpace.s) {
-                Text(proposer?.name ?? "?").font(.ffCaption.bold()).foregroundStyle(FFColor.textPrimary)
-                Image(systemName: "arrow.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(FFColor.textTertiary)
-                Text(recipient?.name ?? "?").font(.ffCaption.bold()).foregroundStyle(FFColor.textPrimary)
+                if trade.isMulti {
+                    Image(systemName: "arrow.triangle.swap")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(FFColor.accent)
+                    Text("\(trade.participants.count)-team trade")
+                        .font(.ffCaption.bold()).foregroundStyle(FFColor.textPrimary)
+                    if trade.status == .pending {
+                        Text("\(trade.acceptedCount)/\(trade.participants.count) in")
+                            .font(.ffMicro)
+                            .foregroundStyle(FFColor.textTertiary)
+                    }
+                } else {
+                    Text(proposer?.name ?? "?").font(.ffCaption.bold()).foregroundStyle(FFColor.textPrimary)
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(FFColor.textTertiary)
+                    Text(recipient?.name ?? "?").font(.ffCaption.bold()).foregroundStyle(FFColor.textPrimary)
+                }
                 Spacer()
                 statusBadge(trade.status)
             }
-            HStack(alignment: .top, spacing: FFSpace.s) {
-                sideColumn(label: "Sends", ids: trade.proposerPlayerIDs,
-                           pickIDs: trade.proposerPickIDs, players: players)
-                Rectangle().fill(FFColor.border).frame(width: 1)
-                sideColumn(label: "Receives", ids: trade.recipientPlayerIDs,
-                           pickIDs: trade.recipientPickIDs, players: players)
+            if trade.isMulti {
+                VStack(alignment: .leading, spacing: FFSpace.s) {
+                    ForEach(trade.participants) { part in
+                        multiParticipantRow(part, players: players)
+                    }
+                }
+            } else {
+                HStack(alignment: .top, spacing: FFSpace.s) {
+                    sideColumn(label: "Sends", ids: trade.proposerPlayerIDs,
+                               pickIDs: trade.proposerPickIDs, players: players)
+                    Rectangle().fill(FFColor.border).frame(width: 1)
+                    sideColumn(label: "Receives", ids: trade.recipientPlayerIDs,
+                               pickIDs: trade.recipientPickIDs, players: players)
+                }
             }
             if let note = trade.note, !note.isEmpty {
                 Text("“\(note)”")
@@ -210,6 +272,28 @@ struct TradesView: View {
                 .strokeBorder(mine && trade.status.isOpen ? FFColor.accent.opacity(0.4) : Color.clear,
                               lineWidth: 1)
         )
+    }
+
+    // Compact one-liner per multi-trade participant: name, gives, acceptance.
+    private func multiParticipantRow(_ part: TradeParticipant, players: [String: Player]) -> some View {
+        let team = league.teams.first(where: { $0.id == part.teamID })
+        let gives = part.givesPlayerIDs.map { players[$0]?.name ?? $0 }
+            + part.givesPickIDs.map { assets[$0]?.shortLabel ?? "Pick" }
+        return HStack(alignment: .top, spacing: FFSpace.s) {
+            Image(systemName: part.acceptedAt != nil ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 13))
+                .foregroundStyle(part.acceptedAt != nil ? FFColor.positive : FFColor.textTertiary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(team?.name ?? "?")
+                    .font(.ffCaption.bold())
+                    .foregroundStyle(FFColor.textPrimary)
+                Text(gives.isEmpty ? "sends nothing" : "sends \(gives.joined(separator: ", "))")
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textSecondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+        }
     }
 
     private func sideColumn(label: String, ids: [String], pickIDs: [String] = [],

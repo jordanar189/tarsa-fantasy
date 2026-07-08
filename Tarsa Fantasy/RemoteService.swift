@@ -1599,7 +1599,28 @@ actor RemoteService {
             .order("created_at", ascending: false)
             .execute()
             .value) ?? []
-        return rows.map(Self.toTrade)
+        // Multi trades keep their sides in trade_participants; one league-wide
+        // fetch covers every trade in the list.
+        var partsByTrade: [String: [TradeParticipant]] = [:]
+        if rows.contains(where: { $0.isMulti == true }) {
+            let parts: [TradeParticipantRow] = (try? await client.from("trade_participants")
+                .select()
+                .eq("league_id", value: uuid)
+                .execute()
+                .value) ?? []
+            for p in parts {
+                partsByTrade[p.tradeId.uuidString, default: []].append(TradeParticipant(
+                    id: p.id.uuidString,
+                    teamID: p.teamId.uuidString,
+                    givesPlayerIDs: p.givesPlayerIds,
+                    givesPickIDs: p.givesPickIds.map(\.uuidString),
+                    receivesPlayerIDs: p.receivesPlayerIds,
+                    receivesPickIDs: p.receivesPickIds.map(\.uuidString),
+                    acceptedAt: p.acceptedAt
+                ))
+            }
+        }
+        return rows.map { Self.toTrade($0, participants: partsByTrade[$0.id.uuidString] ?? []) }
     }
 
     func tradeVotes(tradeID: String) async throws -> [TradeVote] {
@@ -1655,6 +1676,50 @@ actor RemoteService {
             p_parent_trade_id: parentTradeID.flatMap { UUID(uuidString: $0) },
             p_proposer_pick_ids: proposerPickIDs.compactMap(UUID.init(uuidString:)),
             p_recipient_pick_ids: recipientPickIDs.compactMap(UUID.init(uuidString:))
+        )).execute().value
+        return Self.toTrade(row)
+    }
+
+    // What one team gives/receives in a multi-team proposal.
+    struct MultiTradeSide {
+        let teamID: String
+        var givesPlayerIDs: [String] = []
+        var givesPickIDs: [String] = []
+        var receivesPlayerIDs: [String] = []
+        var receivesPickIDs: [String] = []
+    }
+
+    // 3+ team trade. The server validates ownership + conservation (every
+    // given asset received by exactly one other team).
+    @discardableResult
+    func proposeMultiTrade(
+        leagueID: String,
+        proposerTeamID: String,
+        sides: [MultiTradeSide],
+        note: String?
+    ) async throws -> Trade? {
+        guard let lid = UUID(uuidString: leagueID),
+              let pid = UUID(uuidString: proposerTeamID) else { return nil }
+        let participants: AnyJSON = .array(sides.map { s in
+            .object([
+                "team_id":              .string(s.teamID),
+                "gives_player_ids":     .array(s.givesPlayerIDs.map(AnyJSON.string)),
+                "gives_pick_ids":       .array(s.givesPickIDs.map(AnyJSON.string)),
+                "receives_player_ids":  .array(s.receivesPlayerIDs.map(AnyJSON.string)),
+                "receives_pick_ids":    .array(s.receivesPickIDs.map(AnyJSON.string)),
+            ])
+        })
+        struct Args: Encodable {
+            let p_league_id: UUID
+            let p_proposer_team_id: UUID
+            let p_participants: AnyJSON
+            let p_note: String?
+        }
+        let row: TradeRow = try await client.rpc("propose_multi_trade", params: Args(
+            p_league_id: lid,
+            p_proposer_team_id: pid,
+            p_participants: participants,
+            p_note: note
         )).execute().value
         return Self.toTrade(row)
     }
@@ -2008,7 +2073,7 @@ actor RemoteService {
         return Self.toTrade(row)
     }
 
-    private static func toTrade(_ r: TradeRow) -> Trade {
+    private static func toTrade(_ r: TradeRow, participants: [TradeParticipant] = []) -> Trade {
         Trade(
             id: r.id.uuidString,
             leagueID: r.leagueId.uuidString,
@@ -2026,7 +2091,10 @@ actor RemoteService {
             executedAt: r.executedAt,
             resolvedAt: r.resolvedAt,
             failureReason: r.failureReason,
-            createdAt: r.createdAt
+            createdAt: r.createdAt,
+            isMulti: r.isMulti ?? false,
+            acceptedCount: r.acceptedCount ?? 0,
+            participants: participants
         )
     }
 
@@ -4007,6 +4075,9 @@ struct TradeRow: Codable, Hashable {
     let resolvedAt: Date?
     let failureReason: String?
     let createdAt: Date
+    // Multi-team trades (optional: columns land with that migration).
+    let isMulti: Bool?
+    let acceptedCount: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, note, status
@@ -4024,6 +4095,30 @@ struct TradeRow: Codable, Hashable {
         case resolvedAt          = "resolved_at"
         case failureReason       = "failure_reason"
         case createdAt           = "created_at"
+        case isMulti             = "is_multi"
+        case acceptedCount       = "accepted_count"
+    }
+}
+
+struct TradeParticipantRow: Codable, Hashable {
+    let id: UUID
+    let tradeId: UUID
+    let teamId: UUID
+    let givesPlayerIds: [String]
+    let givesPickIds: [UUID]
+    let receivesPlayerIds: [String]
+    let receivesPickIds: [UUID]
+    let acceptedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case tradeId           = "trade_id"
+        case teamId            = "team_id"
+        case givesPlayerIds    = "gives_player_ids"
+        case givesPickIds      = "gives_pick_ids"
+        case receivesPlayerIds = "receives_player_ids"
+        case receivesPickIds   = "receives_pick_ids"
+        case acceptedAt        = "accepted_at"
     }
 }
 
