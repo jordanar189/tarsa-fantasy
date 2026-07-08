@@ -63,6 +63,8 @@ struct PlayerDetailView: View {
     @State private var dropped: [DroppedPlayer] = []
     @State private var claimTarget: AddClaimTarget? = nil
     @State private var tradeTarget: AcquireTradeTarget? = nil
+    // Recent headlines tagging this player (Overview card).
+    @State private var newsItems: [PlayerNewsItem] = []
 
     private var player: Player? { app.displaySelectedPlayers()[playerID] }
     private var isProjected: Bool { app.isProjectedSeason(app.selectedSeason) }
@@ -154,6 +156,7 @@ struct PlayerDetailView: View {
                     playerID: playerID, season: app.selectedSeason, scoring: scoring
                 )
                 nicknameHistory = await app.playerNicknameHistory(playerID: playerID)
+                newsItems = await app.news(playerID: playerID, limit: 5)
                 if section == .career, let player {
                     await loadCareer(for: player)
                 }
@@ -679,6 +682,14 @@ struct PlayerDetailView: View {
                             RoundedRectangle(cornerRadius: FFRadius.m)
                                 .strokeBorder(FFColor.border, lineWidth: 1)
                         )
+                }
+            }
+            if !newsItems.isEmpty {
+                VStack(alignment: .leading, spacing: FFSpace.s) {
+                    Text("NEWS").ffEyebrow().padding(.leading, FFSpace.s)
+                    ForEach(newsItems.prefix(3)) { item in
+                        NewsCard(item: item, compact: true)
+                    }
                 }
             }
         }

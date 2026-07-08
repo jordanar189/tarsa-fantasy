@@ -1012,6 +1012,18 @@ struct LeagueMatchupArchive: Hashable {
     let awayPoints: Double
 }
 
+// One mirrored ESPN headline (player_news, synced hourly). playerIDs are
+// the local ids of tagged athletes; empty = league-wide story.
+struct PlayerNewsItem: Identifiable, Hashable {
+    let id: String
+    let headline: String
+    let description: String?
+    let published: Date
+    let url: String?
+    let imageURL: String?
+    let playerIDs: [String]
+}
+
 // One row from the play-by-play table. Every field except game_id /
 // play_id / season / week is optional because the historical rows synced
 // under the slim schema have null for the expansion columns.

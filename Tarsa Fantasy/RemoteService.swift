@@ -1252,6 +1252,43 @@ actor RemoteService {
         return try await self.league(id: leagueID)
     }
 
+    // MARK: - Player news
+
+    // Recent headlines, newest first. playerID filters to articles tagging
+    // that player; nil = the league-wide feed.
+    func news(playerID: String? = nil, limit: Int = 50) async -> [PlayerNewsItem] {
+        struct Row: Decodable {
+            let id: String
+            let headline: String
+            let description: String?
+            let published: Date
+            let url: String?
+            let imageUrl: String?
+            let playerIds: [String]
+            enum CodingKeys: String, CodingKey {
+                case id, headline, description, published, url
+                case imageUrl  = "image_url"
+                case playerIds = "player_ids"
+            }
+        }
+        var builder = client.from("player_news").select()
+        if let playerID {
+            builder = builder.contains("player_ids", value: [playerID])
+        }
+        let rows: [Row] = (try? await builder
+            .order("published", ascending: false)
+            .limit(limit)
+            .execute()
+            .value) ?? []
+        return rows.map {
+            PlayerNewsItem(
+                id: $0.id, headline: $0.headline, description: $0.description,
+                published: $0.published, url: $0.url, imageURL: $0.imageUrl,
+                playerIDs: $0.playerIds
+            )
+        }
+    }
+
     // Keeper-lite: owner (or commish) locks in up to keeper_count players
     // from the team's roster before the draft. Validation is server-side
     // (set_keepers RPC): count, roster membership, and draft-not-started.

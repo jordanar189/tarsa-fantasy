@@ -1326,6 +1326,12 @@ final class AppState {
         return updated
     }
 
+    // MARK: - Player news
+
+    func news(playerID: String? = nil, limit: Int = 50) async -> [PlayerNewsItem] {
+        await remote.news(playerID: playerID, limit: limit)
+    }
+
     // Keeper-lite: lock in a team's keepers pre-draft (server-validated).
     @discardableResult
     func setKeepers(leagueID: String, teamID: String, playerIDs: [String]) async throws -> League? {
