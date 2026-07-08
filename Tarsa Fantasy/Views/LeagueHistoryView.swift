@@ -69,7 +69,7 @@ struct LeagueHistoryView: View {
             }
             VStack(spacing: 0) {
                 ForEach(a.standings) { row in
-                    standingsRow(row, leagueChainID: a.leagueID)
+                    standingsRow(row, archive: a)
                 }
             }
             .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.s))
@@ -81,12 +81,16 @@ struct LeagueHistoryView: View {
         .ffCard()
     }
 
-    private func standingsRow(_ row: StandingsRow, leagueChainID: String) -> some View {
-        let team = league.teams.first(where: { $0.id == row.id })
-        let isMe = team?.ownerID == app.session?.userID
-        let canOpenHeadToHead = (team?.ownerID != nil) && !isMe
+    private func standingsRow(_ row: StandingsRow, archive: LeagueSeasonArchive) -> some View {
+        // Standings reference the archived season's team ids — resolve the
+        // owner through the archive's chain-wide map, falling back to the
+        // current league's teams for pre-map archives.
+        let ownerID = archive.ownerByTeamID[row.id]
+            ?? league.teams.first(where: { $0.id == row.id })?.ownerID
+        let isMe = ownerID == app.session?.userID
+        let canOpenHeadToHead = (ownerID != nil) && !isMe
         return Button {
-            if let opp = team?.ownerID {
+            if let opp = ownerID {
                 matchupSheet = HeadToHeadContext(
                     opponentUserID: opp, opponentLabel: row.name
                 )
