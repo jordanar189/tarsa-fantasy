@@ -28,11 +28,13 @@ private let oneQBConfig = RosterConfig(
 )
 
 private func league(teams: [FantasyTeam], schedule: [ScheduleWeek],
-                    config: RosterConfig = oneQBConfig) -> League {
+                    config: RosterConfig = oneQBConfig,
+                    tiebreaker: TiebreakerMode = .pointsFor) -> League {
     League(
         id: "L1", name: "Test League", season: 2025, scoring: .standard,
         createdAt: Date(timeIntervalSince1970: 0),
-        teams: teams, schedule: schedule, rosterConfig: config
+        teams: teams, schedule: schedule, rosterConfig: config,
+        tiebreaker: tiebreaker
     )
 }
 
@@ -72,6 +74,55 @@ struct StandingsTests {
         #expect(a.wins == 2 && a.losses == 0 && a.ties == 1)
         #expect(b.wins == 2 && b.losses == 1 && b.ties == 0)
         #expect(a.rank < b.rank, ".833 (2-0-1) must outrank .667 (2-1-0) despite lower PF")
+    }
+
+    /// Head-to-head tiebreaker: among equal win%, the team that won the
+    /// meeting ranks first even with far fewer points-for.
+    @Test func headToHeadTiebreaker() {
+        let players: [String: Player] = [
+            "qa": qb("qa", weekPoints: [1: 5,  2: 30, 3: 30]),   // A: PF 65, lost to B
+            "qb": qb("qb", weekPoints: [1: 10, 2: 20, 3: 2]),    // B: PF 32, beat A
+            "qc": qb("qc", weekPoints: [1: 2,  2: 10, 3: 5]),
+            "qd": qb("qd", weekPoints: [1: 3,  2: 1,  3: 1])
+        ]
+        let teams = ["A": "qa", "B": "qb", "C": "qc", "D": "qd"].map {
+            FantasyTeam(id: $0.key, name: $0.key, roster: [$0.value])
+        }
+        // A: L(B) W(C) W(D) = 2-1 · B: W(A) W(D) L(C) = 2-1
+        let schedule = [
+            ScheduleWeek(week: 1, matchups: [["A", "B"], ["C", "D"]], byes: []),
+            ScheduleWeek(week: 2, matchups: [["A", "C"], ["B", "D"]], byes: []),
+            ScheduleWeek(week: 3, matchups: [["A", "D"], ["B", "C"]], byes: [])
+        ]
+        let byPF = Fantasy.standings(
+            league: league(teams: teams, schedule: schedule, tiebreaker: .pointsFor),
+            players: players)
+        #expect(byPF.first { $0.id == "A" }!.rank < byPF.first { $0.id == "B" }!.rank,
+                "points-for mode: A's 65 PF outranks B's 32")
+        let byH2H = Fantasy.standings(
+            league: league(teams: teams, schedule: schedule, tiebreaker: .headToHead),
+            players: players)
+        #expect(byH2H.first { $0.id == "B" }!.rank < byH2H.first { $0.id == "A" }!.rank,
+                "h2h mode: B beat A, so B ranks first despite the PF gap")
+    }
+
+    /// Points-against tiebreaker: the tougher schedule (more PA) ranks first.
+    @Test func pointsAgainstTiebreaker() {
+        let players: [String: Player] = [
+            "qa": qb("qa", weekPoints: [1: 21]),   // A: PF 21, PA 20
+            "qb": qb("qb", weekPoints: [1: 50]),   // B: PF 50, PA 5
+            "qc": qb("qc", weekPoints: [1: 20]),
+            "qd": qb("qd", weekPoints: [1: 5])
+        ]
+        let teams = ["A": "qa", "B": "qb", "C": "qc", "D": "qd"].map {
+            FantasyTeam(id: $0.key, name: $0.key, roster: [$0.value])
+        }
+        let schedule = [ScheduleWeek(week: 1, matchups: [["A", "C"], ["B", "D"]], byes: [])]
+        let rows = Fantasy.standings(
+            league: league(teams: teams, schedule: schedule, tiebreaker: .pointsAgainst),
+            players: players)
+        #expect(rows.first { $0.id == "A" }!.rank < rows.first { $0.id == "B" }!.rank,
+                "A's 20 PA outranks B's 5 PA in points-against mode")
     }
 
     /// Identical records fall back to points-for.

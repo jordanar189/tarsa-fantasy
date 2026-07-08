@@ -1313,14 +1313,15 @@ final class AppState {
         playoffTeams: Int, playoffReseed: Bool,
         scoringSettings: ScoringSettings?, divisionNames: [String],
         regularSeasonWeeks: Int, weeksPerRound: Int, schedule: [ScheduleWeek],
-        keeperCount: Int
+        keeperCount: Int,
+        tiebreaker: TiebreakerMode = .pointsFor
     ) async throws -> League? {
         let updated = try await remote.updateLeague(
             leagueID: leagueID, name: name, scoring: scoring, rosterConfig: rosterConfig,
             playoffTeams: playoffTeams, playoffReseed: playoffReseed,
             scoringSettings: scoringSettings, divisionNames: divisionNames,
             regularSeasonWeeks: regularSeasonWeeks, weeksPerRound: weeksPerRound,
-            schedule: schedule, keeperCount: keeperCount
+            schedule: schedule, keeperCount: keeperCount, tiebreaker: tiebreaker
         )
         await reloadLeagues()
         return updated
