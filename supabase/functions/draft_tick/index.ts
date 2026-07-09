@@ -118,12 +118,19 @@ Deno.serve(async (_req: Request) => {
         const now = new Date();
         const { data: drafts } = await supa.from("drafts")
             .select("*").eq("status", "live");
-        const due = (drafts ?? []).filter((d: DraftRow) =>
-            d.pick_deadline && new Date(d.pick_deadline).getTime() <= now.getTime()
-        );
         const results: { draft: string; outcome: string }[] = [];
-        for (const d of due) {
-            const r = await advanceDraft(d as DraftRow);
+        for (const d of (drafts ?? []) as DraftRow[]) {
+            if (d.format === "auction") {
+                // Auction clocks live partly on the open lot, so the
+                // pick_deadline prefilter doesn't apply.
+                const r = await advanceAuction(d, now);
+                if (r !== "waiting") results.push({ draft: d.id, outcome: r });
+                continue;
+            }
+            if (!d.pick_deadline || new Date(d.pick_deadline).getTime() > now.getTime()) {
+                continue;
+            }
+            const r = await advanceDraft(d);
             results.push({ draft: d.id, outcome: r });
         }
         return new Response(JSON.stringify({
@@ -135,6 +142,81 @@ Deno.serve(async (_req: Request) => {
         });
     }
 });
+
+interface LotRow {
+    id: string; player_id: string; bid_deadline: string | null; status: string;
+}
+
+// Auction backstop: settle the open lot once its bid clock has expired, or
+// auto-nominate the best available player at $1 when the nomination clock
+// has expired with no lot open. Connected clients do both faster; every
+// path here is idempotent/deadline-gated server-side.
+async function advanceAuction(d: DraftRow, now: Date): Promise<string> {
+    const { data: lots } = await supa.from("auction_lots")
+        .select("id, player_id, bid_deadline, status")
+        .eq("draft_id", d.id).eq("status", "open").limit(1);
+    const lot = (lots ?? [])[0] as LotRow | undefined;
+
+    if (lot) {
+        if (lot.bid_deadline && new Date(lot.bid_deadline).getTime() <= now.getTime()) {
+            const { error } = await supa.rpc("settle_lot", { p_draft_id: d.id });
+            return error ? `settle error: ${error.message}` : "settled";
+        }
+        return "waiting";
+    }
+
+    if (!d.pick_deadline || new Date(d.pick_deadline).getTime() > now.getTime()) {
+        return "waiting";
+    }
+
+    // Nomination clock expired: nominate best available by ADP for the team
+    // on the nomination clock (round-robin over pick_order).
+    const teamCount = d.pick_order.length;
+    if (teamCount === 0) return "no_pick_order";
+    const teamID = d.pick_order[(d.current_pick - 1) % teamCount];
+
+    const { data: lg } = await supa.from("leagues")
+        .select("id, season, scoring, is_test, roster_config")
+        .eq("id", d.league_id).single();
+    if (!lg) return "no_league";
+
+    // Unavailable = every rostered player in the league (covers keepers and
+    // settled lots, whose winners get the player appended) plus any player
+    // already auctioned in this draft.
+    const { data: teamRows } = await supa.from("teams")
+        .select("id, roster").eq("league_id", d.league_id);
+    const taken = new Set<string>(
+        ((teamRows ?? []) as { id: string; roster: string[] | null }[])
+            .flatMap(t => t.roster ?? [])
+    );
+    const { data: lotRows } = await supa.from("auction_lots")
+        .select("player_id").eq("draft_id", d.id);
+    for (const r of (lotRows ?? []) as { player_id: string }[]) taken.add(r.player_id);
+
+    const adpByID = await fetchAdpRankings(lg as LeagueRow);
+    const cache: CachePlayer[] = [];
+    for (let from = 0; ; from += 1000) {
+        const { data: page } = await supa.from("players_cache")
+            .select("id, position")
+            .order("id")
+            .range(from, from + 999);
+        if (!page || page.length === 0) break;
+        cache.push(...(page as CachePlayer[]));
+        if (page.length < 1000) break;
+    }
+    // Prefer ADP-ranked candidates; fall back to any available player when
+    // no snapshot exists (a stalled nomination is worse than a bad one).
+    let available = cache.filter(p => !taken.has(p.id) && adpByID.has(p.id));
+    if (available.length === 0) available = cache.filter(p => !taken.has(p.id));
+    if (available.length === 0) return "no_candidates";
+    available.sort((a, b) => (adpByID.get(a.id) ?? 9999) - (adpByID.get(b.id) ?? 9999));
+
+    const { error } = await supa.rpc("nominate_player", {
+        p_draft_id: d.id, p_team_id: teamID,
+        p_player_id: available[0].id, p_amount: 1, p_is_auto: true,
+    });
+    return error ? `nominate error: ${error.message}` : "nominated";
+}
 
 async function advanceDraft(d: DraftRow): Promise<string> {
     // Which team is on the clock? Traded picks override the snake math via
