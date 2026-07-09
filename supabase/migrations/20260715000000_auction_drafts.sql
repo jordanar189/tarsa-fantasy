@@ -106,6 +106,26 @@ begin
                        - (remaining - 1));
 end$$;
 
+-- Full roster size from a league's roster_config jsonb. Mirrors the Swift
+-- RosterConfig.totalSize defaults (and draft_tick's totalRounds math) so the
+-- server can size an auction independently of the client's total_picks —
+-- keeper-lite clients deliberately send a keeper-reduced size that would
+-- otherwise double-count keeper pre-fills.
+create or replace function public.roster_config_total_size(rc jsonb)
+returns int language sql immutable as $$
+    select coalesce((rc->>'qb')::int, 1)
+         + coalesce((rc->>'rb')::int, 2)
+         + coalesce((rc->>'wr')::int, 2)
+         + coalesce((rc->>'te')::int, 1)
+         + coalesce((rc->>'flex')::int, 1)
+         + coalesce((rc->>'superflex')::int, 0)
+         + coalesce((rc->>'wrFlex')::int, 0)
+         + coalesce((rc->>'recFlex')::int, 0)
+         + coalesce((rc->>'k')::int, 1)
+         + coalesce((rc->>'def')::int, 1)
+         + coalesce((rc->>'bench')::int, 6)
+$$;
+
 -- Round-robin team for a nomination counter (1-indexed; no snake reversal).
 create or replace function public.auction_nominator_at(p_draft public.drafts, p_counter int)
 returns uuid language sql stable as $$
@@ -401,6 +421,20 @@ begin
     team_count := array_length(d.pick_order, 1);
 
     if d.format = 'auction' then
+        -- Server-authoritative sizing: every team fills its FULL roster
+        -- (keepers included), so normalize total_picks from roster_config
+        -- rather than trusting the client's value — keeper-lite setup sends
+        -- a keeper-reduced size that would double-count the $1 pre-fills.
+        if team_count is not null and team_count > 0 then
+            select public.roster_config_total_size(l.roster_config) * team_count
+              into total_rounds
+              from public.leagues l where l.id = d.league_id;
+            if total_rounds is not null and total_rounds > 0 then
+                update public.drafts set total_picks = total_rounds where id = p_draft_id;
+                d.total_picks := total_rounds;
+            end if;
+        end if;
+
         -- Keepers occupy roster slots and charge $1 against the budget.
         pick_no := 0;
         if kc > 0 then
