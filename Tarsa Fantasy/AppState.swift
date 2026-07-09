@@ -1945,7 +1945,9 @@ final class AppState {
         pickSeconds: Int = 20,
         startDelay: TimeInterval = 30,
         myPickSlot: Int? = nil,
-        botsAutoPick: Bool = false
+        botsAutoPick: Bool = false,
+        draftFormat: DraftFormat = .snake,
+        auctionBudget: Int = 200
     ) async throws -> League {
         guard let session else { throw AppError.notSignedIn }
         let bots = max(1, botCount)
@@ -2010,15 +2012,17 @@ final class AppState {
             }
             let draft = try await remote.upsertDraft(
                 leagueID: league.id,
-                format: .snake,
+                format: draftFormat,
                 pickSeconds: pickSeconds,
                 startsAt: Date().addingTimeInterval(startDelay),
                 pickOrder: pickOrder,
-                rosterSize: league.rosterConfig.totalSize
+                rosterSize: league.rosterConfig.totalSize,
+                auctionBudget: auctionBudget
             )
             // Bots on auto-pick fire instantly when they hit the clock, so a
             // mock draft moves at the user's pace instead of 20s per bot.
-            if botsAutoPick, let draft {
+            // Auction bots are driven by the room's bot loop instead.
+            if botsAutoPick, draftFormat != .auction, let draft {
                 for teamID in botTeamIDs {
                     _ = try? await remote.setAutoPick(draftID: draft.id, teamID: teamID, enabled: true)
                 }
@@ -2063,10 +2067,12 @@ final class AppState {
         rosterConfig: RosterConfig = .default,
         teamCount: Int,
         myPickSlot: Int?,
-        clockSeconds: Int
+        clockSeconds: Int,
+        format: DraftFormat = .snake,
+        auctionBudget: Int = 200
     ) async throws -> League {
         let league = try await createSimulation(
-            name: "Mock Draft",
+            name: format == .auction ? "Mock Auction" : "Mock Draft",
             season: season,
             scoring: scoring,
             rosterConfig: rosterConfig,
@@ -2076,7 +2082,9 @@ final class AppState {
             pickSeconds: clockSeconds,
             startDelay: 10,
             myPickSlot: myPickSlot,
-            botsAutoPick: true
+            botsAutoPick: true,
+            draftFormat: format,
+            auctionBudget: auctionBudget
         )
         setMockFlag(league.id, true)
         return league

@@ -36,6 +36,11 @@ struct DraftRoomView: View {
     // and the player pending a nomination amount.
     @State private var lots: [AuctionLot] = []
     @State private var nominating: PlayerSummary? = nil
+    // League-wide auction dollar values (tradeValues normalized so the top
+    // total_picks players share the league's combined budget). Drives bot
+    // bidding in sims; display-only otherwise.
+    @State private var dollarValues: [String: Int] = [:]
+    @State private var botActing: Bool = false
     // Per-user, per-draft queue. Strictly overrides the auto-pick loop:
     // if a queued player is still available when the user's auto-pick
     // fires, they're taken before the loop strategy considers anyone.
@@ -133,6 +138,10 @@ struct DraftRoomView: View {
             lastSeenPick = new
             Task { await maybeAutoPickForAutoTeam() }
         }
+        // Sim auctions: this client drives the bot teams (it owns them), so
+        // mock auctions move at conversation pace instead of waiting on the
+        // per-minute cron. No-ops instantly outside test-league auctions.
+        .task(id: leagueID) { await auctionBotLoop() }
     }
 
     // MARK: - Load / refresh
@@ -480,6 +489,81 @@ struct DraftRoomView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Auction bots (sim leagues)
+
+    // In a simulation every bot team is owned by the viewer, so this client
+    // can nominate and bid on their behalf — same trust model as snake mock
+    // auto-picks. Bots created by createSimulation are always named "Bot N".
+    private var simBotTeams: [FantasyTeam] {
+        guard let league, league.isTest else { return [] }
+        return league.teams.filter { $0.name.hasPrefix("Bot ") }
+    }
+
+    private func auctionBotLoop() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 1_300_000_000)
+            await driveAuctionBots()
+        }
+    }
+
+    private func driveAuctionBots() async {
+        guard let draft, draft.format == .auction, draft.status == .live,
+              !botActing, !simBotTeams.isEmpty else { return }
+        botActing = true
+        defer { botActing = false }
+        await ensureDollarValues()
+        var rng = SystemRandomNumberGenerator()
+
+        if let lot = openLot {
+            guard let deadline = lot.bidDeadline, deadline > Date() else { return }
+            let candidates = simBotTeams.map {
+                (teamID: $0.id, maxBid: auctionMaxBid(draft: draft, teamID: $0.id))
+            }
+            if let bid = BotAI.auctionBid(
+                playerID: lot.playerID,
+                currentBid: lot.currentBid,
+                leaderTeamID: lot.currentBidderTeamID,
+                bots: candidates,
+                dollarValue: dollarValues[lot.playerID] ?? 1,
+                rng: &rng
+            ) {
+                _ = try? await app.placeBid(draftID: draft.id, teamID: bid.teamID, amount: bid.amount)
+                await reload()
+            }
+        } else if let nomID = auctionNominatorID(draft: draft),
+                  simBotTeams.contains(where: { $0.id == nomID }) {
+            let taken = Set(lots.map(\.playerID))
+                .union((league?.teams ?? []).flatMap(\.roster))
+            let ranked = dollarValues
+                .sorted { $0.value > $1.value }
+                .map(\.key)
+                .filter { !taken.contains($0) }
+            if let pick = BotAI.auctionNomination(available: Array(ranked.prefix(30)), rng: &rng) {
+                _ = try? await app.nominatePlayer(draftID: draft.id, teamID: nomID, playerID: pick, amount: 1)
+                await reload()
+            }
+        }
+    }
+
+    // tradeValues → auction dollars: the top total_picks players share the
+    // league's combined budget, floor $1. Computed once per room session.
+    private func ensureDollarValues() async {
+        guard dollarValues.isEmpty, let draft, let league else { return }
+        let snapshot = Fantasy.playersFor(league: league, snapshot: app.displayPlayers(season: league.season))
+        let values = Fantasy.tradeValues(
+            players: snapshot, scoring: league.scoring,
+            settings: league.scoringSettings, config: league.rosterConfig,
+            teamCount: league.teams.count,
+            valueRatings: app.selectedLeagueValueMap()
+        )
+        guard !values.isEmpty else { return }
+        let top = values.values.sorted(by: >).prefix(max(draft.totalPicks, 1))
+        let topSum = top.reduce(0, +)
+        guard topSum > 0 else { return }
+        let pool = Double(draft.auctionBudget * max(league.teams.count, 1))
+        dollarValues = values.mapValues { max(1, Int(($0 / topSum * pool).rounded())) }
     }
 
     // Deadline-gated server-side; every connected client may fire this.
