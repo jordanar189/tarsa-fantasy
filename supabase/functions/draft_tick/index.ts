@@ -204,12 +204,31 @@ async function advanceAuction(d: DraftRow, now: Date): Promise<string> {
         cache.push(...(page as CachePlayer[]));
         if (page.length < 1000) break;
     }
-    // Prefer ADP-ranked candidates; fall back to any available player when
-    // no snapshot exists (a stalled nomination is worse than a bad one).
+    // Prefer ADP-ranked candidates; without a snapshot, fall back to season
+    // fantasy points (same tiebreak advanceDraft uses) so the nomination is
+    // still a sensible best-available rather than alphabetical-by-id.
     let available = cache.filter(p => !taken.has(p.id) && adpByID.has(p.id));
-    if (available.length === 0) available = cache.filter(p => !taken.has(p.id));
-    if (available.length === 0) return "no_candidates";
-    available.sort((a, b) => (adpByID.get(a.id) ?? 9999) - (adpByID.get(b.id) ?? 9999));
+    if (available.length > 0) {
+        available.sort((a, b) => (adpByID.get(a.id) ?? 9999) - (adpByID.get(b.id) ?? 9999));
+    } else {
+        available = cache.filter(p => !taken.has(p.id));
+        if (available.length === 0) return "no_candidates";
+        const totals = new Map<string, number>();
+        for (let from = 0; ; from += 1000) {
+            const { data: page } = await supa.from("player_games")
+                .select("player_id, fantasy_points_ppr")
+                .eq("season", (lg as LeagueRow).season)
+                .order("player_id")
+                .order("week")
+                .range(from, from + 999);
+            if (!page || page.length === 0) break;
+            for (const s of page as PlayerStat[]) {
+                totals.set(s.player_id, (totals.get(s.player_id) ?? 0) + Number(s.fantasy_points_ppr));
+            }
+            if (page.length < 1000) break;
+        }
+        available.sort((a, b) => (totals.get(b.id) ?? 0) - (totals.get(a.id) ?? 0));
+    }
 
     const { error } = await supa.rpc("nominate_player", {
         p_draft_id: d.id, p_team_id: teamID,
