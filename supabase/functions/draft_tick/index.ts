@@ -22,6 +22,7 @@ interface DraftRow {
     pick_seconds: number; current_pick: number; total_picks: number;
     pick_deadline: string | null; pick_order: string[];
     pick_owner_overrides?: Record<string, string> | null;
+    pool?: string | null;   // 'all' | 'rookies'
 }
 interface RosterConfigRow {
     qb?: number; rb?: number; wr?: number; te?: number;
@@ -35,7 +36,10 @@ interface LeagueRow {
 interface PickRow { team_id: string; player_id: string; pick_number: number; }
 interface TeamKeepersRow { id: string; keepers: string[] | null; }
 interface PlayerStat { player_id: string; fantasy_points_ppr: number; }
-interface CachePlayer { id: string; position: string; }
+interface CachePlayer {
+    id: string; position: string;
+    years_exp?: number | null; draft_year?: number | null;
+}
 interface AdpRow { player_id: string; adp: number; snapshot_date: string; }
 
 // ============================================================
@@ -339,7 +343,7 @@ async function advanceDraft(d: DraftRow): Promise<string> {
     const cache: CachePlayer[] = [];
     for (let from = 0; ; from += 1000) {
         const { data: page } = await supa.from("players_cache")
-            .select("id, position")
+            .select("id, position, years_exp, draft_year")
             .order("id")
             .range(from, from + 999);
         if (!page || page.length === 0) break;
@@ -347,8 +351,13 @@ async function advanceDraft(d: DraftRow): Promise<string> {
         if (page.length < 1000) break;
     }
 
-    // Available = not-yet-picked.
-    const available = cache.filter(p => !pickedIDs.has(p.id));
+    // Available = not-yet-picked, restricted to the incoming class for
+    // rookie drafts (mirrors public.is_rookie).
+    const isRookie = (p: CachePlayer) =>
+        p.years_exp === 0 || (p.years_exp == null && p.draft_year === L.season);
+    const available = cache.filter(p =>
+        !pickedIDs.has(p.id) && (d.pool !== "rookies" || isRookie(p))
+    );
     if (available.length === 0) return "no_candidates";
 
     // Season-points fallback for tiebreaking players without ADP.

@@ -1655,12 +1655,12 @@ final class AppState {
     func upsertDraft(
         leagueID: String, format: DraftFormat, pickSeconds: Int,
         startsAt: Date, pickOrder: [String], rosterSize: Int,
-        auctionBudget: Int = 200
+        auctionBudget: Int = 200, pool: String = "all"
     ) async throws -> Draft? {
         try await remote.upsertDraft(
             leagueID: leagueID, format: format, pickSeconds: pickSeconds,
             startsAt: startsAt, pickOrder: pickOrder, rosterSize: rosterSize,
-            auctionBudget: auctionBudget
+            auctionBudget: auctionBudget, pool: pool
         )
     }
 

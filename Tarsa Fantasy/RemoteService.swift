@@ -1373,7 +1373,8 @@ actor RemoteService {
         startsAt: Date,
         pickOrder: [String],
         rosterSize: Int,
-        auctionBudget: Int = 200
+        auctionBudget: Int = 200,
+        pool: String = "all"
     ) async throws -> Draft? {
         guard let lid = UUID(uuidString: leagueID) else { return nil }
         let totalPicks = max(0, rosterSize * pickOrder.count)
@@ -1395,6 +1396,7 @@ actor RemoteService {
                 let pick_order: [String]
                 let total_picks: Int
                 let auction_budget: Int
+                let pool: String
             }
             let updated: DraftRow = try await client.from("drafts")
                 .update(DraftUpdate(
@@ -1403,7 +1405,8 @@ actor RemoteService {
                     starts_at: startsAt,
                     pick_order: pickOrder,
                     total_picks: totalPicks,
-                    auction_budget: auctionBudget
+                    auction_budget: auctionBudget,
+                    pool: pool
                 ))
                 .eq("id", value: existing.id)
                 .select()
@@ -1420,6 +1423,7 @@ actor RemoteService {
                 let pick_order: [String]
                 let total_picks: Int
                 let auction_budget: Int
+                let pool: String
             }
             let inserted: DraftRow = try await client.from("drafts")
                 .insert(DraftInsert(
@@ -1429,7 +1433,8 @@ actor RemoteService {
                     starts_at: startsAt,
                     pick_order: pickOrder,
                     total_picks: totalPicks,
-                    auction_budget: auctionBudget
+                    auction_budget: auctionBudget,
+                    pool: pool
                 ))
                 .select()
                 .single()
@@ -1638,7 +1643,8 @@ actor RemoteService {
                           let owner = UUID(uuidString: value)?.uuidString else { return nil }
                     return (pick, owner)
                 }),
-            auctionBudget: r.auctionBudget
+            auctionBudget: r.auctionBudget,
+            pool: r.pool
         )
     }
 
@@ -4080,8 +4086,10 @@ struct DraftRow: Codable, Hashable {
     let autoPickTeamIds: [String]
     let pickOwnerOverrides: [String: String]
     let auctionBudget: Int
+    let pool: String
 
     enum CodingKeys: String, CodingKey {
+        case pool
         case id, format, status
         case leagueId         = "league_id"
         case pickSeconds      = "pick_seconds"
@@ -4116,6 +4124,7 @@ struct DraftRow: Codable, Hashable {
         autoPickTeamIds = try c.decodeIfPresent([String].self, forKey: .autoPickTeamIds) ?? []
         pickOwnerOverrides = try c.decodeIfPresent([String: String].self, forKey: .pickOwnerOverrides) ?? [:]
         auctionBudget   = try c.decodeIfPresent(Int.self,   forKey: .auctionBudget) ?? 200
+        pool            = try c.decodeIfPresent(String.self, forKey: .pool) ?? "all"
     }
 }
 

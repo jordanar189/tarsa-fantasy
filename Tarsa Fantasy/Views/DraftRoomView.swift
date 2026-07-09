@@ -752,11 +752,18 @@ struct DraftRoomView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            let baseRows = Fantasy.search(
+            let searched = Fantasy.search(
                 players: players, query: query, position: effectivePosition,
                 scoring: league.scoring, limit: 0,
                 adp: adp.isEmpty ? nil : adp
             ).filter { !pickedIDs.contains($0.id) }
+            // Rookie drafts: only the incoming class (mirrors is_rookie).
+            let baseRows = draft.isRookieDraft
+                ? searched.filter { row in
+                    guard let p = players[row.id] else { return false }
+                    return p.yearsExp == 0 || (p.yearsExp == nil && p.draftYear == league.season)
+                }
+                : searched
             let rows = needsActive
                 ? baseRows.filter { allowedPositions.contains($0.position.uppercased()) }
                 : baseRows
