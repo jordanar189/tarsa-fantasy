@@ -137,8 +137,10 @@ struct DraftSetupView: View {
 
     private var formatSection: some View {
         Section {
+            // Rookie drafts run as snake/linear only — the auction machinery
+            // isn't rookie-aware and the server rejects the combination.
             Picker("Format", selection: $format) {
-                ForEach(DraftFormat.allCases) { f in
+                ForEach(DraftFormat.allCases.filter { !rookieOnly || $0 != .auction }) { f in
                     Text(f.label).tag(f)
                 }
             }
@@ -161,6 +163,9 @@ struct DraftSetupView: View {
                 }
                 .tint(FFColor.accent)
                 .disabled(locked)
+                .onChange(of: rookieOnly) { _, on in
+                    if on && format == .auction { format = .snake }
+                }
                 if rookieOnly {
                     Stepper(value: $rookieRounds, in: 1...5) {
                         HStack {

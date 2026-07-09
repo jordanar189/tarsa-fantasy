@@ -145,6 +145,13 @@ begin
     end if;
     if d.status = 'live' then return d; end if;
     if d.status = 'complete' then raise exception 'draft is already complete'; end if;
+    -- Rookie drafts are a short supplemental snake/linear format; none of
+    -- the auction machinery (nomination pool, total_picks normalization,
+    -- draft_tick auto-nomination) is rookie-aware, so the combination is
+    -- rejected outright rather than silently escaping the rookie-only rule.
+    if d.pool = 'rookies' and d.format = 'auction' then
+        raise exception 'rookie drafts run as snake or linear, not auction';
+    end if;
 
     select coalesce(l.keeper_count, 0), l.season, coalesce(l.keeper_round_cost, false)
       into kc, lg_season, round_cost
