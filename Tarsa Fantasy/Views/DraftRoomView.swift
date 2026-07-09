@@ -760,8 +760,9 @@ struct DraftRoomView: View {
             // Rookie drafts: only the incoming class (mirrors is_rookie).
             let baseRows = draft.isRookieDraft
                 ? searched.filter { row in
-                    guard let p = players[row.id] else { return false }
-                    return p.yearsExp == 0 || (p.yearsExp == nil && p.draftYear == league.season)
+                    guard let profile = players[row.id]?.profile else { return false }
+                    return profile.yearsExp == 0
+                        || (profile.yearsExp == nil && profile.draftYear == league.season)
                 }
                 : searched
             let rows = needsActive
