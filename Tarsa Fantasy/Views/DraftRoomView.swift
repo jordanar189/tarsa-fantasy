@@ -227,7 +227,7 @@ struct DraftRoomView: View {
                 statusPill(draft.status)
                 Spacer()
                 Text(draft.format == .auction
-                     ? "PLAYER \(soldLots.count + (openLot == nil ? 1 : 0))/\(draft.totalPicks) · $\(draft.auctionBudget) BUDGET"
+                     ? "PLAYER \(min(soldLots.count + 1, draft.totalPicks))/\(draft.totalPicks) · $\(draft.auctionBudget) BUDGET"
                      : "ROUND \(draft.currentRound) · PICK \(draft.currentPick)/\(draft.totalPicks)")
                     .ffEyebrow(color: FFColor.textTertiary)
             }
@@ -430,7 +430,7 @@ struct DraftRoomView: View {
                               lot: lot, team: myTeam, myMax: myMax, iLead: iLead)
                     bidButton(amount: lot.currentBid + 5, label: "+$5",
                               lot: lot, team: myTeam, myMax: myMax, iLead: iLead)
-                    bidButton(amount: min(lot.currentBid + 10, myMax), label: "+$10",
+                    bidButton(amount: lot.currentBid + 10, label: "+$10",
                               lot: lot, team: myTeam, myMax: myMax, iLead: iLead)
                 }
             }
