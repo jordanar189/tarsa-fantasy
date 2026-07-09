@@ -15,6 +15,7 @@ struct DraftSetupView: View {
     @State private var pickSeconds: Int
     @State private var format: DraftFormat
     @State private var pickOrder: [String]
+    @State private var auctionBudget: Int
     @State private var saving: Bool = false
     @State private var error: String? = nil
 
@@ -25,6 +26,7 @@ struct DraftSetupView: View {
         _startsAt    = State(initialValue: existing?.startsAt ?? Self.defaultStart())
         _pickSeconds = State(initialValue: existing?.pickSeconds ?? 60)
         _format      = State(initialValue: existing?.format ?? .snake)
+        _auctionBudget = State(initialValue: existing?.auctionBudget ?? 200)
         // Initial order: existing draft order, else waiver priority, else team order.
         let initial: [String] = existing?.pickOrder
             ?? (league.waiverPriority.isEmpty ? league.teams.map(\.id) : league.waiverPriority)
@@ -46,8 +48,10 @@ struct DraftSetupView: View {
     // Keeper-lite leagues draft fewer rounds — keepers already occupy roster
     // slots, so the draft fills only what's left. Round-cost leagues run the
     // full length; keepers pre-fill their cost rounds at draft start instead.
+    // Auctions always run full-size: keepers pre-fill as $1 sold lots and the
+    // server normalizes total_picks from roster_config regardless.
     private var rosterSize: Int {
-        league.keeperRoundCost
+        format == .auction || league.keeperRoundCost
             ? max(1, league.rosterConfig.totalSize)
             : max(1, league.rosterConfig.totalSize - league.keeperCount)
     }
@@ -105,7 +109,8 @@ struct DraftSetupView: View {
                 .disabled(locked)
             Stepper(value: $pickSeconds, in: 15...300, step: 15) {
                 HStack {
-                    Text("Pick clock").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                    Text(format == .auction ? "Nomination clock" : "Pick clock")
+                        .font(.ffBody).foregroundStyle(FFColor.textPrimary)
                     Spacer()
                     Text("\(pickSeconds)s")
                         .font(.ffStatSmall)
@@ -116,7 +121,9 @@ struct DraftSetupView: View {
         } header: {
             Text("Schedule").ffEyebrow()
         } footer: {
-            Text("Owners can enter the room any time after the draft is scheduled. The pick clock starts once the draft goes live — when it hits zero, the best-available player is auto-picked.")
+            Text(format == .auction
+                 ? "Owners can enter the room any time after the draft is scheduled. The nomination clock starts once the draft goes live — when it hits zero, the best-available player is nominated automatically at $1."
+                 : "Owners can enter the room any time after the draft is scheduled. The pick clock starts once the draft goes live — when it hits zero, the best-available player is auto-picked.")
                 .foregroundStyle(FFColor.textTertiary)
         }
         .listRowBackground(FFColor.surface)
@@ -130,15 +137,34 @@ struct DraftSetupView: View {
                 }
             }
             .disabled(locked)
+            if format == .auction {
+                Stepper(value: $auctionBudget, in: 100...500, step: 10) {
+                    HStack {
+                        Text("Budget per team").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                        Spacer()
+                        Text("$\(auctionBudget)").font(.ffStatSmall).foregroundStyle(FFColor.accent)
+                    }
+                }
+                .disabled(locked)
+            }
         } header: {
             Text("Format").ffEyebrow()
         } footer: {
-            Text(format == .snake
-                 ? "Snake: round 1 picks 1→N, round 2 reverses, etc."
-                 : "Linear: every round uses the same order. Rare in fantasy football.")
+            Text(formatFooter)
                 .foregroundStyle(FFColor.textTertiary)
         }
         .listRowBackground(FFColor.surface)
+    }
+
+    private var formatFooter: String {
+        switch format {
+        case .snake:
+            return "Snake: round 1 picks 1→N, round 2 reverses, etc."
+        case .linear:
+            return "Linear: every round uses the same order. Rare in fantasy football."
+        case .auction:
+            return "Auction (beta): teams take turns nominating; everyone bids from a $\(auctionBudget) budget. The order below sets nomination turns."
+        }
     }
 
     private var orderSection: some View {
@@ -204,7 +230,8 @@ struct DraftSetupView: View {
             guard let updated = try await app.upsertDraft(
                 leagueID: league.id, format: format,
                 pickSeconds: pickSeconds, startsAt: startsAt,
-                pickOrder: pickOrder, rosterSize: rosterSize
+                pickOrder: pickOrder, rosterSize: rosterSize,
+                auctionBudget: auctionBudget
             ) else { return }
             onSave(updated)
             dismiss()

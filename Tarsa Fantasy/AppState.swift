@@ -1626,6 +1626,27 @@ final class AppState {
         (try? await remote.draft(leagueID: leagueID)) ?? nil
     }
 
+    // MARK: - Auction drafts
+
+    func auctionLots(draftID: String) async -> [AuctionLot] {
+        await remote.auctionLots(draftID: draftID)
+    }
+
+    @discardableResult
+    func nominatePlayer(draftID: String, teamID: String, playerID: String, amount: Int) async throws -> AuctionLot? {
+        try await remote.nominatePlayer(draftID: draftID, teamID: teamID, playerID: playerID, amount: amount)
+    }
+
+    @discardableResult
+    func placeBid(draftID: String, teamID: String, amount: Int) async throws -> AuctionLot? {
+        try await remote.placeBid(draftID: draftID, teamID: teamID, amount: amount)
+    }
+
+    @discardableResult
+    func settleLot(draftID: String) async throws -> Draft? {
+        try await remote.settleLot(draftID: draftID)
+    }
+
     func draftPicks(draftID: String) async -> [DraftPick] {
         (try? await remote.draftPicks(draftID: draftID)) ?? []
     }
@@ -1633,11 +1654,13 @@ final class AppState {
     @discardableResult
     func upsertDraft(
         leagueID: String, format: DraftFormat, pickSeconds: Int,
-        startsAt: Date, pickOrder: [String], rosterSize: Int
+        startsAt: Date, pickOrder: [String], rosterSize: Int,
+        auctionBudget: Int = 200
     ) async throws -> Draft? {
         try await remote.upsertDraft(
             leagueID: leagueID, format: format, pickSeconds: pickSeconds,
-            startsAt: startsAt, pickOrder: pickOrder, rosterSize: rosterSize
+            startsAt: startsAt, pickOrder: pickOrder, rosterSize: rosterSize,
+            auctionBudget: auctionBudget
         )
     }
 

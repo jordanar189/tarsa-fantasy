@@ -1372,7 +1372,8 @@ actor RemoteService {
         pickSeconds: Int,
         startsAt: Date,
         pickOrder: [String],
-        rosterSize: Int
+        rosterSize: Int,
+        auctionBudget: Int = 200
     ) async throws -> Draft? {
         guard let lid = UUID(uuidString: leagueID) else { return nil }
         let totalPicks = max(0, rosterSize * pickOrder.count)
@@ -1393,6 +1394,7 @@ actor RemoteService {
                 let starts_at: Date
                 let pick_order: [String]
                 let total_picks: Int
+                let auction_budget: Int
             }
             let updated: DraftRow = try await client.from("drafts")
                 .update(DraftUpdate(
@@ -1400,7 +1402,8 @@ actor RemoteService {
                     pick_seconds: pickSeconds,
                     starts_at: startsAt,
                     pick_order: pickOrder,
-                    total_picks: totalPicks
+                    total_picks: totalPicks,
+                    auction_budget: auctionBudget
                 ))
                 .eq("id", value: existing.id)
                 .select()
@@ -1416,6 +1419,7 @@ actor RemoteService {
                 let starts_at: Date
                 let pick_order: [String]
                 let total_picks: Int
+                let auction_budget: Int
             }
             let inserted: DraftRow = try await client.from("drafts")
                 .insert(DraftInsert(
@@ -1424,7 +1428,8 @@ actor RemoteService {
                     pick_seconds: pickSeconds,
                     starts_at: startsAt,
                     pick_order: pickOrder,
-                    total_picks: totalPicks
+                    total_picks: totalPicks,
+                    auction_budget: auctionBudget
                 ))
                 .select()
                 .single()
@@ -1432,6 +1437,65 @@ actor RemoteService {
                 .value
             return Self.toDraft(inserted)
         }
+    }
+
+    // MARK: - Auction drafts
+
+    // All lots for a draft, nomination order. Sold rows are the results
+    // board; at most one row is open.
+    func auctionLots(draftID: String) async -> [AuctionLot] {
+        guard let did = UUID(uuidString: draftID) else { return [] }
+        let rows: [AuctionLotRow] = (try? await client.from("auction_lots")
+            .select()
+            .eq("draft_id", value: did)
+            .order("nomination_number", ascending: true)
+            .execute()
+            .value) ?? []
+        return rows.map(Self.toLot)
+    }
+
+    @discardableResult
+    func nominatePlayer(
+        draftID: String, teamID: String, playerID: String, amount: Int
+    ) async throws -> AuctionLot? {
+        guard let did = UUID(uuidString: draftID),
+              let tid = UUID(uuidString: teamID) else { return nil }
+        struct Args: Encodable {
+            let p_draft_id: UUID
+            let p_team_id: UUID
+            let p_player_id: String
+            let p_amount: Int
+        }
+        let row: AuctionLotRow = try await client.rpc("nominate_player", params: Args(
+            p_draft_id: did, p_team_id: tid, p_player_id: playerID, p_amount: amount
+        )).execute().value
+        return Self.toLot(row)
+    }
+
+    @discardableResult
+    func placeBid(draftID: String, teamID: String, amount: Int) async throws -> AuctionLot? {
+        guard let did = UUID(uuidString: draftID),
+              let tid = UUID(uuidString: teamID) else { return nil }
+        struct Args: Encodable {
+            let p_draft_id: UUID
+            let p_team_id: UUID
+            let p_amount: Int
+        }
+        let row: AuctionLotRow = try await client.rpc("place_bid", params: Args(
+            p_draft_id: did, p_team_id: tid, p_amount: amount
+        )).execute().value
+        return Self.toLot(row)
+    }
+
+    // Idempotent, deadline-gated server-side; safe to fire from any client's
+    // local countdown.
+    @discardableResult
+    func settleLot(draftID: String) async throws -> Draft? {
+        guard let did = UUID(uuidString: draftID) else { return nil }
+        struct Args: Encodable { let p_draft_id: UUID }
+        let row: DraftRow = try await client.rpc("settle_lot", params: Args(p_draft_id: did))
+            .execute().value
+        return Self.toDraft(row)
     }
 
     @discardableResult
@@ -1573,7 +1637,23 @@ actor RemoteService {
                     guard let pick = Int(key),
                           let owner = UUID(uuidString: value)?.uuidString else { return nil }
                     return (pick, owner)
-                })
+                }),
+            auctionBudget: r.auctionBudget
+        )
+    }
+
+    private static func toLot(_ r: AuctionLotRow) -> AuctionLot {
+        AuctionLot(
+            id: r.id.uuidString,
+            draftID: r.draftId.uuidString,
+            playerID: r.playerId,
+            nominationNumber: r.nominationNumber,
+            nominatingTeamID: r.nominatingTeamId.uuidString,
+            currentBid: r.currentBid,
+            currentBidderTeamID: r.currentBidderTeamId.uuidString,
+            bidDeadline: r.bidDeadline,
+            status: r.status,
+            soldPrice: r.soldPrice
         )
     }
 
@@ -3999,6 +4079,7 @@ struct DraftRow: Codable, Hashable {
     let pausedRemaining: Int?
     let autoPickTeamIds: [String]
     let pickOwnerOverrides: [String: String]
+    let auctionBudget: Int
 
     enum CodingKeys: String, CodingKey {
         case id, format, status
@@ -4014,6 +4095,7 @@ struct DraftRow: Codable, Hashable {
         case pausedRemaining  = "paused_remaining"
         case autoPickTeamIds  = "auto_pick_team_ids"
         case pickOwnerOverrides = "pick_owner_overrides"
+        case auctionBudget    = "auction_budget"
     }
 
     init(from decoder: Decoder) throws {
@@ -4033,6 +4115,32 @@ struct DraftRow: Codable, Hashable {
         pausedRemaining = try c.decodeIfPresent(Int.self,   forKey: .pausedRemaining)
         autoPickTeamIds = try c.decodeIfPresent([String].self, forKey: .autoPickTeamIds) ?? []
         pickOwnerOverrides = try c.decodeIfPresent([String: String].self, forKey: .pickOwnerOverrides) ?? [:]
+        auctionBudget   = try c.decodeIfPresent(Int.self,   forKey: .auctionBudget) ?? 200
+    }
+}
+
+struct AuctionLotRow: Codable, Hashable {
+    let id: UUID
+    let draftId: UUID
+    let playerId: String
+    let nominationNumber: Int
+    let nominatingTeamId: UUID
+    let currentBid: Int
+    let currentBidderTeamId: UUID
+    let bidDeadline: Date?
+    let status: String
+    let soldPrice: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case id, status
+        case draftId             = "draft_id"
+        case playerId            = "player_id"
+        case nominationNumber    = "nomination_number"
+        case nominatingTeamId    = "nominating_team_id"
+        case currentBid          = "current_bid"
+        case currentBidderTeamId = "current_bidder_team_id"
+        case bidDeadline         = "bid_deadline"
+        case soldPrice           = "sold_price"
     }
 }
 

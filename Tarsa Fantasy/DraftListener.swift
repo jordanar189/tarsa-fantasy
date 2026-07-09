@@ -37,6 +37,11 @@ actor DraftListener {
             schema: "public", table: "draft_picks",
             filter: .eq("draft_id", value: draftUUID)
         )
+        let lotChanges = ch.postgresChange(
+            AnyAction.self,
+            schema: "public", table: "auction_lots",
+            filter: .eq("draft_id", value: draftUUID)
+        )
 
         guard await RealtimeResilience.subscribe(ch, label: "DraftListener") else {
             // Foreground hook retries; currentDraftID stays set for it.
@@ -58,6 +63,15 @@ actor DraftListener {
                 await MainActor.run {
                     NotificationCenter.default.post(
                         name: .draftPicksUpdated, object: nil, userInfo: ["draftID": draftID]
+                    )
+                }
+            }
+        }
+        Task.detached {
+            for await _ in lotChanges {
+                await MainActor.run {
+                    NotificationCenter.default.post(
+                        name: .auctionLotsUpdated, object: nil, userInfo: ["draftID": draftID]
                     )
                 }
             }
@@ -102,6 +116,7 @@ actor DraftListener {
 }
 
 extension Notification.Name {
-    static let draftUpdated      = Notification.Name("draftUpdated")
-    static let draftPicksUpdated = Notification.Name("draftPicksUpdated")
+    static let draftUpdated       = Notification.Name("draftUpdated")
+    static let draftPicksUpdated  = Notification.Name("draftPicksUpdated")
+    static let auctionLotsUpdated = Notification.Name("auctionLotsUpdated")
 }

@@ -32,6 +32,10 @@ struct DraftRoomView: View {
     @State private var showingTeamManager: Bool = false
     @State private var showingKeeperPicker: Bool = false
     @State private var adp: [String: Double] = [:]
+    // Auction state: full lot list (sold rows double as the results board)
+    // and the player pending a nomination amount.
+    @State private var lots: [AuctionLot] = []
+    @State private var nominating: PlayerSummary? = nil
     // Per-user, per-draft queue. Strictly overrides the auto-pick loop:
     // if a queued player is still available when the user's auto-pick
     // fires, they're taken before the loop strategy considers anyone.
@@ -67,6 +71,20 @@ struct DraftRoomView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .draftPicksUpdated)) { _ in
             Task { await reload() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .auctionLotsUpdated)) { _ in
+            Task { await reload() }
+        }
+        .sheet(item: $nominating) { player in
+            if let draft, let league,
+               let myTeam = league.teams.first(where: { $0.ownerID == app.session?.userID }) {
+                NominationSheet(
+                    player: player,
+                    maxBid: auctionMaxBid(draft: draft, teamID: myTeam.id)
+                ) { amount in
+                    Task { await nominate(player: player, teamID: myTeam.id, amount: amount) }
+                }
+            }
         }
         .alert(item: $confirmPlayer) { player in
             Alert(
@@ -134,6 +152,9 @@ struct DraftRoomView: View {
             draft = await app.draft(leagueID: lg.id)
             if let did = draft?.id {
                 picks = await app.draftPicks(draftID: did)
+                if draft?.format == .auction {
+                    lots = await app.auctionLots(draftID: did)
+                }
                 if let myTeam = lg.teams.first(where: { $0.ownerID == app.session?.userID }) {
                     queue = await app.draftQueue(draftID: did, teamID: myTeam.id)
                 }
@@ -162,7 +183,12 @@ struct DraftRoomView: View {
                 }
                 switch tab {
                 case .players: playersList(draft: draft, league: league)
-                case .board:   boardView(draft: draft, league: league)
+                case .board:
+                    if draft.format == .auction {
+                        auctionBoard(draft: draft, league: league)
+                    } else {
+                        boardView(draft: draft, league: league)
+                    }
                 case .teams:   teamsRosterView(draft: draft, league: league)
                 case .queue:   queueView(draft: draft, league: league)
                 case .mine:    myPicks(draft: draft, league: league)
@@ -200,7 +226,9 @@ struct DraftRoomView: View {
             HStack {
                 statusPill(draft.status)
                 Spacer()
-                Text("ROUND \(draft.currentRound) · PICK \(draft.currentPick)/\(draft.totalPicks)")
+                Text(draft.format == .auction
+                     ? "PLAYER \(min(soldLots.count + 1, draft.totalPicks))/\(draft.totalPicks) · $\(draft.auctionBudget) BUDGET"
+                     : "ROUND \(draft.currentRound) · PICK \(draft.currentPick)/\(draft.totalPicks)")
                     .ffEyebrow(color: FFColor.textTertiary)
             }
 
@@ -208,7 +236,11 @@ struct DraftRoomView: View {
             case .scheduled:
                 scheduledHeader(draft: draft, league: league, isCommish: isCommish)
             case .live:
-                liveHeader(draft: draft, league: league, onClockTeam: onClockTeam, isMyTurn: isMyTurn, isCommish: isCommish)
+                if draft.format == .auction {
+                    auctionHeader(draft: draft, league: league)
+                } else {
+                    liveHeader(draft: draft, league: league, onClockTeam: onClockTeam, isMyTurn: isMyTurn, isCommish: isCommish)
+                }
             case .paused:
                 pausedHeader(draft: draft, isCommish: isCommish)
             case .complete:
@@ -303,6 +335,188 @@ struct DraftRoomView: View {
                         }
                 }
             }
+        }
+    }
+
+    // MARK: - Auction
+
+    private var openLot: AuctionLot? { lots.first(where: \.isOpen) }
+    private var soldLots: [AuctionLot] { lots.filter { !$0.isOpen } }
+
+    // Client mirrors of the server helpers — display only; every rule is
+    // re-validated by the RPCs.
+    private func auctionSlotsPerTeam(draft: Draft) -> Int {
+        let n = max(draft.pickOrder.count, 1)
+        return draft.totalPicks / n
+    }
+    private func auctionSpent(teamID: String) -> Int {
+        soldLots.filter { $0.currentBidderTeamID == teamID }
+            .compactMap(\.soldPrice).reduce(0, +)
+    }
+    private func auctionWon(teamID: String) -> Int {
+        soldLots.filter { $0.currentBidderTeamID == teamID }.count
+    }
+    private func auctionMaxBid(draft: Draft, teamID: String) -> Int {
+        let remaining = auctionSlotsPerTeam(draft: draft) - auctionWon(teamID: teamID)
+        guard remaining > 0 else { return 0 }
+        return max(0, draft.auctionBudget - auctionSpent(teamID: teamID) - (remaining - 1))
+    }
+    private func auctionNominatorID(draft: Draft) -> String? {
+        let n = draft.pickOrder.count
+        guard n > 0 else { return nil }
+        return draft.pickOrder[(draft.currentPick - 1) % n]
+    }
+
+    @ViewBuilder
+    private func auctionHeader(draft: Draft, league: League) -> some View {
+        let myTeam = league.teams.first(where: { $0.ownerID == app.session?.userID })
+        if let lot = openLot {
+            auctionLotCard(lot: lot, draft: draft, league: league, myTeam: myTeam)
+        } else {
+            nominationBanner(draft: draft, league: league, myTeam: myTeam)
+        }
+    }
+
+    @ViewBuilder
+    private func auctionLotCard(lot: AuctionLot, draft: Draft, league: League, myTeam: FantasyTeam?) -> some View {
+        let players = Fantasy.playersFor(league: league, snapshot: app.displayPlayers(season: league.season))
+        let summary = players[lot.playerID].map { Fantasy.summary($0, scoring: league.scoring) }
+        let leader = league.teams.first(where: { $0.id == lot.currentBidderTeamID })
+        let iLead = myTeam?.id == lot.currentBidderTeamID
+        let myMax = myTeam.map { auctionMaxBid(draft: draft, teamID: $0.id) } ?? 0
+
+        VStack(alignment: .leading, spacing: FFSpace.m) {
+            HStack(spacing: FFSpace.m) {
+                PlayerAvatar(url: summary?.headshotURL ?? "",
+                             fallback: (summary?.name ?? "?").initialsFromName, size: 44)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(summary?.name ?? lot.playerID)
+                        .font(.ffHeadline).foregroundStyle(FFColor.textPrimary)
+                    HStack(spacing: 6) {
+                        if let summary { PositionPill(position: summary.position) }
+                        Text(summary?.team ?? "")
+                            .font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                    }
+                }
+                .playerLink(lot.playerID)
+                Spacer()
+                if let deadline = lot.bidDeadline {
+                    TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                        let remaining = deadline.timeIntervalSince(context.date)
+                        countdownDial(remaining: max(0, remaining), total: 15)
+                            .onChange(of: remaining <= 0) { _, expired in
+                                if expired { Task { await settleIfDue() } }
+                            }
+                    }
+                }
+            }
+            HStack(alignment: .firstTextBaseline) {
+                Text("$\(lot.currentBid)")
+                    .font(.ffStatLarge)
+                    .foregroundStyle(iLead ? FFColor.positive : FFColor.textPrimary)
+                Text(iLead ? "you lead" : (leader?.name ?? "—"))
+                    .font(.ffCaption)
+                    .foregroundStyle(iLead ? FFColor.positive : FFColor.textSecondary)
+                Spacer()
+                if myTeam != nil {
+                    Text("Your max $\(myMax)")
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+            }
+            if let myTeam {
+                HStack(spacing: FFSpace.s) {
+                    bidButton(amount: lot.currentBid + 1, label: "+$1",
+                              lot: lot, team: myTeam, myMax: myMax, iLead: iLead)
+                    bidButton(amount: lot.currentBid + 5, label: "+$5",
+                              lot: lot, team: myTeam, myMax: myMax, iLead: iLead)
+                    bidButton(amount: lot.currentBid + 10, label: "+$10",
+                              lot: lot, team: myTeam, myMax: myMax, iLead: iLead)
+                }
+            }
+        }
+    }
+
+    private func bidButton(amount: Int, label: String, lot: AuctionLot,
+                           team: FantasyTeam, myMax: Int, iLead: Bool) -> some View {
+        let enabled = !iLead && amount > lot.currentBid && amount <= myMax && !saving
+        return Button {
+            Task { await bid(teamID: team.id, amount: amount) }
+        } label: {
+            Text(label)
+                .font(.ffCaption.bold())
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(enabled ? FFColor.accent : FFColor.surfaceElevated, in: Capsule())
+                .foregroundStyle(enabled ? FFColor.bg : FFColor.textTertiary)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+
+    @ViewBuilder
+    private func nominationBanner(draft: Draft, league: League, myTeam: FantasyTeam?) -> some View {
+        let nominatorID = auctionNominatorID(draft: draft)
+        let nominator = league.teams.first(where: { $0.id == nominatorID })
+        let isMe = myTeam?.id == nominatorID
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isMe ? "Your nomination" : "\(nominator?.name ?? "—") is nominating")
+                        .font(.ffHeadline)
+                        .foregroundStyle(isMe ? FFColor.accent : FFColor.textPrimary)
+                    Text(isMe
+                         ? "Pick a player from the list below to put up for auction."
+                         : "Waiting for their pick — bidding opens the moment it lands.")
+                        .font(.ffCaption)
+                        .foregroundStyle(FFColor.textSecondary)
+                }
+                Spacer()
+                if let deadline = draft.pickDeadline {
+                    TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                        countdownDial(remaining: max(0, deadline.timeIntervalSince(context.date)),
+                                      total: Double(draft.pickSeconds))
+                    }
+                }
+            }
+        }
+    }
+
+    // Deadline-gated server-side; every connected client may fire this.
+    private func settleIfDue() async {
+        guard let draft, draft.format == .auction,
+              let lot = openLot, let deadline = lot.bidDeadline,
+              deadline <= Date() else { return }
+        if let updated = try? await app.settleLot(draftID: draft.id) {
+            self.draft = updated
+        }
+        await reload()
+    }
+
+    private func bid(teamID: String, amount: Int) async {
+        guard let draft else { return }
+        saving = true; defer { saving = false }
+        do {
+            _ = try await app.placeBid(draftID: draft.id, teamID: teamID, amount: amount)
+            Haptics.tap()
+            await reload()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func nominate(player: PlayerSummary, teamID: String, amount: Int) async {
+        guard let draft else { return }
+        saving = true; defer { saving = false }
+        do {
+            _ = try await app.nominatePlayer(
+                draftID: draft.id, teamID: teamID, playerID: player.id, amount: amount)
+            Haptics.success()
+            nominating = nil
+            await reload()
+        } catch {
+            self.error = error.localizedDescription
+            nominating = nil
         }
     }
 
@@ -405,7 +619,15 @@ struct DraftRoomView: View {
             .union(league.teams.flatMap(\.keepers))
         let myTeam = league.teams.first(where: { $0.ownerID == app.session?.userID })
         let onClock = draft.teamOnClock(forPick: draft.currentPick)
-        let isMyTurn = (myTeam?.id == onClock) && draft.status == .live
+        // Auction: the actionable state is "my nomination turn with no lot
+        // open" — bidding happens in the header card, not the list.
+        let isMyTurn: Bool = {
+            guard draft.status == .live, let myID = myTeam?.id else { return false }
+            if draft.format == .auction {
+                return openLot == nil && auctionNominatorID(draft: draft) == myID
+            }
+            return myID == onClock
+        }()
 
         // Late-draft starter-need restriction: once your team has only as many
         // picks left as empty starting slots, the picks must all go toward
@@ -519,9 +741,13 @@ struct DraftRoomView: View {
                 .accessibilityLabel(queued ? "Remove from queue" : "Add to queue")
             }
             Button {
-                confirmPlayer = row
+                if draft?.format == .auction {
+                    nominating = row
+                } else {
+                    confirmPlayer = row
+                }
             } label: {
-                Text("Draft")
+                Text(draft?.format == .auction ? "Nominate" : "Draft")
                     .font(.ffCaption.bold())
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(canPick ? FFColor.accent : FFColor.surfaceElevated, in: Capsule())
@@ -753,12 +979,64 @@ struct DraftRoomView: View {
                 let teamPicks = picks
                     .filter { $0.teamID == team.id }
                     .sorted(by: { $0.pickNumber < $1.pickNumber })
-                teamRosterCard(
-                    team: team, teamPicks: teamPicks, players: players,
-                    isOnClock: team.id == onClockTeamID,
-                    isMine: team.ownerID == app.session?.userID
-                )
+                VStack(spacing: 0) {
+                    if draft.format == .auction {
+                        HStack(spacing: FFSpace.m) {
+                            Text("Spent $\(auctionSpent(teamID: team.id))")
+                                .font(.ffCaption).foregroundStyle(FFColor.textSecondary)
+                            Text("Max bid $\(auctionMaxBid(draft: draft, teamID: team.id))")
+                                .font(.ffCaption).foregroundStyle(FFColor.accent)
+                            Spacer()
+                            Text("\(auctionWon(teamID: team.id))/\(auctionSlotsPerTeam(draft: draft)) filled")
+                                .font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                        }
+                        .padding(.horizontal, FFSpace.s)
+                        .padding(.bottom, FFSpace.xs)
+                    }
+                    teamRosterCard(
+                        team: team, teamPicks: teamPicks, players: players,
+                        isOnClock: draft.format == .auction
+                            ? team.id == auctionNominatorID(draft: draft) && openLot == nil
+                            : team.id == onClockTeamID,
+                        isMine: team.ownerID == app.session?.userID
+                    )
+                }
             }
+        }
+    }
+
+    // Auction results board: every sold lot in nomination order.
+    @ViewBuilder
+    private func auctionBoard(draft: Draft, league: League) -> some View {
+        let players = Fantasy.playersFor(league: league, snapshot: app.players(season: league.season))
+        if soldLots.isEmpty {
+            Text("No players sold yet.")
+                .font(.ffBody).foregroundStyle(FFColor.textSecondary)
+                .frame(maxWidth: .infinity).padding(.vertical, FFSpace.xl)
+        } else {
+            VStack(spacing: 0) {
+                ForEach(soldLots.sorted(by: { $0.nominationNumber > $1.nominationNumber })) { lot in
+                    HStack(spacing: FFSpace.m) {
+                        Text("$\(lot.soldPrice ?? lot.currentBid)")
+                            .font(.ffStatSmall)
+                            .foregroundStyle(FFColor.accent)
+                            .frame(width: 48, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(players[lot.playerID]?.name ?? lot.playerID)
+                                .font(.ffBody).foregroundStyle(FFColor.textPrimary).lineLimit(1)
+                            Text(league.teams.first(where: { $0.id == lot.currentBidderTeamID })?.name ?? "—")
+                                .font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                        }
+                        .playerLink(lot.playerID)
+                        Spacer()
+                    }
+                    .padding(.horizontal, FFSpace.l)
+                    .padding(.vertical, FFSpace.s)
+                    .ffHairlineBottom()
+                }
+            }
+            .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+            .overlay(RoundedRectangle(cornerRadius: FFRadius.m).strokeBorder(FFColor.border, lineWidth: 1))
         }
     }
 
@@ -912,6 +1190,7 @@ struct DraftRoomView: View {
 
     private func maybeAutoPick(draft: Draft) async {
         if autoPicking { return }
+        guard draft.format != .auction else { return }   // auction: settle/nominate paths only
         guard let league else { return }
         autoPicking = true
         defer { autoPicking = false }
@@ -925,6 +1204,7 @@ struct DraftRoomView: View {
     // delay so multiple open clients don't all race to make the same call.
     private func maybeAutoPickForAutoTeam() async {
         guard let draft, let league else { return }
+        guard draft.format != .auction else { return }   // auction: settle/nominate paths only
         guard draft.status == .live else { return }
         guard let teamID = draft.teamOnClock(forPick: draft.currentPick),
               draft.isOnAutoPick(teamID: teamID) else { return }
@@ -1020,5 +1300,76 @@ struct DraftRoomView: View {
         if s >= 3600 { return String(format: "%dh %02dm", s / 3600, (s % 3600) / 60) }
         if s >= 60   { return String(format: "%dm %02ds", s / 60,   s % 60) }
         return "\(s)s"
+    }
+}
+
+// Amount picker for putting a player up for auction. The opening bid is the
+// nominator's first bid, capped at their max.
+struct NominationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let player: PlayerSummary
+    let maxBid: Int
+    let onConfirm: (Int) -> Void
+
+    @State private var amount: Int = 1
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                FFColor.bg.ignoresSafeArea()
+                VStack(alignment: .leading, spacing: FFSpace.xl) {
+                    HStack(spacing: FFSpace.m) {
+                        PlayerAvatar(url: player.headshotURL,
+                                     fallback: player.name.initialsFromName, size: 44)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(player.name)
+                                .font(.ffHeadline).foregroundStyle(FFColor.textPrimary)
+                            HStack(spacing: 6) {
+                                PositionPill(position: player.position)
+                                Text(player.team).font(.ffCaption).foregroundStyle(FFColor.textTertiary)
+                            }
+                        }
+                        Spacer()
+                    }
+                    VStack(alignment: .leading, spacing: FFSpace.s) {
+                        Text("OPENING BID").ffEyebrow()
+                        Stepper(value: $amount, in: 1...max(1, maxBid)) {
+                            HStack {
+                                Text("$\(amount)")
+                                    .font(.ffStatMedium)
+                                    .foregroundStyle(FFColor.accent)
+                                Spacer()
+                                Text("max $\(maxBid)")
+                                    .font(.ffCaption)
+                                    .foregroundStyle(FFColor.textTertiary)
+                            }
+                        }
+                        .padding(FFSpace.m)
+                        .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.s))
+                    }
+                    Button {
+                        onConfirm(amount)
+                        dismiss()
+                    } label: {
+                        Text("Nominate at $\(amount)")
+                    }
+                    .ffPrimaryButton(disabled: maxBid < 1)
+                    .disabled(maxBid < 1)
+                    Spacer()
+                }
+                .padding(FFSpace.l)
+            }
+            .navigationTitle("Nominate")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(FFColor.bg, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundStyle(FFColor.textSecondary)
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
