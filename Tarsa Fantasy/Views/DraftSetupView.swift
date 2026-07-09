@@ -109,7 +109,8 @@ struct DraftSetupView: View {
                 .disabled(locked)
             Stepper(value: $pickSeconds, in: 15...300, step: 15) {
                 HStack {
-                    Text("Pick clock").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                    Text(format == .auction ? "Nomination clock" : "Pick clock")
+                        .font(.ffBody).foregroundStyle(FFColor.textPrimary)
                     Spacer()
                     Text("\(pickSeconds)s")
                         .font(.ffStatSmall)
@@ -120,7 +121,9 @@ struct DraftSetupView: View {
         } header: {
             Text("Schedule").ffEyebrow()
         } footer: {
-            Text("Owners can enter the room any time after the draft is scheduled. The pick clock starts once the draft goes live — when it hits zero, the best-available player is auto-picked.")
+            Text(format == .auction
+                 ? "Owners can enter the room any time after the draft is scheduled. The nomination clock starts once the draft goes live — when it hits zero, the best-available player is nominated automatically at $1."
+                 : "Owners can enter the room any time after the draft is scheduled. The pick clock starts once the draft goes live — when it hits zero, the best-available player is auto-picked.")
                 .foregroundStyle(FFColor.textTertiary)
         }
         .listRowBackground(FFColor.surface)
