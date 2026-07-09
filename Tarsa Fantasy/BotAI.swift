@@ -182,7 +182,8 @@ extension BotAI {
     // bots disagree about prices. Session-stable (hashValue) is enough — an
     // auction lives inside one app run.
     private static func valuationNoise(_ teamID: String, _ playerID: String) -> Double {
-        let h = abs((teamID + playerID).hashValue)
+        // Mask rather than abs — abs(Int.min) traps.
+        let h = (teamID + playerID).hashValue & Int.max
         return Double(h % 41 - 20) / 100.0
     }
 
