@@ -1740,9 +1740,33 @@ struct TradeVote: Hashable {
 }
 
 enum DraftFormat: String, Codable, CaseIterable, Identifiable, Hashable {
-    case snake, linear
+    case snake, linear, auction
     var id: String { rawValue }
-    var label: String { self == .snake ? "Snake" : "Linear" }
+    var label: String {
+        switch self {
+        case .snake:   return "Snake"
+        case .linear:  return "Linear"
+        case .auction: return "Auction"
+        }
+    }
+}
+
+// One nominated player in an auction draft. Open while bidding runs; sold
+// rows double as the results board. Sold lots' currentBidderTeamID is the
+// winner.
+struct AuctionLot: Identifiable, Hashable {
+    let id: String
+    let draftID: String
+    let playerID: String
+    let nominationNumber: Int
+    let nominatingTeamID: String
+    let currentBid: Int
+    let currentBidderTeamID: String
+    let bidDeadline: Date?
+    let status: String            // "open" | "sold"
+    let soldPrice: Int?
+
+    var isOpen: Bool { status == "open" }
 }
 
 enum DraftStatus: String, Codable, Hashable {
@@ -1767,6 +1791,9 @@ struct Draft: Identifiable, Hashable {
     // Traded picks: {pick number: owning team id}, materialized server-side
     // at draft start. Empty when no picks changed hands.
     var pickOwnerOverrides: [Int: String] = [:]
+    // Auction: per-team budget; current_pick doubles as the nomination
+    // counter and pick_deadline as the nomination clock.
+    var auctionBudget: Int = 200
 
     func isOnAutoPick(teamID: String) -> Bool {
         // Why: pick_order stores team IDs in Swift's UUID.uuidString format
