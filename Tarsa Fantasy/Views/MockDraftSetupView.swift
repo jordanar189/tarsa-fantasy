@@ -12,6 +12,8 @@ struct MockDraftSetupView: View {
     @State private var pickSlot: Int? = nil      // nil = random
     @State private var clockSeconds: Int = 20
     @State private var scoring: Scoring = .half
+    @State private var format: DraftFormat = .snake
+    @State private var budget: Int = 200
     @State private var creating: Bool = false
     @State private var error: String? = nil
 
@@ -24,6 +26,7 @@ struct MockDraftSetupView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: FFSpace.xl) {
                         header
+                        formatSection
                         teamCountSection
                         slotSection
                         clockSection
@@ -63,6 +66,29 @@ struct MockDraftSetupView: View {
         Text("Practice against bots that pick instantly. Nothing sticks unless you keep it — the league disappears when you discard the mock.")
             .font(.ffCaption)
             .foregroundStyle(FFColor.textSecondary)
+    }
+
+    private var formatSection: some View {
+        VStack(alignment: .leading, spacing: FFSpace.s) {
+            Text("FORMAT").ffEyebrow()
+            Picker("Format", selection: $format) {
+                Text("Snake").tag(DraftFormat.snake)
+                Text("Auction").tag(DraftFormat.auction)
+            }
+            .pickerStyle(.segmented)
+            if format == .auction {
+                Stepper(value: $budget, in: 100...500, step: 10) {
+                    HStack {
+                        Text("Budget per team").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                        Spacer()
+                        Text("$\(budget)").font(.ffStatSmall).foregroundStyle(FFColor.accent)
+                    }
+                }
+                Text("In your slot you nominate; the bots bid against you with their own price sheets.")
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textTertiary)
+            }
+        }
     }
 
     private var teamCountSection: some View {
@@ -135,7 +161,9 @@ struct MockDraftSetupView: View {
                 scoring: scoring,
                 teamCount: teamCount,
                 myPickSlot: pickSlot,
-                clockSeconds: clockSeconds
+                clockSeconds: clockSeconds,
+                format: format,
+                auctionBudget: budget
             )
             Haptics.success()
             dismiss()
@@ -171,6 +199,13 @@ struct MockDraftGradeCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: FFSpace.m) {
+            if draft.format == .auction {
+                // ADP-delta grades are a snake concept (pick number vs market
+                // slot); auction results live on the Board tab as sold prices.
+                Text("Auction complete — every sale is on the Board tab, and each team's spend is under Teams.")
+                    .font(.ffCaption)
+                    .foregroundStyle(FFColor.textSecondary)
+            }
             if !grades.isEmpty {
                 VStack(alignment: .leading, spacing: FFSpace.s) {
                     Text("DRAFT GRADES").ffEyebrow()
@@ -253,6 +288,7 @@ struct MockDraftGradeCard: View {
     }
 
     private func computeGrades() async {
+        guard draft.format != .auction else { return }
         let adp = await app.adpForSimulation(season: league.season, scoring: league.scoring)
         let picks = await app.draftPicks(draftID: draft.id)
         guard !picks.isEmpty else { return }

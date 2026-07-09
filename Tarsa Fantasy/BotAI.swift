@@ -173,3 +173,59 @@ enum BotAI {
         return base + bonus
     }
 }
+
+// MARK: - Auction drafting
+
+extension BotAI {
+
+    // Deterministic per-(bot, player) valuation noise in [-0.20, +0.20] so
+    // bots disagree about prices. Session-stable (hashValue) is enough — an
+    // auction lives inside one app run.
+    private static func valuationNoise(_ teamID: String, _ playerID: String) -> Double {
+        // Mask rather than abs — abs(Int.min) traps.
+        let h = (teamID + playerID).hashValue & Int.max
+        return Double(h % 41 - 20) / 100.0
+    }
+
+    // A bot's private price for a player, from the league-wide dollar value.
+    static func botPrice(teamID: String, playerID: String, dollarValue: Int) -> Int {
+        max(1, Int((Double(dollarValue) * (1.0 + valuationNoise(teamID, playerID))).rounded()))
+    }
+
+    // One bidding tick: pick a bot willing to top the current bid — not
+    // already leading, budget room, and private price at or above the raise.
+    // Raises jump $1–$5 (capped by price and max) so contested lots resolve
+    // in seconds rather than a $1-at-a-time crawl. Returns nil when every
+    // bot is out and the lot should ride its clock.
+    static func auctionBid(
+        playerID: String,
+        currentBid: Int,
+        leaderTeamID: String,
+        bots: [(teamID: String, maxBid: Int)],
+        dollarValue: Int,
+        rng: inout SystemRandomNumberGenerator
+    ) -> (teamID: String, amount: Int)? {
+        let willing = bots.filter { bot in
+            guard bot.teamID != leaderTeamID, bot.maxBid > currentBid else { return false }
+            return botPrice(teamID: bot.teamID, playerID: playerID, dollarValue: dollarValue) > currentBid
+        }
+        guard !willing.isEmpty else { return nil }
+        let bot = willing[Int.random(in: 0..<willing.count, using: &rng)]
+        let price = botPrice(teamID: bot.teamID, playerID: playerID, dollarValue: dollarValue)
+        let jump = [1, 1, 2, 3, 5][Int.random(in: 0..<5, using: &rng)]
+        let amount = min(currentBid + jump, price, bot.maxBid)
+        guard amount > currentBid else { return nil }
+        return (bot.teamID, amount)
+    }
+
+    // Nomination choice: one of the bot's top targets, with spread so every
+    // bot doesn't nominate the same player. `available` is best-first.
+    static func auctionNomination(
+        available: [String],
+        rng: inout SystemRandomNumberGenerator
+    ) -> String? {
+        guard !available.isEmpty else { return nil }
+        let window = min(5, available.count)
+        return available[Int.random(in: 0..<window, using: &rng)]
+    }
+}
