@@ -56,11 +56,15 @@ interface GameRow {
     fg_made_0_19: number; fg_made_20_29: number; fg_made_30_39: number;
     fg_made_40_49: number; fg_made_50_59: number; fg_made_60: number;
     fg_missed: number; pat_made: number; pat_missed: number;
-    // Team defense, aggregated per team-week onto the DEF_<TEAM> row. Zero/null
-    // on every individual player's row.
+    // Team defense, aggregated per team-week onto the DEF_<TEAM> row — and,
+    // since the IDP pipeline, also filled per defender on individual rows.
     def_sacks: number; def_interceptions: number; def_fumble_recoveries: number;
     def_tds: number; def_safeties: number;
     def_points_allowed: number | null;
+    // Per-defender IDP counting stats (zero on DST + offensive rows).
+    def_tackles_solo: number; def_tackle_assists: number;
+    def_tackles_for_loss: number; def_qb_hits: number;
+    def_pass_defended: number; def_fumbles_forced: number;
 }
 
 // Per team-week defensive accumulator, summed across every player on the team.
@@ -79,7 +83,21 @@ const ZERO_SPECIAL = {
     fg_made_50_59: 0, fg_made_60: 0, fg_missed: 0, pat_made: 0, pat_missed: 0,
     def_sacks: 0, def_interceptions: 0, def_fumble_recoveries: 0,
     def_tds: 0, def_safeties: 0, def_points_allowed: null as number | null,
+    def_tackles_solo: 0, def_tackle_assists: 0, def_tackles_for_loss: 0,
+    def_qb_hits: 0, def_pass_defended: 0, def_fumbles_forced: 0,
 };
+
+// IDP columns read per player row. Names are taken from the nflverse
+// stats_player_week data dictionary; the parser zero-fills any that are
+// missing and syncSeason reports found/missing per season, so a rename in
+// the upstream CSV surfaces in the sync response instead of silently
+// zeroing a stat.
+const IDP_CSV_COLUMNS = [
+    "def_tackles_solo", "def_tackle_assists", "def_tackles_for_loss",
+    "def_qb_hits", "def_pass_defended", "def_fumbles_forced",
+    "def_sacks", "def_interceptions", "fumble_recovery_opp",
+    "def_tds", "def_safeties",
+];
 
 Deno.serve(async (req: Request) => {
     try {
@@ -133,7 +151,7 @@ async function syncSeason(year: number): Promise<unknown> {
         return { error: `stats HTTP ${resp.status}` };
     }
     const csv = await resp.text();
-    const { players, games, defense } = parseStatsCsv(csv);
+    const { players, games, defense, idpColumns } = parseStatsCsv(csv);
     if (players.size === 0) return { error: "empty parse" };
 
     // Build one team-defense (DST) game row per team-week. Points allowed is the
@@ -202,7 +220,10 @@ async function syncSeason(year: number): Promise<unknown> {
         last_synced_at: new Date().toISOString()
     });
 
-    return { players: playerRows.length, games: gameRows.length, defenses: defenseRows.length };
+    return {
+        players: playerRows.length, games: gameRows.length, defenses: defenseRows.length,
+        idp_columns: idpColumns,
+    };
 }
 
 // Off-season fallback: no weekly stats CSV yet, so refresh players_cache from
@@ -408,11 +429,19 @@ async function upsertChunks<T>(table: string, rows: T[], chunk: number, onConfli
 
 function parseStatsCsv(csv: string): {
     players: Map<string, PlayerRow>; games: GameRow[]; defense: Map<string, DefenseAgg>;
+    idpColumns: { found: string[]; missing: string[] };
 } {
     const rows = parseCsv(csv);
     const header = rows.shift();
-    if (!header) return { players: new Map(), games: [], defense: new Map() };
+    if (!header) {
+        return { players: new Map(), games: [], defense: new Map(),
+                 idpColumns: { found: [], missing: IDP_CSV_COLUMNS } };
+    }
     const col = (k: string) => header.indexOf(k);
+    const idpColumns = {
+        found:   IDP_CSV_COLUMNS.filter((k) => col(k) >= 0),
+        missing: IDP_CSV_COLUMNS.filter((k) => col(k) < 0),
+    };
     const ix = {
         season: col("season"), week: col("week"),
         season_type: col("season_type"),
@@ -438,6 +467,13 @@ function parseStatsCsv(csv: string): {
         fumRecOpp: col("fumble_recovery_opp"),
         defTds: col("def_tds"), stTds: col("special_teams_tds"),
         defSafeties: col("def_safeties"),
+        // IDP (per-player only; never aggregated onto the DST line)
+        defTacklesSolo: col("def_tackles_solo"),
+        defTackleAssists: col("def_tackle_assists"),
+        defTfl: col("def_tackles_for_loss"),
+        defQbHits: col("def_qb_hits"),
+        defPd: col("def_pass_defended"),
+        defFf: col("def_fumbles_forced"),
     };
 
     const players = new Map<string, PlayerRow>();
@@ -518,9 +554,23 @@ function parseStatsCsv(csv: string): {
             fg_missed: num(r[ix.fgMissed]),
             pat_made: num(r[ix.patMade]),
             pat_missed: num(r[ix.patMissed]),
+            // Per-defender IDP line (zeros on offensive rows — the CSV carries
+            // these columns for every row). def_points_allowed stays null from
+            // ZERO_SPECIAL, so nothing here scores as a team defense.
+            def_sacks: num(r[ix.defSacks]),
+            def_interceptions: num(r[ix.defInt]),
+            def_fumble_recoveries: num(r[ix.fumRecOpp]),
+            def_tds: num(r[ix.defTds]),
+            def_safeties: num(r[ix.defSafeties]),
+            def_tackles_solo: num(r[ix.defTacklesSolo]),
+            def_tackle_assists: num(r[ix.defTackleAssists]),
+            def_tackles_for_loss: num(r[ix.defTfl]),
+            def_qb_hits: num(r[ix.defQbHits]),
+            def_pass_defended: num(r[ix.defPd]),
+            def_fumbles_forced: num(r[ix.defFf]),
         });
     }
-    return { players, games, defense };
+    return { players, games, defense, idpColumns };
 }
 
 function num(v: string | undefined): number {

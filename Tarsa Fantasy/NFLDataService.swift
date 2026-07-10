@@ -152,7 +152,11 @@ actor NFLDataService {
                 extraPointsMade: g.extraPointsMade, extraPointsMissed: g.extraPointsMissed,
                 defSacks: g.defSacks, defInterceptions: g.defInterceptions,
                 defFumbleRecoveries: g.defFumbleRecoveries, defTouchdowns: g.defTouchdowns,
-                defSafeties: g.defSafeties, pointsAllowed: g.pointsAllowed
+                defSafeties: g.defSafeties,
+                defTacklesSolo: g.defTacklesSolo, defTackleAssists: g.defTackleAssists,
+                defTacklesForLoss: g.defTacklesForLoss, defQbHits: g.defQbHits,
+                defPassesDefended: g.defPassesDefended, defFumblesForced: g.defFumblesForced,
+                pointsAllowed: g.pointsAllowed
             ))
         }
         for pid in assembled.keys {
@@ -355,6 +359,12 @@ actor NFLDataService {
         let defFumbleRecoveries: Double
         let defTouchdowns: Double
         let defSafeties: Double
+        let defTacklesSolo: Double
+        let defTackleAssists: Double
+        let defTacklesForLoss: Double
+        let defQbHits: Double
+        let defPassesDefended: Double
+        let defFumblesForced: Double
         let pointsAllowed: Double?
         enum CodingKeys: String, CodingKey {
             case season, week, team, opponent, completions, attempts, carries, receptions, targets
@@ -384,6 +394,12 @@ actor NFLDataService {
             case defFumbleRecoveries   = "def_fumble_recoveries"
             case defTouchdowns         = "def_tds"
             case defSafeties           = "def_safeties"
+            case defTacklesSolo        = "def_tackles_solo"
+            case defTackleAssists      = "def_tackle_assists"
+            case defTacklesForLoss     = "def_tackles_for_loss"
+            case defQbHits             = "def_qb_hits"
+            case defPassesDefended     = "def_pass_defended"
+            case defFumblesForced      = "def_fumbles_forced"
             case pointsAllowed         = "def_points_allowed"
         }
         init(from decoder: Decoder) throws {
@@ -423,6 +439,12 @@ actor NFLDataService {
             defFumbleRecoveries  = try c.decodeIfPresent(Double.self, forKey: .defFumbleRecoveries) ?? 0
             defTouchdowns        = try c.decodeIfPresent(Double.self, forKey: .defTouchdowns) ?? 0
             defSafeties          = try c.decodeIfPresent(Double.self, forKey: .defSafeties) ?? 0
+            defTacklesSolo       = try c.decodeIfPresent(Double.self, forKey: .defTacklesSolo) ?? 0
+            defTackleAssists     = try c.decodeIfPresent(Double.self, forKey: .defTackleAssists) ?? 0
+            defTacklesForLoss    = try c.decodeIfPresent(Double.self, forKey: .defTacklesForLoss) ?? 0
+            defQbHits            = try c.decodeIfPresent(Double.self, forKey: .defQbHits) ?? 0
+            defPassesDefended    = try c.decodeIfPresent(Double.self, forKey: .defPassesDefended) ?? 0
+            defFumblesForced     = try c.decodeIfPresent(Double.self, forKey: .defFumblesForced) ?? 0
             pointsAllowed        = try c.decodeIfPresent(Double.self, forKey: .pointsAllowed)
         }
     }
