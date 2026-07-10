@@ -1794,6 +1794,11 @@ struct Draft: Identifiable, Hashable {
     // Auction: per-team budget; current_pick doubles as the nomination
     // counter and pick_deadline as the nomination clock.
     var auctionBudget: Int = 200
+    // Draftable pool: 'all' (startup) or 'rookies' (dynasty supplemental —
+    // carried rosters stay, only the incoming class is draftable).
+    var pool: String = "all"
+
+    var isRookieDraft: Bool { pool == "rookies" }
 
     func isOnAutoPick(teamID: String) -> Bool {
         // Why: pick_order stores team IDs in Swift's UUID.uuidString format

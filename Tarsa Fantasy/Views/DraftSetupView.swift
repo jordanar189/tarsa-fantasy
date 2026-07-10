@@ -16,6 +16,8 @@ struct DraftSetupView: View {
     @State private var format: DraftFormat
     @State private var pickOrder: [String]
     @State private var auctionBudget: Int
+    @State private var rookieOnly: Bool
+    @State private var rookieRounds: Int = 3
     @State private var saving: Bool = false
     @State private var error: String? = nil
 
@@ -27,6 +29,7 @@ struct DraftSetupView: View {
         _pickSeconds = State(initialValue: existing?.pickSeconds ?? 60)
         _format      = State(initialValue: existing?.format ?? .snake)
         _auctionBudget = State(initialValue: existing?.auctionBudget ?? 200)
+        _rookieOnly    = State(initialValue: existing?.isRookieDraft ?? false)
         // Initial order: existing draft order, else waiver priority, else team order.
         let initial: [String] = existing?.pickOrder
             ?? (league.waiverPriority.isEmpty ? league.teams.map(\.id) : league.waiverPriority)
@@ -49,9 +52,12 @@ struct DraftSetupView: View {
     // slots, so the draft fills only what's left. Round-cost leagues run the
     // full length; keepers pre-fill their cost rounds at draft start instead.
     // Auctions always run full-size: keepers pre-fill as $1 sold lots and the
-    // server normalizes total_picks from roster_config regardless.
+    // server normalizes total_picks from roster_config regardless. Rookie
+    // drafts are supplemental — just the chosen rounds on top of carried
+    // rosters.
     private var rosterSize: Int {
-        format == .auction || league.keeperRoundCost
+        if rookieOnly { return rookieRounds }
+        return format == .auction || league.keeperRoundCost
             ? max(1, league.rosterConfig.totalSize)
             : max(1, league.rosterConfig.totalSize - league.keeperCount)
     }
@@ -131,8 +137,10 @@ struct DraftSetupView: View {
 
     private var formatSection: some View {
         Section {
+            // Rookie drafts run as snake/linear only — the auction machinery
+            // isn't rookie-aware and the server rejects the combination.
             Picker("Format", selection: $format) {
-                ForEach(DraftFormat.allCases) { f in
+                ForEach(DraftFormat.allCases.filter { !rookieOnly || $0 != .auction }) { f in
                     Text(f.label).tag(f)
                 }
             }
@@ -147,6 +155,28 @@ struct DraftSetupView: View {
                 }
                 .disabled(locked)
             }
+            // Dynasty leagues carry rosters through rollover; their offseason
+            // draft is a short rookies-only supplement.
+            if league.isDynasty {
+                Toggle(isOn: $rookieOnly) {
+                    Text("Rookie draft").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                }
+                .tint(FFColor.accent)
+                .disabled(locked)
+                .onChange(of: rookieOnly) { _, on in
+                    if on && format == .auction { format = .snake }
+                }
+                if rookieOnly {
+                    Stepper(value: $rookieRounds, in: 1...5) {
+                        HStack {
+                            Text("Rounds").font(.ffBody).foregroundStyle(FFColor.textPrimary)
+                            Spacer()
+                            Text("\(rookieRounds)").font(.ffStatSmall).foregroundStyle(FFColor.accent)
+                        }
+                    }
+                    .disabled(locked)
+                }
+            }
         } header: {
             Text("Format").ffEyebrow()
         } footer: {
@@ -157,6 +187,9 @@ struct DraftSetupView: View {
     }
 
     private var formatFooter: String {
+        if rookieOnly {
+            return "Rookie draft: carried rosters stay put — only this season's incoming class is draftable, \(rookieRounds) round\(rookieRounds == 1 ? "" : "s"). Set the order to reverse final standings; traded picks route to their owners automatically."
+        }
         switch format {
         case .snake:
             return "Snake: round 1 picks 1→N, round 2 reverses, etc."
@@ -231,7 +264,8 @@ struct DraftSetupView: View {
                 leagueID: league.id, format: format,
                 pickSeconds: pickSeconds, startsAt: startsAt,
                 pickOrder: pickOrder, rosterSize: rosterSize,
-                auctionBudget: auctionBudget
+                auctionBudget: auctionBudget,
+                pool: rookieOnly ? "rookies" : "all"
             ) else { return }
             onSave(updated)
             dismiss()
