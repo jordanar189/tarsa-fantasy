@@ -15,8 +15,9 @@ struct PlayerCacheStore {
 
     // Bump when Player / Game / PlayerProfile shape changes so old caches
     // discard cleanly. V2 adds the optional PlayerProfile field. V3 adds the
-    // kicker + team-defense stat fields on Game.
-    private static let version = 3
+    // kicker + team-defense stat fields on Game. V4 adds the per-defender IDP
+    // stat fields on Game.
+    private static let version = 4
 
     private struct Envelope: Codable {
         let version: Int

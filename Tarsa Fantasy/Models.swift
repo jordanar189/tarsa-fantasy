@@ -396,13 +396,23 @@ struct Game: Codable, Hashable, Identifiable {
     var extraPointsMade: Double = 0
     var extraPointsMissed: Double = 0
     // Team-defense (DST) inputs, aggregated per team-week onto the DEF_<TEAM>
-    // row. `pointsAllowed` is non-nil only on those rows — it both feeds the
-    // points-allowed tier and flags the row as a team defense.
+    // row — and, since the IDP pipeline, also filled per defender on
+    // individual rows. `pointsAllowed` is non-nil only on DST rows — it both
+    // feeds the points-allowed tier and flags the row as a team defense.
     var defSacks: Double = 0
     var defInterceptions: Double = 0
     var defFumbleRecoveries: Double = 0
     var defTouchdowns: Double = 0
     var defSafeties: Double = 0
+    // Per-defender IDP counting stats (zero on DST + offensive rows). Scoring
+    // weights and lineup slots land with IDP part 2; stored now so real 2026
+    // data accumulates from the first sync after this ships.
+    var defTacklesSolo: Double = 0
+    var defTackleAssists: Double = 0
+    var defTacklesForLoss: Double = 0
+    var defQbHits: Double = 0
+    var defPassesDefended: Double = 0
+    var defFumblesForced: Double = 0
     var pointsAllowed: Double? = nil
 
     var id: String { "\(season)-\(week)-\(team)" }
