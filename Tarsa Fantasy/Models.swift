@@ -41,15 +41,30 @@ enum Scoring: String, Codable, CaseIterable, Identifiable, Hashable {
 }
 
 enum Position: String, CaseIterable, Identifiable, Hashable {
-    case all = "ALL", qb = "QB", rb = "RB", wr = "WR", te = "TE", k = "K", def = "DEF"
+    case all = "ALL", qb = "QB", rb = "RB", wr = "WR", te = "TE", k = "K", def = "DEF",
+         dl = "DL", lb = "LB", db = "DB"
     var id: String { rawValue }
     var label: String { self == .all ? "All" : rawValue }
+}
+
+// Specific defender positions → their IDP lineup group (DL / LB / DB), nil for
+// non-defenders. nflverse position strings are specific (DE, ILB, FS, …) while
+// IDP slots are grouped, so every IDP-eligibility check funnels through here.
+func idpGroup(of position: String) -> String? {
+    switch position.uppercased() {
+    case "DL", "DE", "DT", "NT", "EDGE":          return "DL"
+    case "LB", "ILB", "OLB", "MLB":               return "LB"
+    case "DB", "CB", "S", "FS", "SS", "SAF":      return "DB"
+    default:                                      return nil
+    }
 }
 
 enum LineupSlot: String, Codable, Hashable, CaseIterable, Identifiable {
     case qb = "QB", rb = "RB", wr = "WR", te = "TE", flex = "FLEX",
          superflex = "SFLX", wrFlex = "W/R", recFlex = "W/T",
-         k = "K", def = "DEF", bench = "BN", ir = "IR"
+         k = "K", def = "DEF",
+         dl = "DL", lb = "LB", db = "DB", idpFlex = "IDP",
+         bench = "BN", ir = "IR"
     var id: String { rawValue }
     var label: String { rawValue }
     // Only lineup slots that contribute points each week. Bench and IR sit out.
@@ -68,6 +83,10 @@ enum LineupSlot: String, Codable, Hashable, CaseIterable, Identifiable {
         case .superflex: return p == "QB" || p == "RB" || p == "WR" || p == "TE"
         case .wrFlex:    return p == "RB" || p == "WR"
         case .recFlex:   return p == "WR" || p == "TE"
+        case .dl:        return idpGroup(of: p) == "DL"
+        case .lb:        return idpGroup(of: p) == "LB"
+        case .db:        return idpGroup(of: p) == "DB"
+        case .idpFlex:   return idpGroup(of: p) != nil
         case .bench:     return true
         case .ir:        return true
         }
@@ -79,8 +98,9 @@ enum LineupSlot: String, Codable, Hashable, CaseIterable, Identifiable {
     var flexibility: Int {
         switch self {
         case .qb, .rb, .wr, .te, .k, .def: return 1
+        case .dl, .lb, .db:                return 1
         case .wrFlex, .recFlex:            return 2
-        case .flex:                        return 3
+        case .flex, .idpFlex:              return 3
         case .superflex:                   return 4
         case .bench, .ir:                  return 99
         }
@@ -101,6 +121,12 @@ struct RosterConfig: Codable, Hashable {
     var recFlex: Int
     var k: Int
     var def: Int
+    // IDP (individual defensive player) starter slots, grouped DL / LB / DB
+    // plus an any-defender flex. All default 0 — leagues opt in explicitly.
+    var dl: Int
+    var lb: Int
+    var db: Int
+    var idpFlex: Int
     var bench: Int
     // Injured-reserve slots. Extra capacity beyond the active roster that only
     // accepts injured (OUT/IR/PUP/etc.) players. IR players never score and
@@ -115,7 +141,7 @@ struct RosterConfig: Codable, Hashable {
 
     static let `default` = RosterConfig(qb: 1, rb: 2, wr: 2, te: 1, flex: 1, k: 1, def: 1, bench: 6, ir: 0)
 
-    var starterCount: Int { qb + rb + wr + te + flex + superflex + wrFlex + recFlex + k + def }
+    var starterCount: Int { qb + rb + wr + te + flex + superflex + wrFlex + recFlex + k + def + dl + lb + db + idpFlex }
     // Active roster size (starters + bench). Drives drafting and roster limits.
     // IR and taxi are deliberately excluded — they sit outside the active roster.
     var totalSize: Int { starterCount + bench }
@@ -137,6 +163,10 @@ struct RosterConfig: Codable, Hashable {
         for _ in 0..<superflex { out.append(.superflex) }
         for _ in 0..<k         { out.append(.k) }
         for _ in 0..<def       { out.append(.def) }
+        for _ in 0..<dl        { out.append(.dl) }
+        for _ in 0..<lb        { out.append(.lb) }
+        for _ in 0..<db        { out.append(.db) }
+        for _ in 0..<idpFlex   { out.append(.idpFlex) }
         for _ in 0..<bench     { out.append(.bench) }
         return out
     }
@@ -144,17 +174,22 @@ struct RosterConfig: Codable, Hashable {
 
     init(qb: Int = 1, rb: Int = 2, wr: Int = 2, te: Int = 1,
          flex: Int = 1, superflex: Int = 0, wrFlex: Int = 0, recFlex: Int = 0,
-         k: Int = 1, def: Int = 1, bench: Int = 6, ir: Int = 0,
+         k: Int = 1, def: Int = 1,
+         dl: Int = 0, lb: Int = 0, db: Int = 0, idpFlex: Int = 0,
+         bench: Int = 6, ir: Int = 0,
          taxi: Int = 0, taxiMaxExperience: Int = 0) {
         self.qb = qb; self.rb = rb; self.wr = wr; self.te = te
         self.flex = flex; self.superflex = superflex
         self.wrFlex = wrFlex; self.recFlex = recFlex
-        self.k = k; self.def = def; self.bench = bench; self.ir = ir
+        self.k = k; self.def = def
+        self.dl = dl; self.lb = lb; self.db = db; self.idpFlex = idpFlex
+        self.bench = bench; self.ir = ir
         self.taxi = taxi; self.taxiMaxExperience = taxiMaxExperience
     }
 
     private enum CodingKeys: String, CodingKey {
-        case qb, rb, wr, te, flex, superflex, wrFlex, recFlex, k, def, bench, ir, taxi, taxiMaxExperience
+        case qb, rb, wr, te, flex, superflex, wrFlex, recFlex, k, def,
+             dl, lb, db, idpFlex, bench, ir, taxi, taxiMaxExperience
     }
 
     init(from decoder: Decoder) throws {
@@ -169,6 +204,10 @@ struct RosterConfig: Codable, Hashable {
         recFlex   = try c.decodeIfPresent(Int.self, forKey: .recFlex)   ?? 0
         k     = try c.decodeIfPresent(Int.self, forKey: .k)     ?? 1
         def   = try c.decodeIfPresent(Int.self, forKey: .def)   ?? 1
+        dl      = try c.decodeIfPresent(Int.self, forKey: .dl)      ?? 0
+        lb      = try c.decodeIfPresent(Int.self, forKey: .lb)      ?? 0
+        db      = try c.decodeIfPresent(Int.self, forKey: .db)      ?? 0
+        idpFlex = try c.decodeIfPresent(Int.self, forKey: .idpFlex) ?? 0
         bench = try c.decodeIfPresent(Int.self, forKey: .bench) ?? 6
         ir    = try c.decodeIfPresent(Int.self, forKey: .ir)    ?? 0
         taxi  = try c.decodeIfPresent(Int.self, forKey: .taxi)  ?? 0
@@ -223,6 +262,20 @@ struct ScoringSettings: Codable, Hashable {
     var paUnder28: Double
     var paUnder35: Double
     var pa35Plus: Double
+    // IDP (individual defensive player) event values. Only applied to
+    // individual defender rows — the DST weights above stay separate so a
+    // league can run team defense and IDP side by side.
+    var idpSoloTackle: Double
+    var idpAssistTackle: Double
+    var idpTackleForLoss: Double
+    var idpSack: Double
+    var idpQbHit: Double
+    var idpInterception: Double
+    var idpPassDefended: Double
+    var idpForcedFumble: Double
+    var idpFumbleRecovery: Double
+    var idpTouchdown: Double
+    var idpSafety: Double
 
     static let standard = ScoringSettings(
         passingYardsPerPoint: 25, passingTD: 4, interception: -2,
@@ -284,7 +337,10 @@ struct ScoringSettings: Codable, Hashable {
              receivingTD, reception, fumbleLost,
              fgUnder40, fg40to49, fg50plus, patMade, fgMissed, patMissed,
              defSack, defInterception, defFumbleRecovery, defTouchdown, defSafety,
-             paShutout, paUnder7, paUnder14, paUnder21, paUnder28, paUnder35, pa35Plus
+             paShutout, paUnder7, paUnder14, paUnder21, paUnder28, paUnder35, pa35Plus,
+             idpSoloTackle, idpAssistTackle, idpTackleForLoss, idpSack, idpQbHit,
+             idpInterception, idpPassDefended, idpForcedFumble, idpFumbleRecovery,
+             idpTouchdown, idpSafety
     }
 
     // New params default to standard K/DST so existing call sites (the offense
@@ -299,7 +355,12 @@ struct ScoringSettings: Codable, Hashable {
          defTouchdown: Double = 6, defSafety: Double = 2,
          paShutout: Double = 10, paUnder7: Double = 7, paUnder14: Double = 4,
          paUnder21: Double = 1, paUnder28: Double = 0, paUnder35: Double = -1,
-         pa35Plus: Double = -4) {
+         pa35Plus: Double = -4,
+         idpSoloTackle: Double = 1, idpAssistTackle: Double = 0.5,
+         idpTackleForLoss: Double = 2, idpSack: Double = 4, idpQbHit: Double = 1,
+         idpInterception: Double = 6, idpPassDefended: Double = 1.5,
+         idpForcedFumble: Double = 4, idpFumbleRecovery: Double = 2,
+         idpTouchdown: Double = 6, idpSafety: Double = 2) {
         self.passingYardsPerPoint = passingYardsPerPoint
         self.passingTD = passingTD
         self.interception = interception
@@ -327,6 +388,17 @@ struct ScoringSettings: Codable, Hashable {
         self.paUnder28 = paUnder28
         self.paUnder35 = paUnder35
         self.pa35Plus = pa35Plus
+        self.idpSoloTackle = idpSoloTackle
+        self.idpAssistTackle = idpAssistTackle
+        self.idpTackleForLoss = idpTackleForLoss
+        self.idpSack = idpSack
+        self.idpQbHit = idpQbHit
+        self.idpInterception = idpInterception
+        self.idpPassDefended = idpPassDefended
+        self.idpForcedFumble = idpForcedFumble
+        self.idpFumbleRecovery = idpFumbleRecovery
+        self.idpTouchdown = idpTouchdown
+        self.idpSafety = idpSafety
     }
 
     init(from decoder: Decoder) throws {
@@ -359,6 +431,17 @@ struct ScoringSettings: Codable, Hashable {
         paUnder28  = try c.decodeIfPresent(Double.self, forKey: .paUnder28)  ?? d.paUnder28
         paUnder35  = try c.decodeIfPresent(Double.self, forKey: .paUnder35)  ?? d.paUnder35
         pa35Plus   = try c.decodeIfPresent(Double.self, forKey: .pa35Plus)   ?? d.pa35Plus
+        idpSoloTackle     = try c.decodeIfPresent(Double.self, forKey: .idpSoloTackle)     ?? d.idpSoloTackle
+        idpAssistTackle   = try c.decodeIfPresent(Double.self, forKey: .idpAssistTackle)   ?? d.idpAssistTackle
+        idpTackleForLoss  = try c.decodeIfPresent(Double.self, forKey: .idpTackleForLoss)  ?? d.idpTackleForLoss
+        idpSack           = try c.decodeIfPresent(Double.self, forKey: .idpSack)           ?? d.idpSack
+        idpQbHit          = try c.decodeIfPresent(Double.self, forKey: .idpQbHit)          ?? d.idpQbHit
+        idpInterception   = try c.decodeIfPresent(Double.self, forKey: .idpInterception)   ?? d.idpInterception
+        idpPassDefended   = try c.decodeIfPresent(Double.self, forKey: .idpPassDefended)   ?? d.idpPassDefended
+        idpForcedFumble   = try c.decodeIfPresent(Double.self, forKey: .idpForcedFumble)   ?? d.idpForcedFumble
+        idpFumbleRecovery = try c.decodeIfPresent(Double.self, forKey: .idpFumbleRecovery) ?? d.idpFumbleRecovery
+        idpTouchdown      = try c.decodeIfPresent(Double.self, forKey: .idpTouchdown)      ?? d.idpTouchdown
+        idpSafety         = try c.decodeIfPresent(Double.self, forKey: .idpSafety)         ?? d.idpSafety
     }
 }
 
@@ -450,11 +533,12 @@ struct Game: Codable, Hashable, Identifiable {
         return points(scoring: scoring)
     }
 
-    // Kicker + team-defense points from the raw stat line, position-independent:
-    // any player credited with the action scores it (a kicker who runs scores
-    // rushing via the offensive path; a TE who kicks scores the FG here). Each
-    // game row carries stats for one role, so at most one term is non-zero.
-    func specialPoints(_ s: ScoringSettings) -> Double { kickerPoints(s) + defensePoints(s) }
+    // Kicker + team-defense + IDP points from the raw stat line,
+    // position-independent: any player credited with the action scores it (a
+    // kicker who runs scores rushing via the offensive path; a TE who kicks
+    // scores the FG here). Each game row carries stats for one role, so at
+    // most one term is non-zero.
+    func specialPoints(_ s: ScoringSettings) -> Double { kickerPoints(s) + defensePoints(s) + idpPoints(s) }
 
     // Default (standard-weight) special points — used by season aggregation,
     // which is league-agnostic. Per-game league scoring threads real settings.
@@ -485,6 +569,24 @@ struct Game: Codable, Hashable, Identifiable {
     // Standard-tier bonus, kept for callers without league settings.
     static func pointsAllowedBonus(_ pointsAllowed: Double) -> Double {
         ScoringSettings.standard.pointsAllowedBonus(pointsAllowed)
+    }
+
+    // Individual-defender scoring. The pointsAllowed guard is the mirror image
+    // of defensePoints': DST rows (non-nil pointsAllowed) carry team-aggregate
+    // def stats and must score through the DST weights only, never both.
+    func idpPoints(_ s: ScoringSettings) -> Double {
+        guard pointsAllowed == nil else { return 0 }
+        return defTacklesSolo * s.idpSoloTackle
+            + defTackleAssists * s.idpAssistTackle
+            + defTacklesForLoss * s.idpTackleForLoss
+            + defSacks * s.idpSack
+            + defQbHits * s.idpQbHit
+            + defInterceptions * s.idpInterception
+            + defPassesDefended * s.idpPassDefended
+            + defFumblesForced * s.idpForcedFumble
+            + defFumbleRecoveries * s.idpFumbleRecovery
+            + defTouchdowns * s.idpTouchdown
+            + defSafeties * s.idpSafety
     }
 }
 

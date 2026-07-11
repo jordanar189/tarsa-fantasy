@@ -128,8 +128,8 @@ struct SleeperActivateView: View {
                           "Keeper rules aren't supported yet — promotes as a redraft league")
             }
             if hasIDP {
-                carryLine("exclamationmark.triangle.fill", positive: false,
-                          "IDP slots aren't supported — they map to FLEX")
+                carryLine("checkmark.circle.fill", positive: true,
+                          "IDP: DL / LB / DB slots and IDP scoring weights carry over")
             }
             carryLine("exclamationmark.triangle.fill", positive: false,
                       "Future draft-pick trades don't carry over; past seasons import as history only")
@@ -155,6 +155,7 @@ struct SleeperActivateView: View {
         add(cfg.flex, "FLEX"); add(cfg.superflex, "SFLX")
         add(cfg.wrFlex, "W/R"); add(cfg.recFlex, "W/T")
         add(cfg.k, "K"); add(cfg.def, "DEF")
+        add(cfg.dl, "DL"); add(cfg.lb, "LB"); add(cfg.db, "DB"); add(cfg.idpFlex, "IDP")
         return parts.isEmpty ? "—" : parts.joined(separator: ", ")
     }
 

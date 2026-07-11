@@ -470,3 +470,108 @@ struct LineageTests {
         #expect(bVsA == H2HRecord(wins: 1, losses: 1, ties: 1))
     }
 }
+
+// MARK: - IDP
+
+struct IDPTests {
+
+    @Test func idpSlotEligibilityMatchesByGroup() {
+        #expect(LineupSlot.dl.accepts(position: "DE"))
+        #expect(LineupSlot.dl.accepts(position: "DT"))
+        #expect(!LineupSlot.dl.accepts(position: "ILB"))
+        #expect(LineupSlot.lb.accepts(position: "ILB"))
+        #expect(LineupSlot.lb.accepts(position: "OLB"))
+        #expect(!LineupSlot.lb.accepts(position: "CB"))
+        #expect(LineupSlot.db.accepts(position: "CB"))
+        #expect(LineupSlot.db.accepts(position: "FS"))
+        #expect(!LineupSlot.db.accepts(position: "DE"))
+        #expect(LineupSlot.idpFlex.accepts(position: "DE"))
+        #expect(LineupSlot.idpFlex.accepts(position: "MLB"))
+        #expect(LineupSlot.idpFlex.accepts(position: "SS"))
+        // Offense, kickers, and the team DST never fill IDP slots.
+        #expect(!LineupSlot.idpFlex.accepts(position: "RB"))
+        #expect(!LineupSlot.idpFlex.accepts(position: "K"))
+        #expect(!LineupSlot.idpFlex.accepts(position: "DEF"))
+    }
+
+    @Test func idpSlotsCountInStartersAndSlots() {
+        let config = RosterConfig(qb: 1, rb: 2, wr: 2, te: 1, flex: 1,
+                                  k: 1, def: 1, dl: 1, lb: 2, db: 1, idpFlex: 1,
+                                  bench: 6)
+        #expect(config.starterCount == 14)
+        #expect(config.starterSlots.filter { $0 == .lb }.count == 2)
+        #expect(config.starterSlots.filter { $0 == .idpFlex }.count == 1)
+    }
+
+    /// IDP starters widen the end-of-draft specialist phase, and the phase
+    /// asks for group tokens (DL/LB/DB) only while they're unfilled.
+    @Test func specialistPhaseIncludesIDPGroups() {
+        // 1K + 1DEF + 1LB → 3 reserved rounds; everything missing.
+        let need = Fantasy.autoPickAllowedPositions(
+            round: 13, totalRounds: 15, currentLoopPicks: [],
+            kSlots: 1, defSlots: 1, kOwned: 0, defOwned: 0,
+            idpSlots: 1, idpNeeds: ["LB"])
+        #expect(need == ["K", "DEF", "LB"])
+        // LB covered → phase asks for the rest only.
+        let rest = Fantasy.autoPickAllowedPositions(
+            round: 13, totalRounds: 15, currentLoopPicks: [],
+            kSlots: 1, defSlots: 1, kOwned: 0, defOwned: 0,
+            idpSlots: 1, idpNeeds: [])
+        #expect(rest == ["K", "DEF"])
+        // Round before the widened phase is still the normal template.
+        let early = Fantasy.autoPickAllowedPositions(
+            round: 12, totalRounds: 15, currentLoopPicks: [],
+            kSlots: 1, defSlots: 1, kOwned: 0, defOwned: 0,
+            idpSlots: 1, idpNeeds: ["LB"])
+        #expect(!early.contains("LB") && !early.contains("K"))
+    }
+
+    /// Defender rows score their IDP line; the aggregated DST row (non-nil
+    /// pointsAllowed) never double-scores through the IDP weights.
+    @Test func idpPointsScoreDefendersNotDST() {
+        var g = Game()
+        g.defTacklesSolo = 8       // 8.0
+        g.defTackleAssists = 4     // 2.0
+        g.defTacklesForLoss = 2    // 4.0
+        g.defSacks = 1.5           // 6.0
+        g.defQbHits = 3            // 3.0
+        g.defInterceptions = 1     // 6.0
+        g.defPassesDefended = 2    // 3.0
+        g.defFumblesForced = 1     // 4.0
+        g.defFumbleRecoveries = 1  // 2.0
+        let s = ScoringSettings.standard
+        #expect(abs(g.idpPoints(s) - 38.0) < 0.0001)
+        #expect(abs(g.specialPoints - 38.0) < 0.0001)
+
+        // Same stat line flagged as a DST row: IDP term is zero, the DST
+        // branch scores instead.
+        g.pointsAllowed = 10
+        #expect(g.idpPoints(s) == 0)
+        let dst = g.defensePoints(s)
+        #expect(abs(dst - (1.5 + 2 + 2 + 0 + 0 + 4)) < 0.0001,
+                "sack 1.5 + INT 2 + FR 2 + PA tier 4")
+    }
+
+    /// Auto-fill seats defenders into dedicated group slots before the IDP
+    /// flex, mirroring the offensive flex discipline.
+    @Test func idpAutoFillPrefersDedicatedSlots() {
+        let config = RosterConfig(qb: 0, rb: 0, wr: 0, te: 0, flex: 0,
+                                  k: 0, def: 0, lb: 1, idpFlex: 1, bench: 0)
+        func defender(_ id: String, _ position: String, points: Double) -> Player {
+            var g = Game()
+            g.season = 2025; g.week = 1
+            g.defTacklesSolo = points
+            return Player(id: id, name: id, position: position, positionGroup: "",
+                          headshotURL: "", team: "TST", games: [g])
+        }
+        let players = [
+            "lb1": defender("lb1", "ILB", points: 12),
+            "cb1": defender("cb1", "CB", points: 9),
+        ]
+        let team = FantasyTeam(id: "A", name: "A", roster: ["cb1", "lb1"])
+        let (starters, _) = Fantasy.resolveLineup(
+            team: team, players: players, config: config,
+            scoring: .standard, week: nil)
+        #expect(starters == ["lb1", "cb1"], "LB slot gets the linebacker, IDP flex the corner")
+    }
+}

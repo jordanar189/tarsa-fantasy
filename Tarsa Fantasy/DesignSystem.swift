@@ -118,7 +118,24 @@ enum FFColor {
             light: rgb(0.45, 0.30, 0.78),
             dark:  rgb(0.66, 0.50, 0.92)
         )
-        default:    return textTertiary
+        default:
+            // Individual defenders (specific positions like DE/ILB/FS) tint by
+            // their IDP group so draft boards scan consistently.
+            switch idpGroup(of: position) {
+            case "DL": return dynamicColor(
+                light: rgb(0.70, 0.35, 0.55),
+                dark:  rgb(0.90, 0.50, 0.72)
+            )
+            case "LB": return dynamicColor(
+                light: rgb(0.35, 0.58, 0.62),
+                dark:  rgb(0.50, 0.78, 0.82)
+            )
+            case "DB": return dynamicColor(
+                light: rgb(0.55, 0.55, 0.25),
+                dark:  rgb(0.78, 0.78, 0.42)
+            )
+            default:   return textTertiary
+            }
         }
     }
 }

@@ -734,7 +734,7 @@ struct DraftRoomView: View {
             && remainingPicks > 0
             && remainingPicks <= needs.unfilledCount
         let allowedPositions = needs.positions
-        let allowedLabel = ["QB", "RB", "WR", "TE", "K", "DEF"]
+        let allowedLabel = ["QB", "RB", "WR", "TE", "K", "DEF", "DL", "LB", "DB"]
             .filter { allowedPositions.contains($0) }
             .joined(separator: ", ")
         let chipItems: [Position] = needsActive
@@ -765,8 +765,14 @@ struct DraftRoomView: View {
                         || (profile.yearsExp == nil && profile.draftYear == league.season)
                 }
                 : searched
+            // IDP needs are group tokens (DL/LB/DB) while row positions are
+            // specific (DE, ILB, FS…) — match either way.
             let rows = needsActive
-                ? baseRows.filter { allowedPositions.contains($0.position.uppercased()) }
+                ? baseRows.filter {
+                    let pos = $0.position.uppercased()
+                    return allowedPositions.contains(pos)
+                        || allowedPositions.contains(idpGroup(of: pos) ?? "#")
+                }
                 : baseRows
 
             if rows.isEmpty {
