@@ -190,6 +190,12 @@ final class AppState {
         let previousLeague = selectedLeague
         let previousID = previousLeague?.id
         selectedLeagueID = id
+        if id != previousID {
+            // Per-league shell chrome: don't let the previous league's unread
+            // pill or Moves badge flash on the new one.
+            chatPeek = ChatPeek()
+            movesBadgeCount = 0
+        }
         guard let id else { selectedLeague = nil; return }
         selectLeagueToken &+= 1
         let token = selectLeagueToken
@@ -208,6 +214,8 @@ final class AppState {
         await loadSeason(lg.season)
         await loadLeagueNicknames(leagueID: id)
         await loadLeagueValues(leagueID: id)
+        // Badge fetch rides behind the selection — never delays league entry.
+        Task { await self.refreshMovesBadge() }
     }
 
     // Re-pull the selected league after a mutation so the switcher, NFL tab,
@@ -290,6 +298,8 @@ final class AppState {
         selectedLeague = nil
         friendships = []
         dmInbox = []
+        chatPeek = ChatPeek()
+        movesBadgeCount = 0
     }
 
     private func runAuth(_ op: @escaping () async throws -> Session) async {
@@ -1077,6 +1087,40 @@ final class AppState {
         await remote.messages(leagueID: leagueID, limit: limit)
     }
 
+    // What the collapsed chat peek shows for the selected league: how many
+    // messages landed since the user last had the panel open, and who spoke
+    // last. Fed by LeagueChatView (the one place the transcript lives);
+    // last-seen is stamped by the shell when the panel opens or closes.
+    struct ChatPeek: Equatable {
+        var unread: Int = 0
+        var latestSenderName: String? = nil
+    }
+    var chatPeek = ChatPeek()
+
+    private static func chatLastSeenKey(_ leagueID: String) -> String {
+        "chatLastSeen-\(leagueID)"
+    }
+
+    func chatLastSeen(leagueID: String) -> Date {
+        UserDefaults.standard.object(forKey: Self.chatLastSeenKey(leagueID)) as? Date
+            ?? .distantPast
+    }
+
+    func markChatSeen(leagueID: String) {
+        UserDefaults.standard.set(Date(), forKey: Self.chatLastSeenKey(leagueID))
+        chatPeek.unread = 0
+    }
+
+    // Recomputes the peek from a full transcript. Only my leaguemates'
+    // messages count as unread — my own are seen by definition.
+    func updateChatPeek(leagueID: String, messages: [LeagueMessage], latestSenderName: String?) {
+        guard leagueID == selectedLeagueID else { return }
+        let seen = chatLastSeen(leagueID: leagueID)
+        let me = session?.userID
+        let unread = messages.filter { $0.createdAt > seen && $0.userID != me }.count
+        chatPeek = ChatPeek(unread: unread, latestSenderName: latestSenderName)
+    }
+
     @discardableResult
     func sendLeagueMessage(
         leagueID: String, content: String, imageURL: String? = nil
@@ -1537,6 +1581,46 @@ final class AppState {
 
     func trades(leagueID: String) async -> [Trade] {
         (try? await remote.trades(leagueID: leagueID)) ?? []
+    }
+
+    // Count behind the Moves tab badge: trades waiting on *me* (incoming
+    // offers, plus pending-approval deals when I'm the commissioner) and my
+    // own open waiver claims. Mirrors TradesView's Incoming / WaiversView's
+    // "Your pending claims" filters so the badge never disagrees with the
+    // lists behind it. Refreshed on league selection and by the Moves
+    // surfaces whenever they reload trades/claims.
+    var movesBadgeCount: Int = 0
+
+    func refreshMovesBadge() async {
+        guard let league = selectedLeague, let uid = session?.userID else {
+            movesBadgeCount = 0
+            return
+        }
+        let leagueID = league.id
+        let myTeamID = league.teams.first(where: { $0.ownerID == uid })?.id
+        let isCommish = league.creatorID == uid
+        async let t = trades(leagueID: leagueID)
+        async let c = waiverClaims(leagueID: leagueID)
+        let allTrades = await t
+        let claims = await c
+        // The user may have switched leagues while the fetches were in flight.
+        guard leagueID == selectedLeagueID else { return }
+        let actionableTrades = allTrades.filter { trade in
+            switch trade.status {
+            case .pending:
+                if trade.isMulti {
+                    return trade.proposerTeamID != myTeamID
+                        && trade.participants.contains { $0.teamID == myTeamID && $0.acceptedAt == nil }
+                }
+                return trade.recipientTeamID == myTeamID
+            case .pendingApproval:
+                return isCommish
+            default:
+                return false
+            }
+        }
+        let myOpenClaims = claims.filter { $0.teamID == myTeamID && $0.status == .pending }
+        movesBadgeCount = actionableTrades.count + myOpenClaims.count
     }
 
     func tradeVotes(tradeID: String) async -> [TradeVote] {

@@ -383,5 +383,7 @@ struct TradesView: View {
         trades = await app.trades(leagueID: league.id)
         assets = Dictionary(uniqueKeysWithValues:
             await app.pickAssets(leagueID: league.id).map { ($0.id, $0) })
+        // Trades changed (or may have) — keep the Moves tab badge honest.
+        await app.refreshMovesBadge()
     }
 }
