@@ -364,17 +364,19 @@ extension View {
 // always: ffHeroCard { BigStat / WinBar / StateChip / ... }.
 
 // Eyebrow-label + big monospaced value + optional caption. The visual anchor
-// of hero cards. Three sizes match the recipe used by the score banner
-// (.large for headline scores), totals card (.medium), and dense recap grids
-// (.small).
+// of hero cards. Sizes match the recipe used by the score banner (.large for
+// headline scores), totals card (.medium), and dense recap grids (.small).
+// `.hero` is the scoreboard voice (ffStatHero) — one headline number per
+// screen, e.g. your week total on the Team tab.
 struct BigStat: View {
     enum Size {
-        case small, medium, large
-        var pointSize: CGFloat {
+        case small, medium, large, hero
+        var font: Font {
             switch self {
-            case .small:  20
-            case .medium: 28
-            case .large:  36
+            case .small:  .system(size: 20, weight: .heavy, design: .rounded)
+            case .medium: .system(size: 28, weight: .heavy, design: .rounded)
+            case .large:  .system(size: 36, weight: .heavy, design: .rounded)
+            case .hero:   .ffStatHero
             }
         }
     }
@@ -400,9 +402,14 @@ struct BigStat: View {
                 .font(.ffMicro.bold()).tracking(1.4)
                 .foregroundStyle(FFColor.textTertiary)
             Text(value)
-                .font(.system(size: size.pointSize, weight: .heavy, design: .rounded))
+                .font(size.font)
                 .foregroundStyle(tint)
                 .monospacedDigit()
+                // Live score ticks roll digits instead of swapping the string.
+                // The animation is scoped to `value` so unrelated re-renders
+                // never pick it up.
+                .contentTransition(.numericText())
+                .animation(.spring(response: 0.30, dampingFraction: 0.85), value: value)
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
             if let caption {

@@ -84,7 +84,8 @@ struct StandingsSection: View {
                                 .foregroundStyle(FFColor.textTertiary)
                         }
                     }
-                    ColoredRecord(wins: row.wins, losses: row.losses, ties: row.ties)
+                    ColoredRecord(wins: row.wins, losses: row.losses, ties: row.ties,
+                                  font: .ffStatSmall)
                 }
                 Spacer()
                 if let seed = row.playoffSeed {

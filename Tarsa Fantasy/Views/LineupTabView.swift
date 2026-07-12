@@ -354,7 +354,8 @@ struct LineupTabView: View {
             .disabled(!canEdit)
             .fixedSize()
         }
-        .ffHeroCard()
+        // Plain card — the score banner above is this screen's one hero.
+        .ffCard()
     }
 
     // MARK: - Start/sit advice
@@ -970,13 +971,15 @@ private struct ScoreBannerCard: View {
             }
 
             HStack(alignment: .firstTextBaseline, spacing: FFSpace.s) {
+                // Your total is the screen's one ffStatHero headline; the
+                // opponent steps down a tier so the eye lands on your side.
                 BigStat(
                     label: mine.shortName,
                     value: mine.actual.fpString,
                     caption: "proj \(mine.projectedFinal.fpString)",
                     tint: leading && anyPlayed ? FFColor.accent : FFColor.textPrimary,
                     alignment: .leading,
-                    size: .large
+                    size: .hero
                 )
                 Text("VS")
                     .font(.ffMicro.bold()).tracking(1.2)
