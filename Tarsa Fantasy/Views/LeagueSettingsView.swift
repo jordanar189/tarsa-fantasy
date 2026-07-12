@@ -269,6 +269,10 @@ struct LeagueSettingsView: View {
             rosterStepper("W/T",   value: $rosterConfig.recFlex,   range: 0...3)
             rosterStepper("K",     value: $rosterConfig.k,     range: 0...2)
             rosterStepper("DEF",   value: $rosterConfig.def,   range: 0...2)
+            rosterStepper("DL",    value: $rosterConfig.dl,    range: 0...4)
+            rosterStepper("LB",    value: $rosterConfig.lb,    range: 0...4)
+            rosterStepper("DB",    value: $rosterConfig.db,    range: 0...4)
+            rosterStepper("IDP",   value: $rosterConfig.idpFlex, range: 0...4)
             rosterStepper("Bench", value: $rosterConfig.bench, range: 0...12)
             rosterStepper("IR",    value: $rosterConfig.ir,    range: 0...6)
             // Keeper-lite: how many players each team carries through the
@@ -552,6 +556,19 @@ struct LeagueSettingsView: View {
                 scoringStepper("21–27 allowed",    value: $scoringSettings.paUnder28,           range: -4...4, step: 1)
                 scoringStepper("28–34 allowed",    value: $scoringSettings.paUnder35,           range: -6...2, step: 1)
                 scoringStepper("35+ allowed",      value: $scoringSettings.pa35Plus,            range: -8...0, step: 1)
+
+                Text("IDP").ffEyebrow()
+                scoringStepper("Solo tackle",      value: $scoringSettings.idpSoloTackle,     range: 0...4, step: 0.25)
+                scoringStepper("Assisted tackle",  value: $scoringSettings.idpAssistTackle,   range: 0...2, step: 0.25)
+                scoringStepper("Tackle for loss",  value: $scoringSettings.idpTackleForLoss,  range: 0...6, step: 0.5)
+                scoringStepper("Sack",             value: $scoringSettings.idpSack,           range: 0...10, step: 0.5)
+                scoringStepper("QB hit",           value: $scoringSettings.idpQbHit,          range: 0...4, step: 0.5)
+                scoringStepper("Interception",     value: $scoringSettings.idpInterception,   range: 0...10, step: 1)
+                scoringStepper("Pass defended",    value: $scoringSettings.idpPassDefended,   range: 0...5, step: 0.5)
+                scoringStepper("Forced fumble",    value: $scoringSettings.idpForcedFumble,   range: 0...10, step: 1)
+                scoringStepper("Fumble recovery",  value: $scoringSettings.idpFumbleRecovery, range: 0...10, step: 1)
+                scoringStepper("Defensive TD",     value: $scoringSettings.idpTouchdown,      range: 0...10, step: 1)
+                scoringStepper("Safety",           value: $scoringSettings.idpSafety,         range: 0...10, step: 1)
             }
         } header: {
             Text("Scoring").ffEyebrow()

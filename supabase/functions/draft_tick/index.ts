@@ -28,6 +28,7 @@ interface RosterConfigRow {
     qb?: number; rb?: number; wr?: number; te?: number;
     flex?: number; superflex?: number; wrFlex?: number; recFlex?: number;
     k?: number; def?: number; bench?: number;
+    dl?: number; lb?: number; db?: number; idpFlex?: number;
 }
 interface LeagueRow {
     id: string; season: number; scoring: string; is_test: boolean;
@@ -62,18 +63,32 @@ function roundTemplate(loopOffset: number): Set<string> {
     return new Set(["RB","WR","TE"]);
 }
 
+// Specific defender positions → IDP lineup group. Mirrors Models.swift's
+// idpGroup(of:) — IDP slot eligibility and the specialist draft phase both
+// match by group, since cache positions are specific (DE, ILB, FS, …).
+function idpGroup(position: string): string | null {
+    switch (position.toUpperCase()) {
+        case "DL": case "DE": case "DT": case "NT": case "EDGE": return "DL";
+        case "LB": case "ILB": case "OLB": case "MLB":           return "LB";
+        case "DB": case "CB": case "S": case "FS": case "SS": case "SAF": return "DB";
+        default: return null;
+    }
+}
+
 function allowedPositions(
     round: number, totalRounds: number, loopPicks: string[],
     kSlots: number, defSlots: number, kOwned: number, defOwned: number,
     qbBudget: number,
+    idpSlots = 0, idpNeeds: Set<string> = new Set(),
 ): Set<string> {
-    const kdefReserve = kSlots + defSlots;
+    const kdefReserve = kSlots + defSlots + idpSlots;
     if (kdefReserve > 0 && round > totalRounds - kdefReserve) {
         const need = new Set<string>();
         if (kOwned < kSlots) need.add("K");
         if (defOwned < defSlots) need.add("DEF");
+        for (const g of idpNeeds) need.add(g);
         if (need.size > 0) return need;
-        // K/DEF already covered — fall through to the normal template.
+        // Specialists already covered — fall through to the normal template.
     }
     const loopOffset = (round - 1) % LOOP_ROUNDS;
     const template = roundTemplate(loopOffset);
@@ -267,10 +282,15 @@ async function advanceDraft(d: DraftRow): Promise<string> {
     const kSlots    = rc.k ?? 1;
     const defSlots  = rc.def ?? 1;
     const superflex = rc.superflex ?? 0;
+    const dlSlots   = rc.dl ?? 0;
+    const lbSlots   = rc.lb ?? 0;
+    const dbSlots   = rc.db ?? 0;
+    const idpFlexSlots = rc.idpFlex ?? 0;
+    const idpSlots  = dlSlots + lbSlots + dbSlots + idpFlexSlots;
     const totalRounds =
         (rc.qb ?? 1) + (rc.rb ?? 2) + (rc.wr ?? 2) + (rc.te ?? 1) +
         (rc.flex ?? 1) + superflex + (rc.wrFlex ?? 0) + (rc.recFlex ?? 0) +
-        kSlots + defSlots + (rc.bench ?? 6);
+        kSlots + defSlots + idpSlots + (rc.bench ?? 6);
 
     // Keeper-lite: kept players never enter the pool, and a team's own
     // keepers count as its earliest "picks" so the round/position math
@@ -322,13 +342,27 @@ async function advanceDraft(d: DraftRow): Promise<string> {
             })),
         ];
     }
-    const loopPicks = positionsInCurrentLoop(myPickRows, round, totalRounds, kSlots + defSlots);
+    const loopPicks = positionsInCurrentLoop(myPickRows, round, totalRounds, kSlots + defSlots + idpSlots);
     const kOwned   = myPickRows.filter(p => p.position === "K").length;
     const defOwned = myPickRows.filter(p => p.position === "DEF").length;
+    // IDP groups the specialist phase should still chase: dedicated slots
+    // first, then the IDP flex once dedicated overflow hasn't consumed it.
+    const dlOwned = myPickRows.filter(p => idpGroup(p.position) === "DL").length;
+    const lbOwned = myPickRows.filter(p => idpGroup(p.position) === "LB").length;
+    const dbOwned = myPickRows.filter(p => idpGroup(p.position) === "DB").length;
+    const idpNeeds = new Set<string>();
+    if (dlOwned < dlSlots) idpNeeds.add("DL");
+    if (lbOwned < lbSlots) idpNeeds.add("LB");
+    if (dbOwned < dbSlots) idpNeeds.add("DB");
+    const idpFlexUsed = Math.max(0, dlOwned - dlSlots)
+        + Math.max(0, lbOwned - lbSlots)
+        + Math.max(0, dbOwned - dbSlots);
+    if (idpFlexSlots > idpFlexUsed) { idpNeeds.add("DL"); idpNeeds.add("LB"); idpNeeds.add("DB"); }
     const allowed = allowedPositions(
         round, totalRounds, loopPicks,
         kSlots, defSlots, kOwned, defOwned,
         Math.max(BUDGET_QB, (rc.qb ?? 1) + superflex),
+        idpSlots, idpNeeds,
     );
 
     // Build the ADP-ranked candidate list. Pick the right snapshot:
@@ -391,7 +425,11 @@ async function advanceDraft(d: DraftRow): Promise<string> {
     });
 
     // First match within the allowed pool; fallback = overall best ADP.
-    const allowedPick = available.find(p => allowed.has((p.position ?? "").toUpperCase()));
+    // IDP entries in `allowed` are group tokens (DL/LB/DB) — match either way.
+    const allowedPick = available.find(p => {
+        const pos = (p.position ?? "").toUpperCase();
+        return allowed.has(pos) || allowed.has(idpGroup(pos) ?? "#");
+    });
     const choice = allowedPick ?? available[0];
     return await invokeMakePick(d.id, teamID, choice.id);
 }

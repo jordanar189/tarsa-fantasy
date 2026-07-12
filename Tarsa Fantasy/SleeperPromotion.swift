@@ -9,32 +9,37 @@ import Foundation
 enum SleeperPromotion {
 
     // Sleeper roster slots → our RosterConfig. Sleeper labels its bench "BN",
-    // injured reserve "IR", taxi "TAXI". Every Sleeper flex variant now has a
+    // injured reserve "IR", taxi "TAXI". Every Sleeper flex variant has a
     // native slot: SUPER_FLEX → superflex (QB-eligible), WRRB_FLEX → W/R,
-    // REC_FLEX → W/T. Only IDP_FLEX (defensive players, which the engine
-    // doesn't model) collapses onto the generic FLEX.
+    // REC_FLEX → W/T, and the IDP family (DL / LB / DB / IDP_FLEX) maps 1:1.
     static func rosterConfig(from positions: [String]) -> RosterConfig {
         func count(_ matches: (String) -> Bool) -> Int { positions.filter(matches).count }
         let qb        = count { $0 == "QB" }
         let rb        = count { $0 == "RB" }
         let wr        = count { $0 == "WR" }
         let te        = count { $0 == "TE" }
-        let flex      = count { $0 == "FLEX" || $0 == "IDP_FLEX" }
+        let flex      = count { $0 == "FLEX" }
         let superflex = count { $0 == "SUPER_FLEX" }
         let wrFlex    = count { $0 == "WRRB_FLEX" }
         let recFlex   = count { $0 == "REC_FLEX" }
         let k         = count { $0 == "K" }
         let def       = count { $0 == "DEF" || $0 == "DST" }
+        let dl        = count { $0 == "DL" || $0 == "DE" || $0 == "DT" }
+        let lb        = count { $0 == "LB" || $0 == "ILB" || $0 == "OLB" }
+        let db        = count { $0 == "DB" || $0 == "CB" || $0 == "S" || $0 == "SS" || $0 == "FS" }
+        let idpFlex   = count { $0 == "IDP_FLEX" }
         let bench     = count { $0 == "BN" }
         let ir        = count { $0 == "IR" }
-        // An empty / unusual position list (or an IDP-only league we can't map)
-        // falls back to the default starter spine so the league is still
-        // playable rather than slot-less.
-        if qb + rb + wr + te + flex + superflex + wrFlex + recFlex + k + def == 0 { return .default }
+        // An empty / unusual position list falls back to the default starter
+        // spine so the league is still playable rather than slot-less.
+        if qb + rb + wr + te + flex + superflex + wrFlex + recFlex + k + def
+            + dl + lb + db + idpFlex == 0 { return .default }
         return RosterConfig(
             qb: qb, rb: rb, wr: wr, te: te,
             flex: flex, superflex: superflex, wrFlex: wrFlex, recFlex: recFlex,
-            k: k, def: def, bench: bench, ir: ir
+            k: k, def: def,
+            dl: dl, lb: lb, db: db, idpFlex: idpFlex,
+            bench: bench, ir: ir
         )
     }
 
@@ -70,7 +75,7 @@ enum SleeperPromotion {
     // Sleeper's raw per-stat weights → our ScoringSettings. Sleeper stores
     // yardage as points-per-yard (0.04) while our knobs are yards-per-point
     // (25), so those invert. Stats our engine doesn't score (2-pt, return
-    // TDs, bonuses, IDP) are ignored. Returns nil when the result matches the
+    // TDs, bonuses) are ignored. Returns nil when the result matches the
     // fallback preset exactly — the precomputed-fields fast path is both
     // cheaper and slightly more accurate (it includes 2-pt / return TDs).
     static func scoringSettings(from raw: [String: Double]?, fallback: Scoring) -> ScoringSettings? {
@@ -103,6 +108,21 @@ enum SleeperPromotion {
         if let v = raw["fum_rec"] { s.defFumbleRecovery = v }
         if let v = raw["def_td"]  { s.defTouchdown = v }
         if let v = raw["safe"]    { s.defSafety = v }
+        // IDP. Sleeper's combined-tackle knob (idp_tkl) applies to solo AND
+        // assist when the league doesn't split them — (solo + ast) × w is
+        // exactly total tackles × w — while explicit solo/assist values win.
+        if let v = raw["idp_tkl"] { s.idpSoloTackle = v; s.idpAssistTackle = v }
+        if let v = raw["idp_tkl_solo"] { s.idpSoloTackle = v }
+        if let v = raw["idp_tkl_ast"]  { s.idpAssistTackle = v }
+        if let v = raw["idp_tkl_loss"] { s.idpTackleForLoss = v }
+        if let v = raw["idp_sack"]     { s.idpSack = v }
+        if let v = raw["idp_qb_hit"]   { s.idpQbHit = v }
+        if let v = raw["idp_int"]      { s.idpInterception = v }
+        if let v = raw["idp_pass_def"] { s.idpPassDefended = v }
+        if let v = raw["idp_ff"]       { s.idpForcedFumble = v }
+        if let v = raw["idp_fum_rec"]  { s.idpFumbleRecovery = v }
+        if let v = raw["idp_def_td"] ?? raw["idp_td"] { s.idpTouchdown = v }
+        if let v = raw["idp_safe"] ?? raw["idp_safety"] { s.idpSafety = v }
         return s.matchesPreset(fallback) ? nil : s
     }
 

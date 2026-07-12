@@ -301,6 +301,9 @@ async function fetchRosterPlayers(year: number): Promise<PlayerRow[]> {
 
 // Rosters CSV has no position_group column; derive a reasonable one. Display
 // only and overwritten with the authoritative value once the stats sync runs.
+// Defenders group to DL/LB/DB — the client's IDP slots and position filters
+// match by group, and rookies exist only via this roster-only path until
+// their first stat line.
 function positionGroup(pos: string): string {
     const p = pos.toUpperCase();
     if (p === "QB") return "QB";
@@ -308,6 +311,9 @@ function positionGroup(pos: string): string {
     if (p === "WR") return "WR";
     if (p === "TE") return "TE";
     if (p === "K" || p === "PK") return "K";
+    if (p === "DE" || p === "DT" || p === "NT" || p === "EDGE" || p === "DL") return "DL";
+    if (p === "ILB" || p === "OLB" || p === "MLB" || p === "LB") return "LB";
+    if (p === "CB" || p === "S" || p === "FS" || p === "SS" || p === "SAF" || p === "DB") return "DB";
     return p;
 }
 

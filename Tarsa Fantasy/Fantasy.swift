@@ -4,17 +4,29 @@ import Foundation
 // behavior. No I/O, no Apple frameworks beyond Foundation.
 enum Fantasy {
 
-    // Fantasy-relevant positions for UI surfacing. nflverse data also includes
-    // IDP rows (LB/DB/DL/CB/S/etc); the data layer keeps them for stats use
-    // but no browseable list should expose them until we add IDP support. DEF is
-    // the synthetic per-team defense (DEF_<TEAM>), surfaced now that team-defense
-    // scoring exists.
+    // Fantasy-relevant positions for UI surfacing. DEF is the synthetic
+    // per-team defense (DEF_<TEAM>). Individual defenders (DL/LB/DB groups)
+    // are fantasy-relevant since IDP support — they browse, rank, and score
+    // like K/DST: by their IDP stat line, in every league, startable only
+    // where the roster config has IDP slots.
     static let fantasyPositions: Set<String> = ["QB", "RB", "WR", "TE", "K", "DEF"]
     static func isFantasyPosition(_ position: String) -> Bool {
-        fantasyPositions.contains(position.uppercased())
+        fantasyPositions.contains(position.uppercased()) || idpGroup(of: position) != nil
     }
 
     static func round2(_ x: Double) -> Double { (x * 100).rounded() / 100 }
+
+    // Position-chip filter match. Exact for offense/K/DEF; the DL/LB/DB chips
+    // match by IDP group since defender positions are specific (DE, ILB, FS…).
+    static func matchesPositionFilter(_ playerPosition: String, _ filter: Position) -> Bool {
+        if filter == .all { return true }
+        let p = playerPosition.uppercased()
+        if p == filter.rawValue { return true }
+        switch filter {
+        case .dl, .lb, .db: return idpGroup(of: p) == filter.rawValue
+        default:            return false
+        }
+    }
 
     static func seasonTotals(_ games: [Game]) -> SeasonTotals {
         var t = SeasonTotals()
@@ -74,7 +86,7 @@ enum Fantasy {
         rows.reserveCapacity(players.count)
         for (_, p) in players {
             if !isFantasyPosition(p.position) { continue }
-            if position != .all, p.position.uppercased() != position.rawValue { continue }
+            if !matchesPositionFilter(p.position, position) { continue }
             if !q.isEmpty {
                 let hay = "\(p.name) \(p.team) \(p.position)".lowercased()
                 if !hay.contains(q) { continue }
@@ -108,7 +120,7 @@ enum Fantasy {
         var rows: [Rank] = []
         for (_, p) in players {
             if !isFantasyPosition(p.position) { continue }
-            if position != .all, p.position.uppercased() != position.rawValue { continue }
+            if !matchesPositionFilter(p.position, position) { continue }
             switch scope {
             case .week:
                 guard let w = week, let g = p.games.first(where: { $0.week == w }) else { continue }
@@ -196,10 +208,11 @@ enum Fantasy {
     // cannot be picked again that loop — even if the per-round template
     // still permits it.
     //
-    // The final (k + def starter slots) rounds are the K/DEF phase — one
-    // reserved round per required K/DEF starter, none when the league
-    // rosters neither. Inside the phase only the still-unfilled of K/DEF
-    // are picked; once both are covered the normal template resumes.
+    // The final (k + def + IDP starter slots) rounds are the specialist
+    // phase — one reserved round per required K/DEF/IDP starter, none when
+    // the league rosters no specialists. Inside the phase only the
+    // still-unfilled specialist groups are picked; once all are covered the
+    // normal template resumes.
     //
     // If no allowed-pool candidate is available we fall back to the
     // highest-ADP player overall.
@@ -226,9 +239,13 @@ enum Fantasy {
 
     // Positions the bot is allowed to pick at a given round, given the
     // positions it has already taken in the current loop. `kSlots`/`defSlots`
-    // are the league's K/DEF starter counts and size the end-of-draft K/DEF
-    // phase; `kOwned`/`defOwned` are how many the team already rostered, so
-    // the phase only asks for what's still missing.
+    // are the league's K/DEF starter counts and size the end-of-draft
+    // specialist phase; `kOwned`/`defOwned` are how many the team already
+    // rostered, so the phase only asks for what's still missing. IDP leagues
+    // extend the same phase: `idpSlots` (total DL+LB+DB+IDP-flex starters)
+    // widens the reserve and `idpNeeds` carries the group tokens ("DL"/"LB"/
+    // "DB") still unfilled — the caller matches those by idpGroup, not by
+    // exact position.
     static func autoPickAllowedPositions(
         round: Int,
         totalRounds: Int,
@@ -237,17 +254,21 @@ enum Fantasy {
         defSlots: Int = 1,
         kOwned: Int = 0,
         defOwned: Int = 0,
-        qbBudget: Int = loopBudgetQB
+        qbBudget: Int = loopBudgetQB,
+        idpSlots: Int = 0,
+        idpNeeds: Set<String> = []
     ) -> Set<String> {
-        // Final (kSlots + defSlots) rounds = K / DEF phase. A league that
-        // starts neither has no phase at all — no wasted end-of-draft picks.
-        let kdefReserve = kSlots + defSlots
+        // Final (kSlots + defSlots + idpSlots) rounds = specialist phase. A
+        // league that starts none has no phase at all — no wasted end-of-draft
+        // picks.
+        let kdefReserve = kSlots + defSlots + idpSlots
         if kdefReserve > 0 && round > totalRounds - kdefReserve {
             var need: Set<String> = []
             if kOwned < kSlots { need.insert("K") }
             if defOwned < defSlots { need.insert("DEF") }
+            need.formUnion(idpNeeds)
             if !need.isEmpty { return need }
-            // K/DEF already covered — resume the normal template below.
+            // Specialists already covered — resume the normal template below.
         }
         let loopOffset = (round - 1) % loopRoundCount
         let template = roundTemplate(loopOffset: loopOffset)
@@ -335,19 +356,39 @@ enum Fantasy {
 
         let round = team.roster.count + 1
         let totalRounds = config.totalSize
+        let idpSlots = config.dl + config.lb + config.db + config.idpFlex
         let loopPicks = positionsInCurrentLoop(
             team: team, players: players,
             round: round, totalRounds: totalRounds,
-            kdefReserve: config.k + config.def
+            kdefReserve: config.k + config.def + idpSlots
         )
         var kOwned = 0, defOwned = 0
+        var dlOwned = 0, lbOwned = 0, dbOwned = 0
         for pid in team.roster {
-            switch players[pid]?.position.uppercased() {
+            let pos = players[pid]?.position.uppercased() ?? ""
+            switch pos {
             case "K":   kOwned += 1
             case "DEF": defOwned += 1
-            default:    break
+            default:
+                switch idpGroup(of: pos) {
+                case "DL": dlOwned += 1
+                case "LB": lbOwned += 1
+                case "DB": dbOwned += 1
+                default:   break
+                }
             }
         }
+        // Groups the specialist phase should still chase: dedicated slots
+        // first, then the IDP flex (any group) once dedicated overflow hasn't
+        // already consumed it.
+        var idpNeeds: Set<String> = []
+        if dlOwned < config.dl { idpNeeds.insert("DL") }
+        if lbOwned < config.lb { idpNeeds.insert("LB") }
+        if dbOwned < config.db { idpNeeds.insert("DB") }
+        let idpFlexUsed = max(0, dlOwned - config.dl)
+            + max(0, lbOwned - config.lb)
+            + max(0, dbOwned - config.db)
+        if config.idpFlex > idpFlexUsed { idpNeeds.formUnion(["DL", "LB", "DB"]) }
         // Superflex leagues effectively start 2 QBs — widen the per-loop QB
         // budget so the bot actually drafts them.
         let allowed = autoPickAllowedPositions(
@@ -355,9 +396,13 @@ enum Fantasy {
             currentLoopPicks: loopPicks,
             kSlots: config.k, defSlots: config.def,
             kOwned: kOwned, defOwned: defOwned,
-            qbBudget: max(loopBudgetQB, config.qb + config.superflex)
+            qbBudget: max(loopBudgetQB, config.qb + config.superflex),
+            idpSlots: idpSlots, idpNeeds: idpNeeds
         )
-        if let pick = ranked.first(where: { allowed.contains($0.position.uppercased()) }) {
+        if let pick = ranked.first(where: { row in
+            let pos = row.position.uppercased()
+            return allowed.contains(pos) || allowed.contains(idpGroup(of: pos) ?? "#")
+        }) {
             return pick.id
         }
         // Allowed pool exhausted — fall back to overall best available.
@@ -493,6 +538,10 @@ enum Fantasy {
             case .superflex: positions.formUnion(["QB", "RB", "WR", "TE"])
             case .wrFlex:    positions.formUnion(["RB", "WR"])
             case .recFlex:   positions.formUnion(["WR", "TE"])
+            case .dl:        positions.insert("DL")
+            case .lb:        positions.insert("LB")
+            case .db:        positions.insert("DB")
+            case .idpFlex:   positions.formUnion(["DL", "LB", "DB"])
             case .bench, .ir: break
             }
         }
