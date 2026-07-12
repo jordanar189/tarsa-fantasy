@@ -240,10 +240,10 @@ struct GameCenterView: View {
                 }
             case .inProgress:
                 Text("LIVE")
-                    .font(.ffMicro).tracking(0.8)
+                    .font(.ffMicro.bold()).tracking(0.8)
                     .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(FFColor.accent, in: Capsule())
-                    .foregroundStyle(FFColor.bg)
+                    .background(FFColor.live, in: Capsule())
+                    .foregroundStyle(.white)
             case .final:
                 Text("FINAL")
                     .font(.ffMicro).tracking(0.8)

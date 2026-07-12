@@ -1,11 +1,17 @@
 import SwiftUI
 import UIKit
+import CoreText   // kNumberSpacingType / kMonospacedNumbersSelector
 
 // Single source of truth for visual design — colors, typography, spacing,
 // and reusable view modifiers. Colors resolve dynamically based on the
-// current UIUserInterfaceStyle, so the same FFColor.bg renders dark navy
-// in dark mode and near-white in light mode. The app-level color scheme
-// override (ContentView.preferredColorScheme) drives which side wins.
+// current UIUserInterfaceStyle, so the same FFColor.bg renders stadium
+// black in dark mode and near-white in light mode. The app-level color
+// scheme override (ContentView.preferredColorScheme) drives which side wins.
+//
+// Type rule of the sporty system: heavy **rounded** faces for numbers and
+// hero text (scores, stats, display headlines), plain system for prose.
+// Rounded digits aren't naturally fixed-width, so every number face also
+// turns on monospaced digits — live scores must not jiggle as they tick.
 
 private func dynamicColor(light: UIColor, dark: UIColor) -> Color {
     Color(uiColor: UIColor { trait in
@@ -28,18 +34,19 @@ extension AppTheme {
 }
 
 enum FFColor {
-    // Backgrounds
+    // Backgrounds. The dark base is "stadium black" — deep enough that the
+    // neon brand accents read like lights, not tints. Light stays airy.
     static let bg              = dynamicColor(
         light: rgb(0.97, 0.97, 0.98),   // #f7f7fa
-        dark:  rgb(0.04, 0.05, 0.10)    // #0a0d1a
+        dark:  rgb(0.02, 0.03, 0.06)    // #05070f
     )
     static let surface         = dynamicColor(
         light: rgb(1.00, 1.00, 1.00),   // #ffffff
-        dark:  rgb(0.07, 0.09, 0.14)    // #131826
+        dark:  rgb(0.06, 0.08, 0.13)    // #0f1421
     )
     static let surfaceElevated = dynamicColor(
         light: rgb(0.94, 0.95, 0.97),   // #f0f2f7
-        dark:  rgb(0.10, 0.12, 0.18)    // #1a1f2e
+        dark:  rgb(0.09, 0.11, 0.17)    // #171c2b
     )
     static let border          = dynamicColor(
         light: rgb(0.88, 0.90, 0.93),   // #e1e5ed
@@ -86,6 +93,13 @@ enum FFColor {
     static let warning         = dynamicColor(
         light: rgb(0.78, 0.55, 0.05),   // #c78d0e
         dark:  rgb(0.98, 0.75, 0.14)    // #fbbf24
+    )
+    // LIVE states only — the hot signal color for in-progress games, live
+    // scoring, and on-the-clock urgency. Deliberately distinct from
+    // `negative`, which stays reserved for losses and errors.
+    static let live            = dynamicColor(
+        light: rgb(0.86, 0.10, 0.32),   // #db1a52
+        dark:  rgb(1.00, 0.22, 0.42)    // #ff386b
     )
 
     // Position tints — used in surfaces where rapid position scanning helps
@@ -155,6 +169,42 @@ enum FFRadius {
     static let s:  CGFloat = 10
     static let m:  CGFloat = 14
     static let l:  CGFloat = 18
+    static let xl: CGFloat = 24
+}
+
+// The three shadow tiers. One vocabulary so depth stays consistent: `card`
+// for resting content, `hero` for the top-of-screen anchors, `floating` for
+// overlays that hover above everything (switcher dropdown, chat panel).
+enum FFShadow {
+    case card, hero, floating
+
+    var color: Color {
+        switch self {
+        case .card:     return .black.opacity(0.10)
+        case .hero:     return .black.opacity(0.22)
+        case .floating: return .black.opacity(0.30)
+        }
+    }
+    var radius: CGFloat {
+        switch self {
+        case .card:     return 8
+        case .hero:     return 16
+        case .floating: return 20
+        }
+    }
+    var y: CGFloat {
+        switch self {
+        case .card:     return 3
+        case .hero:     return 8
+        case .floating: return 10
+        }
+    }
+}
+
+extension View {
+    func ffShadow(_ tier: FFShadow) -> some View {
+        shadow(color: tier.color, radius: tier.radius, y: tier.y)
+    }
 }
 
 // MARK: - Typography
@@ -167,27 +217,43 @@ enum FFRadius {
 private func ffScaled(
     size: CGFloat, weight: UIFont.Weight,
     relativeTo style: UIFont.TextStyle,
-    monospaced: Bool = false
+    monospaced: Bool = false,
+    rounded: Bool = false,
+    monospacedDigits: Bool = false
 ) -> Font {
-    let base = monospaced
+    var base = monospaced
         ? UIFont.monospacedSystemFont(ofSize: size, weight: weight)
         : UIFont.systemFont(ofSize: size, weight: weight)
+    if rounded, let descriptor = base.fontDescriptor.withDesign(.rounded) {
+        base = UIFont(descriptor: descriptor, size: size)
+    }
+    if monospacedDigits {
+        let features: [[UIFontDescriptor.FeatureKey: Int]] = [[
+            .type: kNumberSpacingType,
+            .selector: kMonospacedNumbersSelector,
+        ]]
+        let descriptor = base.fontDescriptor.addingAttributes([.featureSettings: features])
+        base = UIFont(descriptor: descriptor, size: size)
+    }
     let metrics = UIFontMetrics(forTextStyle: style)
     return Font(metrics.scaledFont(for: base, maximumPointSize: size * 1.6))
 }
 
 extension Font {
-    static var ffDisplay:  Font { ffScaled(size: 32, weight: .bold,     relativeTo: .largeTitle) }
+    static var ffDisplay:  Font { ffScaled(size: 36, weight: .heavy,    relativeTo: .largeTitle, rounded: true) }
     static var ffTitle:    Font { ffScaled(size: 22, weight: .semibold, relativeTo: .title2) }
     static var ffHeadline: Font { ffScaled(size: 17, weight: .semibold, relativeTo: .headline) }
     static var ffBody:     Font { ffScaled(size: 15, weight: .regular,  relativeTo: .subheadline) }
     static var ffCaption:  Font { ffScaled(size: 13, weight: .regular,  relativeTo: .footnote) }
     static var ffMicro:    Font { ffScaled(size: 11, weight: .semibold, relativeTo: .caption2) }
 
-    // Monospaced — for stats, scores, codes
-    static var ffStatLarge:  Font { ffScaled(size: 26, weight: .bold,     relativeTo: .title1, monospaced: true) }
-    static var ffStatMedium: Font { ffScaled(size: 18, weight: .semibold, relativeTo: .body,   monospaced: true) }
-    static var ffStatSmall:  Font { ffScaled(size: 14, weight: .medium,   relativeTo: .footnote, monospaced: true) }
+    // Number faces — heavy rounded with monospaced digits, per the type rule.
+    // ffStatHero is the scoreboard voice: reserved for the one headline score
+    // per screen (matchup hero, week total). The rest step down for stat rows.
+    static var ffStatHero:   Font { ffScaled(size: 44, weight: .heavy,    relativeTo: .largeTitle, rounded: true, monospacedDigits: true) }
+    static var ffStatLarge:  Font { ffScaled(size: 26, weight: .heavy,    relativeTo: .title1,   rounded: true, monospacedDigits: true) }
+    static var ffStatMedium: Font { ffScaled(size: 18, weight: .bold,     relativeTo: .body,     rounded: true, monospacedDigits: true) }
+    static var ffStatSmall:  Font { ffScaled(size: 14, weight: .semibold, relativeTo: .footnote, rounded: true, monospacedDigits: true) }
 }
 
 // MARK: - View modifiers
@@ -266,15 +332,15 @@ extension View {
         self
             .padding(padding)
             .background(
-                RoundedRectangle(cornerRadius: FFRadius.l)
+                RoundedRectangle(cornerRadius: FFRadius.xl)
                     .fill(FFColor.surface)
                     .overlay(
-                        RoundedRectangle(cornerRadius: FFRadius.l)
+                        RoundedRectangle(cornerRadius: FFRadius.xl)
                             .fill(FFGradient.brandWash)
                     )
             )
             .overlay(
-                RoundedRectangle(cornerRadius: FFRadius.l)
+                RoundedRectangle(cornerRadius: FFRadius.xl)
                     .strokeBorder(FFColor.border, lineWidth: 1)
             )
             .overlay(alignment: .top) {
@@ -286,6 +352,7 @@ extension View {
                         .padding(.top, 1)
                 }
             }
+            .ffShadow(.hero)
     }
 }
 
@@ -333,7 +400,7 @@ struct BigStat: View {
                 .font(.ffMicro.bold()).tracking(1.4)
                 .foregroundStyle(FFColor.textTertiary)
             Text(value)
-                .font(.system(size: size.pointSize, weight: .bold, design: .monospaced))
+                .font(.system(size: size.pointSize, weight: .heavy, design: .rounded))
                 .foregroundStyle(tint)
                 .monospacedDigit()
                 .lineLimit(1)
@@ -361,7 +428,7 @@ struct StateChip: View {
 
         var color: Color {
             switch self {
-            case .live:      return FFColor.negative
+            case .live:      return FFColor.live
             case .final:     return FFColor.textTertiary
             case .scheduled: return FFColor.textTertiary
             case .locked:    return FFColor.warning
@@ -515,11 +582,14 @@ struct FFPill<Content: View>: View {
     }
     var body: some View {
         content()
-            .font(.ffMicro)
+            .font(.ffMicro.weight(.semibold))
+            .tracking(0.6)
             .padding(.horizontal, FFSpace.m)
             .padding(.vertical, 6)
-            .background(isFilled ? FFColor.accentSoft : Color.clear,
-                        in: Capsule())
+            .background(
+                isFilled ? AnyShapeStyle(FFGradient.brandSoft) : AnyShapeStyle(Color.clear),
+                in: Capsule()
+            )
             .overlay(
                 Capsule().strokeBorder(
                     isFilled ? Color.clear : FFColor.border,
@@ -531,17 +601,25 @@ struct FFPill<Content: View>: View {
 }
 
 // Decorative gradient glow used on hero screens (auth, league hero card).
+// Mode-aware: full strength against the stadium-black base, dialed to 0.35×
+// in light mode where the same neon wash would muddy the white surfaces.
 struct FFGlow: View {
     var intensity: Double = 1.0
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var strength: Double {
+        intensity * (colorScheme == .dark ? 1.0 : 0.35)
+    }
+
     var body: some View {
         ZStack {
             RadialGradient(
-                colors: [FFBrand.cyan.opacity(0.28 * intensity), .clear],
+                colors: [FFBrand.cyan.opacity(0.28 * strength), .clear],
                 center: .init(x: 0.2, y: 0.05),
                 startRadius: 10, endRadius: 460
             )
             RadialGradient(
-                colors: [FFBrand.violet.opacity(0.22 * intensity), .clear],
+                colors: [FFBrand.violet.opacity(0.22 * strength), .clear],
                 center: .init(x: 0.9, y: 0.9),
                 startRadius: 10, endRadius: 440
             )

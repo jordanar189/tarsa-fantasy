@@ -323,14 +323,21 @@ struct CustomTabBar: View {
                 let selected = selection == item.tab
                 Button {
                     if selection != item.tab {
-                        withAnimation(.easeInOut(duration: 0.15)) { selection = item.tab }
+                        Haptics.tap()
+                        withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
+                            selection = item.tab
+                        }
                     }
                 } label: {
                     VStack(spacing: 4) {
                         Image(systemName: item.icon)
                             .font(.system(size: 20, weight: .semibold))
+                            // The active icon pops with a spring — the one
+                            // "celebration" the bar allows itself.
+                            .scaleEffect(selected ? 1.12 : 1.0)
+                            .animation(.spring(response: 0.30, dampingFraction: 0.70), value: selected)
                         Text(item.label)
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: 10, weight: selected ? .bold : .semibold))
                     }
                     .frame(maxWidth: .infinity)
                     .foregroundStyle(

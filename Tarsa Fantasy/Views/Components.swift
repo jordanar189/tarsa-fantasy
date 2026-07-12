@@ -315,41 +315,45 @@ struct ChipRow<Item: Hashable & Identifiable, Label: View>: View {
 }
 
 // Reusable segmented tab switcher used everywhere we have 2-5 equal-width
-// sub-tabs. Soft accent pill behind the selected item, dim text on the
-// rest, all wrapped in the standard surface card. One place to tweak the
-// look means every switcher in the app stays consistent.
+// sub-tabs. The selected item wears the full brand gradient (white text) and
+// slides between segments with a spring; the rest stay dim on the elevated
+// track. One place to tweak the look means every switcher stays consistent.
 struct SegmentedTabPicker<T: Hashable & Identifiable, Label: View>: View {
     let items: [T]
     @Binding var selection: T
+    @Namespace private var segment
+
     @ViewBuilder var label: (T) -> Label
 
     var body: some View {
         HStack(spacing: 0) {
             ForEach(items) { item in
+                let selected = selection == item
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) { selection = item }
+                    withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
+                        selection = item
+                    }
                 } label: {
                     label(item)
                         .font(.ffCaption.bold())
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
-                        .foregroundStyle(
-                            selection == item
-                                ? AnyShapeStyle(FFGradient.brand)
-                                : AnyShapeStyle(FFColor.textSecondary)
-                        )
-                        .background(
-                            selection == item
-                                ? AnyShapeStyle(FFGradient.brandSoft)
-                                : AnyShapeStyle(Color.clear),
-                            in: RoundedRectangle(cornerRadius: FFRadius.xs)
-                        )
+                        .foregroundStyle(selected ? .white : FFColor.textSecondary)
+                        .background {
+                            if selected {
+                                RoundedRectangle(cornerRadius: FFRadius.xs)
+                                    .fill(FFGradient.brand)
+                                    .matchedGeometryEffect(id: "segment", in: segment)
+                            }
+                        }
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
         .padding(3)
-        .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.s))
+        .background(FFColor.surfaceElevated, in: RoundedRectangle(cornerRadius: FFRadius.s))
         .overlay(
             RoundedRectangle(cornerRadius: FFRadius.s)
                 .strokeBorder(FFColor.border, lineWidth: 1)
@@ -579,7 +583,7 @@ struct LeagueSwitcherList: View {
             RoundedRectangle(cornerRadius: FFRadius.m)
                 .strokeBorder(FFColor.border, lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.25), radius: 14, y: 6)
+        .ffShadow(.floating)
     }
 
     private func leagueRow(_ lg: LeagueSummary) -> some View {
