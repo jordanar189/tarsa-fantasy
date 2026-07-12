@@ -6,7 +6,7 @@ import Observation
 final class AppState {
 
     // Tab selection
-    var tab: AppTab = .lineup
+    var tab: AppTab = .team
 
     // Globally-presented player profile. Set via showPlayer(_:) so tapping a
     // player name anywhere in the app opens PlayerDetailView, without threading
@@ -1871,19 +1871,20 @@ final class AppState {
         await NotificationManager.shared.uploadTokenIfPossible()
     }
 
+    // tarsafantasy://lineup → the Team tab of the current league;
+    // tarsafantasy://league/<id>[/waivers|/trades|/matchup] → focus that
+    // league on the mapped tab (trade offers, waiver results, and draft
+    // alerts all land here). URL → destination mapping lives in
+    // DeepLinkRouter so it stays unit-testable.
     private func handlePushDeepLink(_ url: URL?) {
-        guard let url else { return }
-        // tarsafantasy://lineup → jump to the Lineup tab of the current league.
-        if url.host == "lineup", selectedLeagueID != nil {
-            tab = .lineup
-        }
-        // tarsafantasy://league/<id>[/...] → focus that league (trade offers,
-        // waiver results, and draft alerts all land here).
-        if url.host == "league" {
-            let parts = url.pathComponents.filter { $0 != "/" }
-            if let id = parts.first {
-                Task { await selectLeague(id) }
+        guard let url, let dest = DeepLinkRouter.destination(for: url) else { return }
+        if let id = dest.leagueID {
+            Task {
+                await selectLeague(id)
+                tab = dest.tab
             }
+        } else if selectedLeagueID != nil {
+            tab = dest.tab
         }
     }
 

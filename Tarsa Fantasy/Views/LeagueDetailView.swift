@@ -1,5 +1,11 @@
 import SwiftUI
 
+// DEPRECATED — deleted in 10.4. Kept rendering its old segmented hub only as
+// the push destination for LineupTabView's legacy "League" pill (its single
+// remaining entry point), so muscle-memory navigation and the draft /
+// playoffs / history flows routed through it keep working. The 5-tab shell
+// now surfaces this content directly: LeagueHubView (League tab),
+// MovesTabRootView (Moves tab), MatchupTabRootView (Matchup tab).
 struct LeagueDetailView: View {
     @Environment(AppState.self) private var app
     let leagueID: String

@@ -103,13 +103,11 @@ struct ContentView: View {
     }
 }
 
-// The league-focused experience: a minimal two-tab bottom bar (Lineup ·
-// Players) with a Sleeper-style pull-up league chat that peeks above the bar.
-// League and Matchup screens are reached by drilling in from the Lineup tab
-// (score-banner tap → Matchup, nav pills → League/Matchup), not as their own
-// tabs. The chat is a custom panel rather than a sheet so its bottom edge
-// rests on top of the tab bar — pulling it up grows it upward and never covers
-// the bar.
+// The league-focused experience: a five-tab bottom bar (Team · Matchup ·
+// League · Moves · Players) with a Sleeper-style pull-up league chat that
+// peeks above the bar. The chat is a custom panel rather than a sheet so its
+// bottom edge rests on top of the tab bar — pulling it up grows it upward and
+// never covers the bar.
 struct LeagueShellView: View {
     @Environment(AppState.self) private var app
 
@@ -124,13 +122,13 @@ struct LeagueShellView: View {
     @State private var bottomSafeInset: CGFloat = 0
     // Seeded with the cold-start default so the first tab renders on frame one
     // (onAppear inserts the live value a tick later for any other entry point).
-    @State private var visited: Set<AppTab> = [.lineup]
+    @State private var visited: Set<AppTab> = [.team]
 
     // Chat peek header height; the small gap left above an expanded panel.
     private let peekHeight: CGFloat = 56
     private let topGap: CGFloat = 8
 
-    private static let tabOrder: [AppTab] = [.lineup, .players]
+    private static let tabOrder: [AppTab] = [.team, .matchup, .league, .moves, .players]
 
     private static func deviceBottomInset() -> CGFloat {
         UIApplication.shared.connectedScenes
@@ -177,7 +175,7 @@ struct LeagueShellView: View {
         }
     }
 
-    // All four tab roots are kept alive once visited (so per-tab state survives
+    // All tab roots are kept alive once visited (so per-tab state survives
     // a switch), shown/hidden by opacity the way a TabView does. Lazy so a tab's
     // data only loads after it's first opened.
     private var tabContent: some View {
@@ -196,7 +194,10 @@ struct LeagueShellView: View {
     @ViewBuilder
     private func tabRoot(_ tab: AppTab) -> some View {
         switch tab {
-        case .lineup:  LineupTabView()
+        case .team:    LineupTabView()
+        case .matchup: MatchupTabRootView()
+        case .league:  LeagueHubView()
+        case .moves:   MovesTabRootView()
         case .players: NFLHubView()
         }
     }
@@ -313,7 +314,10 @@ struct CustomTabBar: View {
     static let height: CGFloat = 56
 
     private static let items: [(tab: AppTab, label: String, icon: String)] = [
-        (.lineup,  "Lineup",  "list.bullet.rectangle.portrait.fill"),
+        (.team,    "Team",    "person.crop.rectangle.stack.fill"),
+        (.matchup, "Matchup", "sportscourt.fill"),
+        (.league,  "League",  "trophy.fill"),
+        (.moves,   "Moves",   "arrow.left.arrow.right"),
         (.players, "Players", "football.fill"),
     ]
 

@@ -6,9 +6,10 @@ import Combine
 // starter comparison with projections and game context, an expandable box score
 // per player, a bench/optimal recap, and head-to-head history vs the opponent.
 //
-// Pushed onto the Lineup tab's navigation stack (via the score-banner tap or
-// the "Matchup" nav pill) — it is no longer a top-level tab, so it relies on
-// the host NavigationStack for back-button chrome rather than wrapping its own.
+// Hosted two ways: as the Matchup tab's root (inside MatchupTabRootView's
+// NavigationStack) and pushed onto the Lineup/Team tab's stack (score-banner
+// tap or the "Matchup" nav pill) — so it relies on the host NavigationStack
+// for back-button chrome rather than wrapping its own.
 struct MatchupTabView: View {
     @Environment(AppState.self) private var app
 
@@ -64,6 +65,7 @@ struct MatchupTabView: View {
                 VStack(spacing: FFSpace.l) {
                     weekPicker
                     matchupBody
+                    scoreboardLink
                 }
                 .padding(.horizontal, FFSpace.l)
                 .padding(.top, FFSpace.s)
@@ -121,6 +123,40 @@ struct MatchupTabView: View {
                         .font(.system(size: 11, weight: .semibold)).foregroundStyle(FFColor.textTertiary)
                 }
             }
+        }
+    }
+
+    // MARK: - Scoreboard drill-in
+
+    // Drill row into the league-wide scoreboard (shared ScoreboardSection).
+    // A row rather than an inline embed: this screen already owns a full
+    // ScrollView with its own week picker, and stacking a second week-scoped
+    // card would double the pickers. NavigationLink(destination:) — not a
+    // typed value — so it works from both hosts (the Matchup tab root and the
+    // Team tab's push path) without each registering a destination.
+    @ViewBuilder
+    private var scoreboardLink: some View {
+        if let league {
+            NavigationLink {
+                LeagueScoreboardScreen(league: league)
+            } label: {
+                HStack(spacing: FFSpace.m) {
+                    Image(systemName: "sportscourt")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(FFColor.accent)
+                        .frame(width: 24)
+                    Text("League scoreboard")
+                        .font(.ffHeadline)
+                        .foregroundStyle(FFColor.textPrimary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                .ffCard()
+                .contentShape(RoundedRectangle(cornerRadius: FFRadius.m))
+            }
+            .buttonStyle(.plain)
         }
     }
 
