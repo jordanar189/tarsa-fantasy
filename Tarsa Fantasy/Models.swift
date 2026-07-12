@@ -1,10 +1,67 @@
 import Foundation
 
-// Bottom-tab destinations. League and Matchup are reached as push navigation
-// from inside Lineup, not as their own tabs — the bottom bar is intentionally
-// minimal so the most-used screens (your lineup and the player pool) are one
-// tap away and league/matchup come along as drill-ins from the lineup hero.
-enum AppTab: String, Hashable { case lineup, players }
+// Bottom-tab destinations: Team (your lineup), Matchup, League (hub),
+// Moves (waivers/trades/activity), Players (the NFL pool).
+enum AppTab: Hashable {
+    case team, matchup, league, moves, players
+}
+
+// Manual RawRepresentable (instead of a `: String` raw type) so the
+// pre-5-tab name "lineup" keeps resolving — old deep links and stored tab
+// strings map to .team instead of silently failing to decode.
+extension AppTab: RawRepresentable {
+    init?(rawValue: String) {
+        switch rawValue {
+        case "team", "lineup": self = .team
+        case "matchup":        self = .matchup
+        case "league":         self = .league
+        case "moves":          self = .moves
+        case "players":        self = .players
+        default:               return nil
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .team:    return "team"
+        case .matchup: return "matchup"
+        case .league:  return "league"
+        case .moves:   return "moves"
+        case .players: return "players"
+        }
+    }
+}
+
+// Pure mapping from a push deep link (tarsafantasy://…) to the league to
+// focus and the tab to land on. Framework-free so it's unit-testable;
+// AppState.handlePushDeepLink applies the result.
+enum DeepLinkRouter {
+    struct Destination: Equatable {
+        let leagueID: String?
+        let tab: AppTab
+    }
+
+    static func destination(for url: URL) -> Destination? {
+        switch url.host {
+        case "lineup":
+            // Legacy pre-5-tab link: jump to your team in the current league.
+            return Destination(leagueID: nil, tab: .team)
+        case "league":
+            // tarsafantasy://league/<id>[/waivers|/trades|/matchup|…]
+            let parts = url.pathComponents.filter { $0 != "/" }
+            guard let id = parts.first, !id.isEmpty else { return nil }
+            let tab: AppTab
+            switch parts.dropFirst().first {
+            case "trades", "waivers": tab = .moves
+            case "matchup":           tab = .matchup
+            default:                  tab = .team
+            }
+            return Destination(leagueID: id, tab: tab)
+        default:
+            return nil
+        }
+    }
+}
 
 // Persisted UI theme. `system` follows the device setting; `light`/`dark`
 // force the app into that scheme regardless of the device. Default is

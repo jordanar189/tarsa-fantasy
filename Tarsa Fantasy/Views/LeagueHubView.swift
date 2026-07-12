@@ -1,0 +1,293 @@
+import SwiftUI
+
+// League tab root: the league-wide hub. Standings are the landing content,
+// with the simulation control strip / active-draft callout above and drill
+// rows into the deeper league surfaces (playoffs, draft review, history,
+// teams, commissioner settings). Reuses the same section views that
+// LeagueDetailView hosts — this is structure for the 5-tab shell, not a
+// redesign.
+struct LeagueHubView: View {
+    @Environment(AppState.self) private var app
+
+    @State private var activeDraft: Draft? = nil
+    @State private var viewingTeam: FantasyTeam? = nil
+    @State private var showingSettings = false
+    // Same rule as LeagueDetailView: promoted Sleeper leagues have history
+    // backfilled before any season completes here.
+    @State private var hasHistory = false
+
+    private var league: League? { app.selectedLeague }
+
+    // Pushed destinations reuse LeagueDetailView's segment content verbatim.
+    enum HubDestination: Hashable {
+        case playoffs, draftReview, history, teams
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                FFColor.bg.ignoresSafeArea()
+                content
+            }
+            .navigationTitle("League")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(FFColor.bg, for: .navigationBar)
+            .leagueSwitcher()
+            .navigationDestination(for: HubDestination.self) { dest in
+                hubDestination(dest)
+            }
+        }
+        .task(id: app.selectedLeagueID) { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: .draftUpdated)) { _ in
+            Task { await refreshDraftStatus() }
+        }
+        .sheet(item: $viewingTeam) { team in
+            if let league {
+                TeamRosterSheet(league: league, team: team)
+            }
+        }
+        .sheet(isPresented: $showingSettings) {
+            if let league {
+                LeagueSettingsView(
+                    league: league,
+                    onSave: { app.selectedLeague = $0 },
+                    onDelete: {
+                        // League is gone — return to the overview and refresh
+                        // summaries so the deleted row drops out.
+                        Task {
+                            await app.reloadLeagues()
+                            await app.selectLeague(nil)
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let league {
+            ScrollView {
+                VStack(spacing: FFSpace.l) {
+                    if league.isTest {
+                        SimulationBanner(league: league) { app.selectedLeague = $0 }
+                    }
+                    draftCallout(league)
+                    StandingsSection(league: league) { viewingTeam = $0 }
+                    drillRows(league)
+                }
+                .padding(.horizontal, FFSpace.l)
+                .padding(.top, FFSpace.s)
+                // Clear the tab bar + collapsed league-chat peek that overlay
+                // the bottom (matches the other tab roots).
+                .padding(.bottom, 80)
+            }
+            .refreshable { await load() }
+            // Re-check on pop-back so the callout clears right after a draft
+            // completes or a mock is discarded.
+            .onAppear { Task { await refreshDraftStatus() } }
+        } else {
+            Spacer()
+        }
+    }
+
+    // MARK: - Draft callout
+
+    // Same active-draft callout as the Team tab. Scheduling a brand-new draft
+    // (commissioner CTA + DraftSetupView sheet) stays on LeagueDetailView.
+    @ViewBuilder
+    private func draftCallout(_ league: League) -> some View {
+        if let draft = activeDraft {
+            NavigationLink {
+                DraftRoomView(leagueID: league.id)
+            } label: {
+                HStack(spacing: FFSpace.m) {
+                    Image(systemName: draft.status == .live ? "dot.radiowaves.left.and.right" : "calendar.badge.clock")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(draft.status == .live ? FFColor.accent : FFColor.warning)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(draft.status == .live ? "Draft is live" :
+                             draft.status == .paused ? "Draft paused" : "Draft scheduled")
+                            .font(.ffHeadline)
+                            .foregroundStyle(FFColor.textPrimary)
+                        Text(draft.status == .live
+                             ? "Jump into the draft room — picks are rolling."
+                             : "Starts \(draft.startsAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.ffCaption)
+                            .foregroundStyle(FFColor.textSecondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(FFColor.textTertiary)
+                }
+                .padding(FFSpace.l)
+                .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+                .overlay(
+                    RoundedRectangle(cornerRadius: FFRadius.m)
+                        .strokeBorder(draft.status == .live ? FFColor.accent.opacity(0.5) : FFColor.border, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    // MARK: - Drill rows
+
+    private func drillRows(_ league: League) -> some View {
+        VStack(spacing: FFSpace.s) {
+            if league.playoffTeams >= 2 {
+                hubRow("Playoffs", icon: "trophy", value: .playoffs)
+            }
+            hubRow("Draft", icon: "list.number", value: .draftReview)
+            if showsHistory(league) {
+                hubRow("History", icon: "clock.arrow.circlepath", value: .history)
+            }
+            hubRow("Teams", icon: "person.3", value: .teams)
+            if league.creatorID == app.session?.userID {
+                // Sheet (not push) — LeagueSettingsView wraps its own
+                // NavigationStack, matching how LeagueDetailView presents it.
+                Button { showingSettings = true } label: {
+                    hubRowLabel("Settings", icon: "gearshape")
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func hubRow(_ title: String, icon: String, value: HubDestination) -> some View {
+        NavigationLink(value: value) {
+            hubRowLabel(title, icon: icon)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func hubRowLabel(_ title: String, icon: String) -> some View {
+        HStack(spacing: FFSpace.m) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(FFColor.accent)
+                .frame(width: 24)
+            Text(title)
+                .font(.ffHeadline)
+                .foregroundStyle(FFColor.textPrimary)
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(FFColor.textTertiary)
+        }
+        .ffCard()
+        .contentShape(RoundedRectangle(cornerRadius: FFRadius.m))
+    }
+
+    // MARK: - Pushed destinations
+
+    @ViewBuilder
+    private func hubDestination(_ dest: HubDestination) -> some View {
+        if let league {
+            switch dest {
+            case .playoffs:
+                hubScreen("Playoffs") { PlayoffBracketView(league: league) }
+            case .draftReview:
+                hubScreen("Draft") { SimulationDraftReviewView(league: league) }
+            case .history:
+                hubScreen("History") { LeagueHistoryView(league: league) }
+            case .teams:
+                hubScreen("Teams") { LeagueTeamsList(league: league) }
+            }
+        }
+    }
+
+    // Standard scroll chrome around a section view — the same framing
+    // LeagueDetailView gives its segments.
+    private func hubScreen<Content: View>(
+        _ title: String, @ViewBuilder content: () -> Content
+    ) -> some View {
+        ZStack {
+            FFColor.bg.ignoresSafeArea()
+            ScrollView {
+                VStack(spacing: FFSpace.l) { content() }
+                    .padding(.horizontal, FFSpace.l)
+                    .padding(.top, FFSpace.s)
+                    .padding(.bottom, 80)
+            }
+        }
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(FFColor.bg, for: .navigationBar)
+    }
+
+    // MARK: - Load
+
+    private func load() async {
+        guard let league else {
+            activeDraft = nil
+            hasHistory = false
+            return
+        }
+        await app.loadSeason(league.season)
+        await app.loadLeagueNicknames(leagueID: league.id)
+        await refreshDraftStatus()
+        if let imp = app.importedSleeperLeagues.first(where: { $0.activatedLeagueID == league.id }) {
+            hasHistory = imp.seasons.contains { $0.seasonYear < imp.seasonYear }
+        } else {
+            hasHistory = false
+        }
+    }
+
+    private func refreshDraftStatus() async {
+        guard let league else { activeDraft = nil; return }
+        let draft = await app.draft(leagueID: league.id)
+        activeDraft = (draft?.status == .complete) ? nil : draft
+    }
+
+    private func showsHistory(_ lg: League) -> Bool {
+        !lg.isTest && (lg.seasonCompleted || lg.parentLeagueID != nil || hasHistory)
+    }
+}
+
+// Simple franchise browser for the hub's Teams row: every team with its
+// crest and roster size; tap for the read-only roster popup.
+private struct LeagueTeamsList: View {
+    @Environment(AppState.self) private var app
+    let league: League
+
+    @State private var viewingTeam: FantasyTeam? = nil
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(league.teams) { team in
+                Button { viewingTeam = team } label: {
+                    HStack(spacing: FFSpace.m) {
+                        TeamCrestView(team: team, size: 30)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(team.name)
+                                .font(.ffBody)
+                                .foregroundStyle(FFColor.textPrimary)
+                                .lineLimit(1)
+                            Text("\(team.roster.count) players")
+                                .font(.ffCaption)
+                                .foregroundStyle(FFColor.textTertiary)
+                        }
+                        Spacer()
+                        if team.ownerID == app.session?.userID {
+                            Text("YOU").ffEyebrow(color: FFColor.accent)
+                        }
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(FFColor.textTertiary)
+                    }
+                    .padding(.horizontal, FFSpace.m)
+                    .padding(.vertical, FFSpace.s)
+                    .ffHairlineBottom()
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(FFColor.surface, in: RoundedRectangle(cornerRadius: FFRadius.m))
+        .overlay(RoundedRectangle(cornerRadius: FFRadius.m).strokeBorder(FFColor.border, lineWidth: 1))
+        .sheet(item: $viewingTeam) { team in
+            TeamRosterSheet(league: league, team: team)
+        }
+    }
+}
