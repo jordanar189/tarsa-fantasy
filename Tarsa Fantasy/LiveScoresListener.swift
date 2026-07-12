@@ -174,6 +174,12 @@ actor LiveScoresListener {
         line.defFumbleRecoveries  = num("def_fumble_recoveries")
         line.defTouchdowns        = num("def_tds")
         line.defSafeties          = num("def_safeties")
+        line.defTacklesSolo       = num("def_tackles_solo")
+        line.defTackleAssists     = num("def_tackle_assists")
+        line.defTacklesForLoss    = num("def_tackles_for_loss")
+        line.defQbHits            = num("def_qb_hits")
+        line.defPassesDefended    = num("def_pass_defended")
+        line.defFumblesForced     = num("def_fumbles_forced")
         line.pointsAllowed        = record["def_points_allowed"]?.doubleValue
         await NFLDataService.shared.applyLiveOverride(
             playerID: pid, season: season, week: week, line: line
