@@ -180,14 +180,23 @@ function mergeCategory(
         // IDP line. ESPN reports total + solo tackles; assists are the
         // difference. Forced fumbles and safeties aren't in the box score —
         // they stay 0 live and the nightly nflverse sync fills them in.
-        const total = num("TOT");
-        const solo  = num("SOLO");
+        // lead() takes the leading number so a paired "count-yards" cell
+        // (the shape the team-level sacksYardsLost uses) still parses as the
+        // count instead of zeroing out.
+        const lead = (label: string) => {
+            const i = idx(label);
+            if (i < 0 || i >= stats.length) return 0;
+            const n = parseFloat(stats[i] ?? "");
+            return Number.isFinite(n) ? n : 0;
+        };
+        const total = lead("TOT");
+        const solo  = lead("SOLO");
         acc.def_tackles_solo = solo;
         acc.def_tackle_assists = Math.max(0, total - solo);
-        acc.def_sacks = num("SACKS");
-        acc.def_tackles_for_loss = num("TFL");
-        acc.def_pass_defended = num("PD");
-        acc.def_qb_hits = num("QB HTS");
+        acc.def_sacks = lead("SACKS");
+        acc.def_tackles_for_loss = lead("TFL");
+        acc.def_pass_defended = lead("PD");
+        acc.def_qb_hits = lead("QB HTS");
         // A pick-six shows in both the defensive and interceptions
         // categories' TD columns — max() rather than sum avoids the double.
         acc.def_tds = Math.max(acc.def_tds ?? 0, num("TD"));

@@ -43,8 +43,14 @@ const SUMMARY: EspnSummary = {
                 {
                     name: "defensive",
                     labels: ["TOT", "SOLO", "SACKS", "TFL", "PD", "QB HTS", "TD"],
-                    athletes: [{ athlete: { id: 105, displayName: "Line Backer" },
-                                 stats: ["11", "8", "1.5", "2", "2", "3", "1"] }],
+                    athletes: [
+                        { athlete: { id: 105, displayName: "Line Backer" },
+                          stats: ["11", "8", "1.5", "2", "2", "3", "1"] },
+                        // Paired "count-yards" cells (the team-level
+                        // sacksYardsLost shape) must parse as the count.
+                        { athlete: { id: 106, displayName: "Edge Guy" },
+                          stats: ["5", "4", "2-14", "3-9", "1", "2", "0"] },
+                    ],
                 },
                 {
                     name: "interceptions",
@@ -86,7 +92,7 @@ const SUMMARY: EspnSummary = {
 
 const ID_MAP = new Map<string, string>([
     ["101", "gsis_qb"], ["102", "gsis_rb"], ["103", "gsis_wr"], ["104", "gsis_k"],
-    ["105", "gsis_lb"],
+    ["105", "gsis_lb"], ["106", "gsis_de"],
 ]);
 
 Deno.test("box score parses into raw counting stats", () => {
@@ -114,6 +120,10 @@ Deno.test("defensive category parses into a per-defender IDP line", () => {
     // The RB's own-fumble recovery must never score as a defensive one.
     const rb = lines.get("gsis_rb")!;
     expect(!("def_fumble_recoveries" in rb), "offensive REC not promoted");
+    // Dashed count-yards cells parse as the count, not zero.
+    const de = lines.get("gsis_de")!;
+    expect(de.def_sacks === 2 && de.def_tackles_for_loss === 3, "dashed SACKS/TFL take leading count");
+    expect(de.def_tackles_solo === 4 && de.def_tackle_assists === 1, "DE tackle split");
 });
 
 Deno.test("kicker FG distances bucket from scoring plays", () => {
