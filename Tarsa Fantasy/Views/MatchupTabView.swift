@@ -299,7 +299,10 @@ struct MatchupTabView: View {
         }
         // Remember that this matchup was live on our watch — the only state
         // from which a flip to final counts as a win happening "now".
-        .onChange(of: anyPlayed && !allDone) { _, isLive in
+        // `initial: true` arms it on a cold mount into an already-live
+        // matchup (opening the app mid-game); the already-final case stays
+        // safe because the closure is a no-op unless live.
+        .onChange(of: anyPlayed && !allDone, initial: true) { _, isLive in
             if isLive { liveKey = contextKey }
         }
         // Celebration: glow pulse + success haptic when the live matchup we
