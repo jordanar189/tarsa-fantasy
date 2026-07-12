@@ -361,22 +361,6 @@ struct SegmentedTabPicker<T: Hashable & Identifiable, Label: View>: View {
     }
 }
 
-struct LoadingOverlay: View {
-    let isVisible: Bool
-    var body: some View {
-        if isVisible {
-            ZStack {
-                Color.black.opacity(0.001)
-                ProgressView()
-                    .controlSize(.large)
-                    .padding(20)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-            }
-            .allowsHitTesting(true)
-        }
-    }
-}
-
 // Thin indeterminate progress bar — 2pt tall, accent-colored segment sliding
 // left-to-right. Used as a global indicator when the season data is being
 // refreshed in the background (we already painted cached data, so this is

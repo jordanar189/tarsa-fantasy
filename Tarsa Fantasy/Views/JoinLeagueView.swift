@@ -54,7 +54,7 @@ struct JoinLeagueView: View {
             VStack(alignment: .leading, spacing: FFSpace.s) {
                 Text("JOIN A LEAGUE").ffEyebrow(color: FFColor.accent)
                 Text("Paste an invite link, or enter\nthe six-character code.")
-                    .font(.system(size: 32, weight: .bold))
+                    .font(.ffDisplay)
                     .foregroundStyle(FFColor.textPrimary)
                     .lineSpacing(-2)
             }
@@ -117,7 +117,7 @@ struct JoinLeagueView: View {
                 VStack(alignment: .leading, spacing: FFSpace.s) {
                     Text("LEAGUE").ffEyebrow(color: FFColor.accent)
                     Text(lg.name)
-                        .font(.system(size: 28, weight: .bold))
+                        .font(.ffTitle.bold())
                         .foregroundStyle(FFColor.textPrimary)
                     HStack(spacing: FFSpace.s) {
                         FFPill { Text(String(lg.season)) }

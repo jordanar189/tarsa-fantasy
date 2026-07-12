@@ -49,7 +49,7 @@ struct AuthGateView: View {
     private var headline: some View {
         VStack(alignment: .leading, spacing: FFSpace.s) {
             Text(mode == .signIn ? "Welcome\nback." : "Build your\nleague.")
-                .font(.system(size: 44, weight: .heavy, design: .rounded))
+                .font(.ffDisplay)
                 .foregroundStyle(FFGradient.brand)
                 .lineSpacing(-4)
             Text(mode.subtitle)

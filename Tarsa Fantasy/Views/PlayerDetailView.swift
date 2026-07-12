@@ -147,7 +147,7 @@ struct PlayerDetailView: View {
                 PlayerAvatar(url: p.headshotURL, fallback: p.name.initialsFromName, size: 88)
                 VStack(alignment: .leading, spacing: 6) {
                     Text(p.name)
-                        .font(.system(size: 22, weight: .bold))
+                        .font(.ffTitle.bold())
                         .foregroundStyle(FFColor.textPrimary)
                     HStack(spacing: 6) {
                         PositionPill(position: p.position)

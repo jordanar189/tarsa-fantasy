@@ -2,7 +2,6 @@ import SwiftUI
 
 // Home/away and monthly scoring splits. Pushed from the player profile hub.
 struct PlayerSplitsPage: View {
-    @Environment(AppState.self) private var app
     let player: Player
     let model: PlayerDetailModel
 

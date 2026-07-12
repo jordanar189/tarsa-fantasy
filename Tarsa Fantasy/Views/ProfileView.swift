@@ -7,7 +7,6 @@ import SwiftUI
 // Message.
 struct ProfileView: View {
     @Environment(AppState.self) private var app
-    @Environment(\.dismiss) private var dismiss
     let userID: String
 
     @State private var profile: Profile? = nil
