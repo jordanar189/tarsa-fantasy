@@ -1,24 +1,35 @@
 import SwiftUI
 
-// League tab root: the league-wide hub. Standings are the landing content,
-// with the simulation control strip / active-draft callout above and drill
-// rows into the deeper league surfaces (playoffs, draft review, history,
-// teams, commissioner settings). Reuses the same section views that
-// LeagueDetailView hosts — this is structure for the 5-tab shell, not a
-// redesign.
+// League tab root: the league-wide hub. The overview homepage (progress,
+// scoreboard, standings, team stats, information environment) is the landing
+// content, with the draft callout / commissioner draft-scheduling CTA above
+// and drill rows into the deeper league surfaces (playoffs, draft review,
+// history, teams, invite link, commissioner settings). This absorbed
+// everything the deleted LeagueDetailView hosted — structure for the 5-tab
+// shell, not a redesign.
 struct LeagueHubView: View {
     @Environment(AppState.self) private var app
 
-    @State private var activeDraft: Draft? = nil
+    // The league's draft as last fetched, complete or not. The callout /
+    // scheduling CTA derive from it: activeDraft only surfaces unfinished
+    // drafts, while a nil `draft` is what unlocks "Schedule the draft".
+    @State private var draft: Draft? = nil
     @State private var viewingTeam: FantasyTeam? = nil
+    @State private var editingTeam: FantasyTeam? = nil
+    @State private var customizingTeam: FantasyTeam? = nil
     @State private var showingSettings = false
-    // Same rule as LeagueDetailView: promoted Sleeper leagues have history
-    // backfilled before any season completes here.
+    @State private var showingDraftSettings = false
+    // Promoted Sleeper leagues have history backfilled before any season
+    // completes here.
     @State private var hasHistory = false
 
     private var league: League? { app.selectedLeague }
 
-    // Pushed destinations reuse LeagueDetailView's segment content verbatim.
+    private var activeDraft: Draft? {
+        draft.flatMap { $0.status == .complete ? nil : $0 }
+    }
+
+    // Pushed destinations for the deeper league surfaces.
     enum HubDestination: Hashable {
         case playoffs, draftReview, history, teams
     }
@@ -43,7 +54,46 @@ struct LeagueHubView: View {
         }
         .sheet(item: $viewingTeam) { team in
             if let league {
-                TeamRosterSheet(league: league, team: team)
+                TeamRosterSheet(league: league, team: team, onEdit: {
+                    // Hop from the read-only roster popup straight into the
+                    // editor. The popup dismisses itself before invoking us;
+                    // defer the second sheet by a tick so the first one has
+                    // fully unwound — SwiftUI drops back-to-back sheets that
+                    // race the same presenter.
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        editingTeam = team
+                    }
+                }, onCustomize: {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        customizingTeam = team
+                    }
+                })
+            }
+        }
+        .sheet(item: $editingTeam) { team in
+            if let league {
+                RosterEditorView(league: league, team: team) { updated in
+                    app.selectedLeague = updated
+                }
+            }
+        }
+        .sheet(item: $customizingTeam) { team in
+            if let league {
+                TeamCustomizationSheet(league: league, team: team) { updated in
+                    app.selectedLeague = updated
+                }
+            }
+        }
+        .sheet(isPresented: $showingDraftSettings) {
+            // Sheet (not push) — DraftSetupView wraps its own NavigationStack
+            // and nesting that into a parent NavigationStack pops the user
+            // back to the league picker.
+            if let league {
+                DraftSetupView(league: league, existing: draft) { updated in
+                    self.draft = updated
+                }
             }
         }
         .sheet(isPresented: $showingSettings) {
@@ -69,11 +119,17 @@ struct LeagueHubView: View {
         if let league {
             ScrollView {
                 VStack(spacing: FFSpace.l) {
-                    if league.isTest {
-                        SimulationBanner(league: league) { app.selectedLeague = $0 }
-                    }
                     draftCallout(league)
-                    StandingsSection(league: league) { viewingTeam = $0 }
+                    draftSchedulingRow(league)
+                    // The full overview homepage (sim control strip, champion
+                    // banner, progress, scoreboard, standings, team stats,
+                    // information environment) — rehomed from the deleted
+                    // LeagueDetailView's Overview segment.
+                    SimulationOverviewView(
+                        league: league,
+                        onLeagueUpdate: { app.selectedLeague = $0 },
+                        onTapTeam: { viewingTeam = $0 }
+                    )
                     drillRows(league)
                 }
                 .padding(.horizontal, FFSpace.l)
@@ -93,8 +149,46 @@ struct LeagueHubView: View {
 
     // MARK: - Draft callout
 
-    // Same active-draft callout as the Team tab. Scheduling a brand-new draft
-    // (commissioner CTA + DraftSetupView sheet) stays on LeagueDetailView.
+    // Commissioner-only draft scheduling, rehomed from the deleted
+    // LeagueDetailView: no draft yet → the "Schedule the draft" CTA; a
+    // scheduled draft → a quiet "Draft settings" row to adjust it. Sims
+    // auto-create their draft on construction, so the CTA only makes sense
+    // in standard leagues.
+    @ViewBuilder
+    private func draftSchedulingRow(_ league: League) -> some View {
+        if league.creatorID == app.session?.userID {
+            if draft == nil && !league.isTest {
+                Button {
+                    showingDraftSettings = true
+                } label: {
+                    HStack {
+                        Image(systemName: "calendar.badge.plus")
+                            .foregroundStyle(FFColor.accent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Schedule the draft").font(.ffHeadline).foregroundStyle(FFColor.textPrimary)
+                            Text("Set a date and pick order to get the season going.")
+                                .font(.ffCaption).foregroundStyle(FFColor.textSecondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(FFColor.textTertiary)
+                    }
+                    .ffCard()
+                }
+                .buttonStyle(.plain)
+            } else if draft?.status == .scheduled {
+                Button {
+                    showingDraftSettings = true
+                } label: {
+                    hubRowLabel("Draft settings", icon: "slider.horizontal.3")
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // Same active-draft callout as the Team tab.
     @ViewBuilder
     private func draftCallout(_ league: League) -> some View {
         if let draft = activeDraft {
@@ -144,9 +238,22 @@ struct LeagueHubView: View {
                 hubRow("History", icon: "clock.arrow.circlepath", value: .history)
             }
             hubRow("Teams", icon: "person.3", value: .teams)
+            // Any member can share the join link (rehomed from the deleted
+            // LeagueDetailView's toolbar; Settings has a commish-only copy).
+            if let url = JoinLink.url(forCode: league.joinCode) {
+                ShareLink(
+                    item: url,
+                    subject: Text("Join \(league.name) on Tarsa Fantasy"),
+                    message: Text("Tap to claim a team in \(league.name).")
+                ) {
+                    hubRowLabel("Invite members", icon: "square.and.arrow.up")
+                }
+                .buttonStyle(.plain)
+            }
             if league.creatorID == app.session?.userID {
                 // Sheet (not push) — LeagueSettingsView wraps its own
-                // NavigationStack, matching how LeagueDetailView presents it.
+                // NavigationStack; nesting it into ours would fight the
+                // parent stack.
                 Button { showingSettings = true } label: {
                     hubRowLabel("Settings", icon: "gearshape")
                 }
@@ -198,8 +305,8 @@ struct LeagueHubView: View {
         }
     }
 
-    // Standard scroll chrome around a section view — the same framing
-    // LeagueDetailView gives its segments.
+    // Standard scroll chrome around a section view — the framing every
+    // league surface shares.
     private func hubScreen<Content: View>(
         _ title: String, @ViewBuilder content: () -> Content
     ) -> some View {
@@ -221,7 +328,7 @@ struct LeagueHubView: View {
 
     private func load() async {
         guard let league else {
-            activeDraft = nil
+            draft = nil
             hasHistory = false
             return
         }
@@ -236,9 +343,8 @@ struct LeagueHubView: View {
     }
 
     private func refreshDraftStatus() async {
-        guard let league else { activeDraft = nil; return }
-        let draft = await app.draft(leagueID: league.id)
-        activeDraft = (draft?.status == .complete) ? nil : draft
+        guard let league else { draft = nil; return }
+        draft = await app.draft(leagueID: league.id)
     }
 
     private func showsHistory(_ lg: League) -> Bool {

@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Waivers section inside LeagueDetailView. Sub-tabs:
+// Waivers section hosted by the Moves tab (MovesTabRootView). Sub-tabs:
 //
 //   Waivers      – the signed-in user's pending claims, plus a "recently
 //                  dropped" list to claim from.
@@ -104,6 +104,8 @@ struct WaiversView: View {
         dropped      = await d
         claims       = await c
         transactions = await t
+        // Claims changed (or may have) — keep the Moves tab badge honest.
+        await app.refreshMovesBadge()
     }
 
     // MARK: - Waivers

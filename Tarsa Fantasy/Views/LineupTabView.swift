@@ -48,14 +48,12 @@ struct LineupTabView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(FFColor.bg, for: .navigationBar)
             .leagueSwitcher()
-            // League and Matchup are no longer tabs — they're drill-ins from
-            // the Lineup hero. We declare the typed destinations once so any
-            // NavigationLink in this screen (score banner, nav pills, future
-            // contextual links) routes here.
+            // Typed destinations, declared once so any NavigationLink in
+            // this screen (score banner, draft callout, future contextual
+            // links) routes here.
             .navigationDestination(for: LineupDestination.self) { dest in
                 switch dest {
                 case .matchup:            MatchupTabView()
-                case .league(let id):     LeagueDetailView(leagueID: id)
                 case .draftRoom(let id):  DraftRoomView(leagueID: id)
                 }
             }
@@ -96,7 +94,6 @@ struct LineupTabView: View {
     // lets us route from anywhere in the lineup screen without threading state.
     enum LineupDestination: Hashable {
         case matchup
-        case league(String)
         case draftRoom(String)
     }
 
@@ -155,7 +152,6 @@ struct LineupTabView: View {
                 VStack(spacing: FFSpace.l) {
                     draftCallout
                     scoreBanner
-                    navPills
                     weekPicker
                     totalsCard
                     if let error {
@@ -257,24 +253,6 @@ struct LineupTabView: View {
                 ScoreBannerCard(mine: sides.mine, opp: sides.opp, week: week)
             }
             .buttonStyle(.plain)
-        }
-    }
-
-    // MARK: - Nav pills (League · Matchup)
-
-    @ViewBuilder
-    private var navPills: some View {
-        if let league {
-            HStack(spacing: FFSpace.s) {
-                NavigationLink(value: LineupDestination.league(league.id)) {
-                    LineupNavPill(label: "League", accent: false)
-                }
-                .buttonStyle(.plain)
-                NavigationLink(value: LineupDestination.matchup) {
-                    LineupNavPill(label: "Matchup", accent: true)
-                }
-                .buttonStyle(.plain)
-            }
         }
     }
 
@@ -943,7 +921,7 @@ struct LineupTabView: View {
     }
 }
 
-// MARK: - Score banner + nav pill view components
+// MARK: - Score banner view components
 
 // Hero card at the top of the Lineup tab: this week's matchup at a glance.
 // Big tabular scores for both sides, win-probability bar, "X yet to play"
@@ -1018,44 +996,6 @@ private struct ScoreBannerCard: View {
         }
         .ffHeroCard(accentStripe: leading && anyPlayed)
         .contentShape(RoundedRectangle(cornerRadius: FFRadius.l))
-    }
-}
-
-// Side-by-side drill-in pills for League and Matchup. One is accented (the
-// primary call-to-action — your weekly matchup); the other is a quiet surface
-// for the broader league context.
-private struct LineupNavPill: View {
-    let label: String
-    let accent: Bool
-
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("GO TO")
-                    .font(.ffMicro.bold()).tracking(1.4)
-                    .foregroundStyle(accent ? Color.white.opacity(0.75) : FFColor.textTertiary)
-                Text(label)
-                    .font(.ffHeadline)
-                    .foregroundStyle(accent ? Color.white : FFColor.textPrimary)
-            }
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(accent ? Color.white.opacity(0.85) : FFColor.textTertiary)
-        }
-        .padding(.horizontal, FFSpace.m)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: FFRadius.m)
-                .fill(accent ? AnyShapeStyle(FFGradient.brand) : AnyShapeStyle(FFColor.surface))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: FFRadius.m)
-                .strokeBorder(accent ? Color.clear : FFColor.border, lineWidth: 1)
-        )
-        .shadow(color: accent ? FFBrand.violet.opacity(0.25) : .clear, radius: 10, y: 4)
-        .frame(maxWidth: .infinity)
-        .contentShape(RoundedRectangle(cornerRadius: FFRadius.m))
     }
 }
 

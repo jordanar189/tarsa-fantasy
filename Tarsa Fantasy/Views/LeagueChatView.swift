@@ -47,6 +47,13 @@ struct LeagueChatView: View {
         .task(id: league.id) {
             await initialLoad()
         }
+        // Keep the shell's collapsed-peek badge/avatar in sync with the
+        // transcript. Count changes cover every arrival/removal path
+        // (realtime insert/delete, my own sends); initialLoad/resync call
+        // syncPeek directly for the swaps where the count happens to match.
+        .onChange(of: messages.count) { _, _ in
+            syncPeek()
+        }
         .onDisappear {
             Task { await LeagueChatListener.shared.stop() }
         }
@@ -596,7 +603,19 @@ struct LeagueChatView: View {
         responses = load.responses
         cacheUsernames(from: messages)
         loaded = true
+        syncPeek()
         await LeagueChatListener.shared.start(leagueID: league.id)
+    }
+
+    // Pushes unread count + latest sender up to AppState for the collapsed
+    // chat peek. This view owns the transcript, so it's the one source that
+    // can say both "what's new" and "who spoke last".
+    private func syncPeek() {
+        app.updateChatPeek(
+            leagueID: league.id,
+            messages: messages,
+            latestSenderName: messages.last.map { displayName(for: $0) }
+        )
     }
 
     // Full transcript re-fetch after a foreground catch-up — realtime deltas
@@ -609,6 +628,7 @@ struct LeagueChatView: View {
         reactions = load.reactions
         responses = load.responses
         cacheUsernames(from: messages)
+        syncPeek()
     }
 
     private func loadPickedImage(_ item: PhotosPickerItem?) async {

@@ -1,8 +1,7 @@
 import SwiftUI
 
 // Moves tab root: waivers, trades, and the transaction log for the selected
-// league. Thin shell over the existing WaiversView section — which is still
-// hosted by LeagueDetailView's Manage segment for the legacy push path.
+// league. Thin shell over the existing WaiversView section.
 struct MovesTabRootView: View {
     @Environment(AppState.self) private var app
 
