@@ -20,6 +20,12 @@ struct MatchupTabView: View {
     @State private var expanded: Set<String> = []
     // Session-local win-probability samples for the live movement sparkline.
     @State private var winProbHistory: [Double] = []
+    // Matchup-won celebration. `liveKey` marks a matchup we actually watched
+    // in progress this session, so the glow + haptic only fire when a live
+    // game finishes under our eyes — never when paging into a week that was
+    // already final.
+    @State private var liveKey: String? = nil
+    @State private var winGlow = false
 
     private var league: League? { app.selectedLeague }
     private var myTeam: FantasyTeam? { league.flatMap { app.myTeam(in: $0) } }
@@ -247,6 +253,7 @@ struct MatchupTabView: View {
         let leadActual = mine.actual >= opp.actual
         let anyPlayed = mine.actual > 0 || opp.actual > 0
         let allDone = anyPlayed && mine.remaining == 0 && opp.remaining == 0
+        let won = allDone && mine.actual > opp.actual
         let chip: StateChip = {
             if allDone   { return StateChip(state: .final,     label: "Final · Week \(week)") }
             if anyPlayed { return StateChip(state: .live,      label: "Live · Week \(week)") }
@@ -278,7 +285,11 @@ struct MatchupTabView: View {
                 WinProbTrend(history: winProbHistory)
             }
         }
-        .ffHeroCard(accentStripe: leadActual && anyPlayed)
+        // A won final trades the accent stripe for the positive one.
+        .ffHeroCard(accentStripe: leadActual && anyPlayed,
+                    accentTint: won ? FFColor.positive : FFColor.accent)
+        .shadow(color: FFColor.positive.opacity(winGlow ? 0.45 : 0),
+                radius: winGlow ? 22 : 0)
         // Win-probability movement: sample every recompute while the matchup
         // is live (session-local — resets with the view/week).
         .onChange(of: myWin) { _, new in
@@ -286,10 +297,37 @@ struct MatchupTabView: View {
             winProbHistory.append(new)
             if winProbHistory.count > 200 { winProbHistory.removeFirst() }
         }
+        // Remember that this matchup was live on our watch — the only state
+        // from which a flip to final counts as a win happening "now".
+        // `initial: true` arms it on a cold mount into an already-live
+        // matchup (opening the app mid-game); the already-final case stays
+        // safe because the closure is a no-op unless live.
+        .onChange(of: anyPlayed && !allDone, initial: true) { _, isLive in
+            if isLive { liveKey = contextKey }
+        }
+        // Celebration: glow pulse + success haptic when the live matchup we
+        // were watching resolves as a win. Paging into an already-final week
+        // changes contextKey first, so liveKey never matches there.
+        .onChange(of: allDone) { _, done in
+            guard done else { return }
+            if won, liveKey == contextKey {
+                Haptics.success()
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { winGlow = true }
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    withAnimation(.easeOut(duration: 0.8)) { winGlow = false }
+                }
+            }
+            liveKey = nil
+        }
         // Keyed on league+week (not week alone): the view stays mounted
         // across a league switch, and stale samples must not bleed into the
         // new league's matchup.
-        .onChange(of: contextKey) { _, _ in winProbHistory = [] }
+        .onChange(of: contextKey) { _, _ in
+            winProbHistory = []
+            liveKey = nil
+            winGlow = false
+        }
     }
 
     private func teamColumn(_ s: SideModel, alignment: HorizontalAlignment, winning: Bool) -> some View {

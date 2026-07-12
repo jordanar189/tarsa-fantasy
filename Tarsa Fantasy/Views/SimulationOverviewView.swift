@@ -68,13 +68,16 @@ struct SimulationOverviewView: View {
         return Fantasy.playoffBracket(league: league, players: players).championTeamName
     }
 
+    // Static celebration chrome — the brand-gradient trophy, an accent
+    // stripe, and a soft glow. No motion or haptics; the title was won in
+    // the past, this banner just wears it.
     @ViewBuilder
     private var championBanner: some View {
         if let name = championName {
             HStack(spacing: FFSpace.m) {
                 Image(systemName: "trophy.fill")
                     .font(.system(size: 24))
-                    .foregroundStyle(FFColor.accent)
+                    .foregroundStyle(FFGradient.brand)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("LEAGUE CHAMPION").ffEyebrow(color: FFColor.accent)
                     Text(name).font(.ffHeadline).foregroundStyle(FFColor.textPrimary).lineLimit(1)
@@ -82,6 +85,14 @@ struct SimulationOverviewView: View {
                 Spacer()
             }
             .ffCard()
+            .overlay(alignment: .top) {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(FFColor.accent)
+                    .frame(height: 3)
+                    .padding(.horizontal, FFSpace.xxxl)
+                    .padding(.top, 1)
+            }
+            .shadow(color: FFColor.accent.opacity(0.20), radius: 12, y: 4)
         }
     }
 
@@ -111,9 +122,11 @@ struct SimulationOverviewView: View {
                 }
             }
             HStack(alignment: .top, spacing: FFSpace.xl) {
+                // Rank is the card's anchor stat; record and points step down.
                 column(label: "RANK",
                        value: mine.map { "#\($0.rank)" } ?? "—",
-                       color: mine?.rank == 1 ? FFColor.accent : FFColor.textPrimary)
+                       color: mine?.rank == 1 ? FFColor.accent : FFColor.textPrimary,
+                       font: .ffStatLarge)
                 column(label: "RECORD") {
                     if let mine {
                         ColoredRecord(wins: mine.wins, losses: mine.losses,
@@ -126,13 +139,16 @@ struct SimulationOverviewView: View {
                        value: mine.map { $0.pointsFor.fpString } ?? "—")
             }
         }
-        .ffCard()
+        // The hub's one hero surface — everything below stays ffCard.
+        .ffHeroCard()
     }
 
-    private func column(label: String, value: String, color: Color = FFColor.textPrimary) -> some View {
+    private func column(label: String, value: String,
+                        color: Color = FFColor.textPrimary,
+                        font: Font = .ffStatMedium) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).ffEyebrow(color: FFColor.textTertiary)
-            Text(value).font(.ffStatMedium).foregroundStyle(color)
+            Text(value).font(font).foregroundStyle(color)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

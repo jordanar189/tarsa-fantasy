@@ -23,9 +23,12 @@ struct LeagueOverviewView: View {
         NavigationStack {
             ZStack {
                 FFColor.bg.ignoresSafeArea()
-                if app.leagueSummaries.isEmpty && app.importedSleeperLeagues.isEmpty {
-                    FFGlow(intensity: 0.7).ignoresSafeArea()
-                }
+                // Full-strength glow sells the empty trophy case; the list
+                // keeps a quarter-turn of it so home still reads as the
+                // brand's front door without washing the cards.
+                FFGlow(intensity: app.leagueSummaries.isEmpty && app.importedSleeperLeagues.isEmpty
+                       ? 0.7 : 0.35)
+                    .ignoresSafeArea()
                 content
             }
             .navigationTitle("Your leagues")
@@ -215,7 +218,7 @@ struct LeagueListRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: FFSpace.s) {
                     Text(summary.name)
-                        .font(.ffHeadline)
+                        .font(.ffTitle)
                         .foregroundStyle(FFColor.textPrimary)
                         .lineLimit(1)
                     if isCommish { CommissionerBadge(compact: true) }
@@ -249,7 +252,7 @@ struct ImportedLeagueRow: View {
             SleeperAvatar(id: league.latest?.avatar, size: 40)
             VStack(alignment: .leading, spacing: 6) {
                 Text(league.name)
-                    .font(.ffHeadline)
+                    .font(.ffTitle)
                     .foregroundStyle(FFColor.textPrimary)
                     .lineLimit(1)
                 HStack(spacing: FFSpace.s) {
