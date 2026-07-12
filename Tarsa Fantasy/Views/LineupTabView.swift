@@ -15,7 +15,6 @@ struct LineupTabView: View {
     @State private var ir: [String] = []
     @State private var taxi: [String] = []
     @State private var context: WeekContext = .empty
-    @State private var loadingContext = false
     @State private var pickingSlot: Int? = nil
     @State private var saving = false
     @State private var error: String? = nil
@@ -893,9 +892,7 @@ struct LineupTabView: View {
         // disabled taxi doesn't strand players off the bench (matches the
         // resolveLineup / optimalWeekPoints / WaiverClaimSheet guards).
         taxi = config.taxi > 0 ? team.taxi.filter { team.roster.contains($0) } : []
-        loadingContext = true
         context = await app.weekContext(league: league, week: week)
-        loadingContext = false
     }
 
     private func persist() {

@@ -303,7 +303,7 @@ struct StructuredMessageCard: View {
                     .foregroundStyle(FFColor.textPrimary)
                 if let name, !name.isEmpty {
                     Text(name)
-                        .font(.system(size: 10))
+                        .font(.ffMicro)
                         .foregroundStyle(FFColor.textTertiary)
                         .lineLimit(1)
                 }

@@ -1,11 +1,8 @@
 import SwiftUI
 
-// Top-level "NFL" tab. Phase 1 wires up the Players sub-tab (enriched
-// list); Game Center / Teams / Trending are placeholders that will be
-// filled in phases 2 and 3 of the stats overhaul.
+// Top-level "NFL" tab: Game Center, Players, Teams, Trending, and News
+// sub-tabs behind one segmented picker.
 struct NFLHubView: View {
-    @Environment(AppState.self) private var app
-
     enum SubTab: String, CaseIterable, Identifiable, Hashable {
         case games  = "Game Center"
         case players = "Players"
@@ -46,22 +43,6 @@ struct NFLHubView: View {
                 SeasonPickerToolbar()
             }
             .leagueSwitcher()
-        }
-    }
-
-    private func comingSoon(icon: String, title: String, note: String) -> some View {
-        VStack(spacing: FFSpace.m) {
-            Spacer()
-            Image(systemName: icon)
-                .font(.system(size: 36, weight: .light))
-                .foregroundStyle(FFColor.textTertiary)
-            Text(title).font(.ffTitle).foregroundStyle(FFColor.textPrimary)
-            Text(note)
-                .font(.ffBody)
-                .foregroundStyle(FFColor.textSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, FFSpace.xl)
-            Spacer()
         }
     }
 }

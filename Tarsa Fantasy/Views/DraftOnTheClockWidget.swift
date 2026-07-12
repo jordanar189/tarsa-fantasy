@@ -64,7 +64,7 @@ struct DraftOnTheClockWidget: View {
                         }
                     }
                     Text(onClockTeam?.name ?? "—")
-                        .font(.system(size: 26, weight: .bold))
+                        .font(.ffTitle.bold())
                         .foregroundStyle(isMyTurn ? FFColor.accent : FFColor.textPrimary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)

@@ -2284,14 +2284,6 @@ struct DepthChartEntry: Hashable {
     let depth: Int
 }
 
-// Player marked inactive for a specific (season, week). status codes come
-// from nflverse weekly_rosters: RES, IR, PUP, SUS, EXE, etc.
-struct InactiveEntry: Hashable {
-    let playerID: String
-    let status: String
-    let reason: String?
-}
-
 struct PositionRank: Hashable {
     let position: String
     let rank: Int

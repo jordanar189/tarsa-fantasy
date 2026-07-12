@@ -3,7 +3,6 @@ import SwiftUI
 // Per-opponent history for the selected season. Pushed from the player
 // profile hub.
 struct PlayerMatchupsPage: View {
-    @Environment(AppState.self) private var app
     let player: Player
     let model: PlayerDetailModel
 

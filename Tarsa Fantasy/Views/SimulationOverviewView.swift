@@ -13,7 +13,6 @@ struct SimulationOverviewView: View {
 
     @State private var trending: [TrendingPlayer] = []
     @State private var injuriesAtWeek: [String: Injury] = [:]
-    @State private var inactivesAtWeek: Set<String> = []
     @State private var loaded: Bool = false
     // Cached so the (heavy) optimal-lineup math runs once per appearance/week
     // change rather than on every SwiftUI render of the team-stats card.
@@ -392,19 +391,11 @@ struct SimulationOverviewView: View {
         if league.isTest && currentWeek == 0 {
             trending = []
             injuriesAtWeek = [:]
-            inactivesAtWeek = []
             return
         }
         async let tr = app.trendingPlayers(for: league)
         async let inj = app.injuries(for: league)
         self.trending        = await tr
         self.injuriesAtWeek  = await inj
-        // Standard leagues have no simulated week — inactives are
-        // week-scoped and don't apply, so skip the fetch.
-        if currentWeek > 0 {
-            self.inactivesAtWeek = await app.inactives(season: league.season, week: currentWeek)
-        } else {
-            self.inactivesAtWeek = []
-        }
     }
 }

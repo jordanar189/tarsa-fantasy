@@ -81,7 +81,7 @@ struct TeamProfileView: View {
             TeamLogoCircle(url: team.logoURL, size: 72)
             VStack(alignment: .leading, spacing: 4) {
                 Text(team.fullName)
-                    .font(.system(size: 22, weight: .bold))
+                    .font(.ffTitle.bold())
                     .foregroundStyle(FFColor.textPrimary)
                 Text("\(team.conference) \(team.division)".uppercased())
                     .font(.ffMicro).tracking(0.8)

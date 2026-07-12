@@ -44,7 +44,7 @@ struct CustomTabBar: View {
                                 if badgeCount > 0 { badgePill(badgeCount) }
                             }
                         Text(item.label)
-                            .font(.system(size: 10, weight: selected ? .bold : .semibold))
+                            .font(selected ? .ffMicro.bold() : .ffMicro)
                     }
                     .frame(maxWidth: .infinity)
                     .foregroundStyle(
