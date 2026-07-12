@@ -119,6 +119,19 @@ export function extractPlayerStats(
             }
         }
     }
+
+    // Fumble recoveries: the box score's REC column counts own-fumble
+    // recoveries too (an RB falling on his own fumble), and only nflverse
+    // distinguishes them. Credit REC as a defensive recovery only for players
+    // ESPN listed under the defensive category — category order isn't
+    // guaranteed, hence this post-pass over the stashed value.
+    for (const acc of out.values()) {
+        if (acc.__is_defender && acc.__fumbles_rec) {
+            acc.def_fumble_recoveries = acc.__fumbles_rec;
+        }
+        delete acc.__is_defender;
+        delete acc.__fumbles_rec;
+    }
     return out;
 }
 
@@ -160,6 +173,28 @@ function mergeCategory(
         acc.targets = num("TGTS");
     } else if (catName === "fumbles") {
         acc.fumbles_lost = num("LOST");
+        // Total recoveries (own + opponent). Promoted to def_fumble_recoveries
+        // by the extractPlayerStats post-pass, but only for defenders.
+        acc.__fumbles_rec = num("REC");
+    } else if (catName === "defensive") {
+        // IDP line. ESPN reports total + solo tackles; assists are the
+        // difference. Forced fumbles and safeties aren't in the box score —
+        // they stay 0 live and the nightly nflverse sync fills them in.
+        const total = num("TOT");
+        const solo  = num("SOLO");
+        acc.def_tackles_solo = solo;
+        acc.def_tackle_assists = Math.max(0, total - solo);
+        acc.def_sacks = num("SACKS");
+        acc.def_tackles_for_loss = num("TFL");
+        acc.def_pass_defended = num("PD");
+        acc.def_qb_hits = num("QB HTS");
+        // A pick-six shows in both the defensive and interceptions
+        // categories' TD columns — max() rather than sum avoids the double.
+        acc.def_tds = Math.max(acc.def_tds ?? 0, num("TD"));
+        acc.__is_defender = 1;
+    } else if (catName === "interceptions") {
+        acc.def_interceptions = num("INT");
+        acc.def_tds = Math.max(acc.def_tds ?? 0, num("TD"));
     } else if (catName === "kicking") {
         const [fgMade, fgAtt] = pair("FG");
         const [xpMade, xpAtt] = pair("XP");

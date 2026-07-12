@@ -68,6 +68,15 @@ actor NFLDataService {
         var defFumbleRecoveries: Double = 0
         var defTouchdowns: Double = 0
         var defSafeties: Double = 0
+        // Per-defender IDP line (live from the ESPN defensive box score;
+        // forced fumbles aren't reported live and stay 0 until the nightly
+        // nflverse sync).
+        var defTacklesSolo: Double = 0
+        var defTackleAssists: Double = 0
+        var defTacklesForLoss: Double = 0
+        var defQbHits: Double = 0
+        var defPassesDefended: Double = 0
+        var defFumblesForced: Double = 0
         var pointsAllowed: Double? = nil
     }
 
@@ -240,6 +249,12 @@ actor NFLDataService {
         game.defFumbleRecoveries  = line.defFumbleRecoveries
         game.defTouchdowns        = line.defTouchdowns
         game.defSafeties          = line.defSafeties
+        game.defTacklesSolo       = line.defTacklesSolo
+        game.defTackleAssists     = line.defTackleAssists
+        game.defTacklesForLoss    = line.defTacklesForLoss
+        game.defQbHits            = line.defQbHits
+        game.defPassesDefended    = line.defPassesDefended
+        game.defFumblesForced     = line.defFumblesForced
         if let pa = line.pointsAllowed { game.pointsAllowed = pa }
     }
 
