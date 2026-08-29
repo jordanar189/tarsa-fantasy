@@ -15,6 +15,7 @@ supabase/
   functions/
     sync_nflverse/index.ts            # daily: mirror stats_player CSVs (roster-only fallback off-season)
     sync_espn_live/index.ts           # per-minute: live in-game scoring
+    sync_espn_preseason/index.ts      # per-minute in preseason game windows: games + box scores → preseason_* tables
     sync_pbp/index.ts                 # daily: mirror play-by-play (streamed gz)
     sync_schedules/index.ts           # daily: mirror nflverse master schedule CSV
     sync_schedules_espn/index.ts      # daily: mirror upcoming-season schedule from ESPN (earliest source)

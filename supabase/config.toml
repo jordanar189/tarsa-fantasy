@@ -44,3 +44,6 @@ verify_jwt = false   # invoked from pg_cron via service_role; default-on caused 
 
 [functions.sync_news]
 verify_jwt = false   # invoked from pg_cron via service_role; default-on 401'd every run and left player_news empty
+
+[functions.sync_espn_preseason]
+verify_jwt = false   # invoked from pg_cron via service_role
