@@ -16,6 +16,7 @@
 // SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are injected by the runtime.
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { fetchWithTimeout, withJobLock } from "../_shared/jobs.ts";
 
 const SUPABASE_URL     = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -32,6 +33,7 @@ const APNS_HOST: Record<string, string> = {
 
 const supa: SupabaseClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: fetchWithTimeout() },
 });
 
 interface NotificationRow {
@@ -58,24 +60,33 @@ Deno.serve(async (req: Request) => {
         let body: { notification_id?: string } = {};
         try { body = await req.json(); } catch { /* empty body → cron mode */ }
 
-        // Atomically claim the rows we'll work on (flips them to 'sending').
-        // The RPC handles due scheduled rows AND stale 'sending' rows whose lease
-        // expired (sender died mid-flight), so nothing strands permanently.
-        const { data, error } = await supa.rpc("claim_push_notifications", {
-            p_id: body.notification_id ?? null,
-        });
-        if (error) throw new Error(error.message);
-        const rows = (data ?? []) as NotificationRow[];
+        const run = async () => {
+            // Atomically claim the rows we'll work on (flips them to 'sending').
+            // The RPC handles due scheduled rows AND stale 'sending' rows whose lease
+            // expired (sender died mid-flight), so nothing strands permanently.
+            const { data, error } = await supa.rpc("claim_push_notifications", {
+                p_id: body.notification_id ?? null,
+            });
+            if (error) throw new Error(error.message);
+            const rows = (data ?? []) as NotificationRow[];
 
-        for (const n of rows) {
-            await deliver(n);
-        }
+            for (const n of rows) {
+                await deliver(n);
+            }
 
-        // Per-user event outbox (trade offers, waiver results, draft clock —
-        // rows queued by the push_events triggers). Same cron cadence.
-        const events = await drainEvents();
+            // Per-user event outbox (trade offers, waiver results, draft clock —
+            // rows queued by the push_events triggers). Same cron cadence.
+            const events = await drainEvents();
+            return { ok: true, processed: rows.length, events };
+        };
 
-        return json({ ok: true, processed: rows.length, events });
+        // Cron mode is serialised so a slow APNs round can't stack with the next
+        // minute's invocation. A direct "send now" targets one already-claimed
+        // row and shouldn't queue behind a cron batch (both claims are atomic).
+        const result = body.notification_id
+            ? await run()
+            : await withJobLock(supa, "send_push", run);
+        return json(result ?? { ok: true, skipped: "previous run still going" });
     } catch (err) {
         return json({ error: String(err) }, 500);
     }

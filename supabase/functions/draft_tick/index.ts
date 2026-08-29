@@ -9,12 +9,14 @@
 // constraint on (draft_id, pick_number).
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { fetchWithTimeout, withJobLock } from "../_shared/jobs.ts";
 
 const SUPABASE_URL     = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const supa: SupabaseClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false }
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: fetchWithTimeout() },
 });
 
 interface DraftRow {
@@ -36,7 +38,6 @@ interface LeagueRow {
 }
 interface PickRow { team_id: string; player_id: string; pick_number: number; }
 interface TeamKeepersRow { id: string; keepers: string[] | null; }
-interface PlayerStat { player_id: string; fantasy_points_ppr: number; }
 interface CachePlayer {
     id: string; position: string;
     years_exp?: number | null; draft_year?: number | null;
@@ -134,33 +135,43 @@ function positionsInCurrentLoop(
 
 Deno.serve(async (_req: Request) => {
     try {
-        const now = new Date();
-        const { data: drafts } = await supa.from("drafts")
-            .select("*").eq("status", "live");
-        const results: { draft: string; outcome: string }[] = [];
-        for (const d of (drafts ?? []) as DraftRow[]) {
-            if (d.format === "auction") {
-                // Auction clocks live partly on the open lot, so the
-                // pick_deadline prefilter doesn't apply.
-                const r = await advanceAuction(d, now);
-                if (r !== "waiting") results.push({ draft: d.id, outcome: r });
-                continue;
-            }
-            if (!d.pick_deadline || new Date(d.pick_deadline).getTime() > now.getTime()) {
-                continue;
-            }
-            const r = await advanceDraft(d);
-            results.push({ draft: d.id, outcome: r });
-        }
-        return new Response(JSON.stringify({
-            processed: results.length, results,
-        }), { headers: { "Content-Type": "application/json" } });
+        const out = await withJobLock(supa, "draft_tick", tick);
+        return new Response(JSON.stringify(out ?? { skipped: "previous tick still running" }), {
+            headers: { "Content-Type": "application/json" }
+        });
     } catch (err) {
         return new Response(JSON.stringify({ error: String(err) }), {
             status: 500, headers: { "Content-Type": "application/json" }
         });
     }
 });
+
+// One tick advances every live draft whose clock has expired. The cron fires
+// every minute whether or not the last tick finished, so withJobLock keeps two
+// ticks from racing the same pick (make_pick would reject the loser anyway,
+// but not before both had pulled the full player pool).
+async function tick(): Promise<{ processed: number; results: { draft: string; outcome: string }[] }> {
+    const now = new Date();
+    const { data: drafts, error } = await supa.from("drafts")
+        .select("*").eq("status", "live");
+    if (error) throw new Error(`drafts: ${error.message}`);
+    const results: { draft: string; outcome: string }[] = [];
+    for (const d of (drafts ?? []) as DraftRow[]) {
+        if (d.format === "auction") {
+            // Auction clocks live partly on the open lot, so the
+            // pick_deadline prefilter doesn't apply.
+            const r = await advanceAuction(d, now);
+            if (r !== "waiting") results.push({ draft: d.id, outcome: r });
+            continue;
+        }
+        if (!d.pick_deadline || new Date(d.pick_deadline).getTime() > now.getTime()) {
+            continue;
+        }
+        const r = await advanceDraft(d);
+        results.push({ draft: d.id, outcome: r });
+    }
+    return { processed: results.length, results };
+}
 
 interface LotRow {
     id: string; player_id: string; bid_deadline: string | null; status: string;
@@ -213,16 +224,7 @@ async function advanceAuction(d: DraftRow, now: Date): Promise<string> {
     for (const r of (lotRows ?? []) as { player_id: string }[]) taken.add(r.player_id);
 
     const adpByID = await fetchAdpRankings(lg as LeagueRow);
-    const cache: CachePlayer[] = [];
-    for (let from = 0; ; from += 1000) {
-        const { data: page } = await supa.from("players_cache")
-            .select("id, position")
-            .order("id")
-            .range(from, from + 999);
-        if (!page || page.length === 0) break;
-        cache.push(...(page as CachePlayer[]));
-        if (page.length < 1000) break;
-    }
+    const cache = await loadPool();
     // Prefer ADP-ranked candidates; without a snapshot, fall back to season
     // fantasy points (same tiebreak advanceDraft uses) so the nomination is
     // still a sensible best-available rather than alphabetical-by-id.
@@ -232,20 +234,7 @@ async function advanceAuction(d: DraftRow, now: Date): Promise<string> {
     } else {
         available = cache.filter(p => !taken.has(p.id));
         if (available.length === 0) return "no_candidates";
-        const totals = new Map<string, number>();
-        for (let from = 0; ; from += 1000) {
-            const { data: page } = await supa.from("player_games")
-                .select("player_id, fantasy_points_ppr")
-                .eq("season", (lg as LeagueRow).season)
-                .order("player_id")
-                .order("week")
-                .range(from, from + 999);
-            if (!page || page.length === 0) break;
-            for (const s of page as PlayerStat[]) {
-                totals.set(s.player_id, (totals.get(s.player_id) ?? 0) + Number(s.fantasy_points_ppr));
-            }
-            if (page.length < 1000) break;
-        }
+        const totals = await loadSeasonTotals((lg as LeagueRow).season);
         available.sort((a, b) => (totals.get(b.id) ?? 0) - (totals.get(a.id) ?? 0));
     }
 
@@ -370,20 +359,8 @@ async function advanceDraft(d: DraftRow): Promise<string> {
     // (Aug 25 of the season); real leagues use the most recent overall.
     const adpByID = await fetchAdpRankings(L);
 
-    // Player metadata (position) for every candidate we might rank.
-    // Paginated: PostgREST caps unranged selects at 1000 rows, and
-    // players_cache holds every NFL player — an unpaginated fetch made the
-    // auto-pick pool an arbitrary 1000-row subset.
-    const cache: CachePlayer[] = [];
-    for (let from = 0; ; from += 1000) {
-        const { data: page } = await supa.from("players_cache")
-            .select("id, position, years_exp, draft_year")
-            .order("id")
-            .range(from, from + 999);
-        if (!page || page.length === 0) break;
-        cache.push(...(page as CachePlayer[]));
-        if (page.length < 1000) break;
-    }
+    // Player metadata (position, rookie status) for every candidate we might rank.
+    const cache = await loadPool();
 
     // Available = not-yet-picked, restricted to the incoming class for
     // rookie drafts (mirrors public.is_rookie).
@@ -395,24 +372,7 @@ async function advanceDraft(d: DraftRow): Promise<string> {
     if (available.length === 0) return "no_candidates";
 
     // Season-points fallback for tiebreaking players without ADP.
-    // Paginated for the same 1000-row reason as above.
-    const totals = new Map<string, number>();
-    for (let from = 0; ; from += 1000) {
-        // Ordered by the full (player_id, week) key: player_id repeats
-        // across weeks, and range pagination over a non-unique order can
-        // skip or double-count rows at page boundaries.
-        const { data: page } = await supa.from("player_games")
-            .select("player_id, fantasy_points_ppr")
-            .eq("season", L.season)
-            .order("player_id")
-            .order("week")
-            .range(from, from + 999);
-        if (!page || page.length === 0) break;
-        for (const s of page as PlayerStat[]) {
-            totals.set(s.player_id, (totals.get(s.player_id) ?? 0) + Number(s.fantasy_points_ppr));
-        }
-        if (page.length < 1000) break;
-    }
+    const totals = await loadSeasonTotals(L.season);
 
     // Sort: ADP asc; players without ADP fall to bottom ordered by points desc.
     available.sort((a, b) => {
@@ -432,6 +392,27 @@ async function advanceDraft(d: DraftRow): Promise<string> {
     });
     const choice = allowedPick ?? available[0];
     return await invokeMakePick(d.id, teamID, choice.id);
+}
+
+// Whole player pool in one RPC. players_cache is ~9k rows, so the previous
+// 1000-row PostgREST pagination was nine round trips per tick; the RPC returns
+// jsonb, which PostgREST's max-rows cap doesn't truncate.
+async function loadPool(): Promise<CachePlayer[]> {
+    const { data, error } = await supa.rpc("draft_pool");
+    if (error) throw new Error(`draft_pool: ${error.message}`);
+    return (data ?? []) as CachePlayer[];
+}
+
+// Season PPR totals keyed by player, aggregated in one indexed GROUP BY. The
+// paginated version re-sorted the whole season's player_games for every one
+// of its ~40 pages (and spilled each sort to disk on a small instance).
+async function loadSeasonTotals(season: number): Promise<Map<string, number>> {
+    const { data, error } = await supa.rpc("draft_season_totals", { p_season: season });
+    if (error) throw new Error(`draft_season_totals: ${error.message}`);
+    return new Map(
+        Object.entries((data ?? {}) as Record<string, number | string>)
+            .map(([id, pts]) => [id, Number(pts)]),
+    );
 }
 
 async function fetchAdpRankings(L: LeagueRow): Promise<Map<string, number>> {
