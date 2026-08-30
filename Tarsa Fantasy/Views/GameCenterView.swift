@@ -6,7 +6,9 @@ import Combine
 // expanded) the top fantasy performers on each side derived from the
 // season's cached player data. Live: pull-to-refresh, plus a debounced
 // reload on the Realtime live-scores signal (sync_espn_live mirrors
-// score/status onto nfl_schedules in the same per-minute run).
+// score/status onto nfl_schedules in the same per-minute run). When the
+// season has NFL preseason games, an entry card at the top leads to the
+// separate preseason scoreboard (PreseasonView).
 struct GameCenterView: View {
     @Environment(AppState.self) private var app
 
@@ -16,6 +18,7 @@ struct GameCenterView: View {
     @State private var loading: Bool = false
     @State private var selectedGame: NFLGame? = nil
     @State private var loadedSeason: Int? = nil
+    @State private var preseasonGames: [PreseasonGame] = []
 
     private var availableWeeks: [Int] {
         Array(Set(games.map(\.week))).sorted()
@@ -30,6 +33,7 @@ struct GameCenterView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: FFSpace.l) {
+                if !preseasonGames.isEmpty { preseasonEntry }
                 weekPicker
                 if loading && games.isEmpty {
                     ProgressView().tint(FFColor.accent).padding(.top, FFSpace.xxl)
@@ -73,8 +77,10 @@ struct GameCenterView: View {
         let season = app.selectedSeason
         async let g = app.schedules(season: season, forceRefresh: force)
         async let t = app.nflTeams()
-        let (gamesResult, teamsResult) = await (g, t)
+        async let p = app.preseasonGames(season: season)
+        let (gamesResult, teamsResult, preseasonResult) = await (g, t, p)
         games = gamesResult
+        preseasonGames = preseasonResult
         teams = Dictionary(uniqueKeysWithValues: teamsResult.map { ($0.abbr, $0) })
         // Default week — first one with any game whose kickoff is in the
         // future, otherwise the latest week with games — but only on first
@@ -89,6 +95,47 @@ struct GameCenterView: View {
         let weeks = Array(Set(gamesResult.map(\.week))).sorted()
         if let upcoming { week = upcoming.week }
         else if let last = weeks.last { week = last }
+    }
+
+    // MARK: - Preseason
+
+    // Entry to the preseason scoreboard. Only rendered when the season has
+    // preseason games; the live count rides along with the schedule fetch.
+    private var preseasonEntry: some View {
+        let live = preseasonGames.filter { $0.isLive }.count
+        let upcoming = preseasonGames.filter { $0.status == .scheduled }.count
+        let summary: String = {
+            if live > 0 { return "\(live) game\(live == 1 ? "" : "s") live now" }
+            if upcoming > 0 { return "\(upcoming) game\(upcoming == 1 ? "" : "s") coming up" }
+            return "\(preseasonGames.count) games · scores & box scores"
+        }()
+        return NavigationLink(destination: PreseasonView()) {
+            HStack(spacing: FFSpace.m) {
+                Image(systemName: "figure.american.football")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(FFColor.accent)
+                    .frame(width: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("PRESEASON").ffEyebrow(color: FFColor.textTertiary)
+                    Text(summary)
+                        .font(.ffBody)
+                        .foregroundStyle(FFColor.textPrimary)
+                }
+                Spacer()
+                if live > 0 {
+                    Text("LIVE")
+                        .font(.ffMicro.bold()).tracking(0.8)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(FFColor.live, in: Capsule())
+                        .foregroundStyle(.white)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(FFColor.textTertiary)
+            }
+            .ffCard()
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Week picker

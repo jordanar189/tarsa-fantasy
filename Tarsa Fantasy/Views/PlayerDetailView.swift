@@ -105,6 +105,9 @@ struct PlayerDetailView: View {
             subpageRow("Details")  { PlayerDetailsPage(player: p, model: model) }
             subpageRow("Career")   { PlayerCareerPage(player: p, model: model) }
             subpageRow("Game Log") { PlayerGameLogPage(player: p, model: model) }
+            if !model.preseasonLines.isEmpty {
+                subpageRow("Preseason") { PlayerPreseasonPage(player: p, model: model) }
+            }
             subpageRow("Splits")   { PlayerSplitsPage(player: p, model: model) }
             subpageRow("Advanced") { PlayerAdvancedPage(player: p, model: model) }
             subpageRow("Matchups") { PlayerMatchupsPage(player: p, model: model) }
