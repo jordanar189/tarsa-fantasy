@@ -15,6 +15,9 @@ final class PlayerDetailModel {
     // back-fill doesn't rescan every player on each render. Refreshed in `load`.
     var maxRegWeek: Int = 0
     var snapCounts: [String: [Int: SnapCount]] = [:]
+    // NFL preseason box-score lines for the selected season; the hub only
+    // shows the Preseason page when there are any.
+    var preseasonLines: [PreseasonPlayerLine] = []
     var rankByID: [String: PositionRank] = [:]
     var dvpByPosition: [String: [String: DvPEntry]] = [:]
     var teamTargets: [String: [Int: Double]] = [:]
@@ -58,6 +61,7 @@ final class PlayerDetailModel {
         schedules = await app.schedules(season: app.selectedSeason)
         maxRegWeek = app.availableWeeks(season: app.selectedSeason).max() ?? 0
         snapCounts = await app.snapCounts(season: app.selectedSeason)
+        preseasonLines = await app.preseasonLines(playerID: playerID, season: app.selectedSeason)
         rankByID = Fantasy.positionRanks(
             players: app.displaySelectedPlayers(), scoring: scoring, settings: scoringSettings
         )
