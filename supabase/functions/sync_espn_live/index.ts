@@ -28,6 +28,7 @@
 // The parsing itself lives in parse.ts (pure, deno-testable).
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { fetchWithTimeout, withJobLock } from "../_shared/jobs.ts";
 import {
     makeRow, extractPlayerStats, applyFieldGoalDistances, synthesizeDST, fixTeam,
     parseLivePlays, currentRedZone, LIVE_PLAY_ID_BASE,
@@ -36,55 +37,30 @@ import type { LiveRow, EspnSummary } from "./parse.ts";
 
 const SUPABASE_URL     = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ESPN_BASE        = "https://site.api.espn.com/apis/site/v2/sports/football/nfl";
+// ESPN 403s requests from the edge runtime's egress (the same request from a
+// residential IP is fine), so production points ESPN_RELAY_BASE at a small
+// authenticated relay (tarsa.net/espn-relay) that forwards to ESPN. Unset →
+// direct, which still works for local `supabase functions serve`.
+const ESPN_DIRECT_BASE = "https://site.api.espn.com/apis/site/v2/sports/football/nfl";
+const ESPN_BASE        = (Deno.env.get("ESPN_RELAY_BASE") ?? ESPN_DIRECT_BASE).replace(/\/+$/, "");
+const ESPN_RELAY_KEY   = Deno.env.get("ESPN_RELAY_KEY") ?? "";
+const ESPN_HEADERS: Record<string, string> = {
+    "User-Agent": "fantasy-football-ios",
+    ...(ESPN_RELAY_KEY ? { "X-Relay-Key": ESPN_RELAY_KEY } : {}),
+};
+const ESPN_TIMEOUT_MS  = 10_000;
 
 const supa: SupabaseClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false }
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: fetchWithTimeout() },
 });
 
 Deno.serve(async (_req: Request) => {
     try {
-        const espnIDtoGsis = await loadEspnMap();
-        if (espnIDtoGsis.size === 0) {
-            return ok({ skipped: "players_cache has no espn_id rows yet — run sync_nflverse first" });
-        }
-
-        const scoreboard = await fetchScoreboard();
-        const events = (scoreboard?.events ?? []) as Array<EspnEvent>;
-        // Regular season only. Preseason (type 1) and postseason (type 3) both
-        // restart week.number at 1 — writing those rows would poison the real
-        // Week 1 stats in live_scores AND player_games. The app only scores
-        // REG weeks (nflverse REG rows), so anything else is skipped outright.
-        const scoreboardType = scoreboard?.season?.type;
-        const candidates = events.filter(ev =>
-            isRegularSeason(ev, scoreboardType) && isLiveOrFinal(ev)
-        );
-        if (candidates.length === 0) {
-            return ok({
-                note: "no live regular-season games right now",
-                checked: events.length, seasonType: scoreboardType ?? null
-            });
-        }
-
-        // Finals already persisted are done — don't re-fetch or re-churn them.
-        const processed = await loadProcessedEventIDs(candidates.map(e => e.id));
-        const games = candidates.filter(ev =>
-            !(ev.status?.type?.completed === true && processed.has(ev.id))
-        );
-        if (games.length === 0) {
-            return ok({ note: "all finals already persisted", checked: events.length });
-        }
-
-        const season = scoreboard?.season?.year ?? new Date().getUTCFullYear();
-        const week   = scoreboard?.week?.number ?? 1;
-
-        let liveRows = 0, finals = 0;
-        for (const ev of games) {
-            const n = await processGame(ev, season, week, espnIDtoGsis);
-            liveRows += n.rows;
-            if (n.final) finals += 1;
-        }
-        return ok({ live_rows: liveRows, games: games.length, finals, season, week });
+        // Serialised: the cron fires every minute whether or not the last run
+        // finished, and one slow ESPN/DB minute must not stack runs.
+        const out = await withJobLock(supa, "sync_espn_live", sync);
+        return ok(out ?? { skipped: "previous run still going" });
     } catch (err) {
         console.error(err);
         return new Response(JSON.stringify({ ok: false, error: String(err) }), {
@@ -92,6 +68,52 @@ Deno.serve(async (_req: Request) => {
         });
     }
 });
+
+async function sync(): Promise<Record<string, unknown>> {
+    // Scoreboard first: outside a game window this is the run's only call —
+    // no DB reads at all.
+    const scoreboard = await fetchScoreboard();
+    const events = (scoreboard?.events ?? []) as Array<EspnEvent>;
+    // Regular season only. Preseason (type 1) and postseason (type 3) both
+    // restart week.number at 1 — writing those rows would poison the real
+    // Week 1 stats in live_scores AND player_games. The app only scores
+    // REG weeks (nflverse REG rows), so anything else is skipped outright.
+    const scoreboardType = scoreboard?.season?.type;
+    const candidates = events.filter(ev =>
+        isRegularSeason(ev, scoreboardType) && isLiveOrFinal(ev)
+    );
+    if (candidates.length === 0) {
+        return {
+            note: "no live regular-season games right now",
+            checked: events.length, seasonType: scoreboardType ?? null
+        };
+    }
+
+    // Finals already persisted are done — don't re-fetch or re-churn them.
+    const processed = await loadProcessedEventIDs(candidates.map(e => e.id));
+    const games = candidates.filter(ev =>
+        !(ev.status?.type?.completed === true && processed.has(ev.id))
+    );
+    if (games.length === 0) {
+        return { note: "all finals already persisted", checked: events.length };
+    }
+
+    const espnIDtoGsis = await loadEspnMap();
+    if (espnIDtoGsis.size === 0) {
+        return { skipped: "players_cache has no espn_id rows yet — run sync_nflverse first" };
+    }
+
+    const season = scoreboard?.season?.year ?? new Date().getUTCFullYear();
+    const week   = scoreboard?.week?.number ?? 1;
+
+    let liveRows = 0, finals = 0;
+    for (const ev of games) {
+        const n = await processGame(ev, season, week, espnIDtoGsis);
+        liveRows += n.rows;
+        if (n.final) finals += 1;
+    }
+    return { live_rows: liveRows, games: games.length, finals, season, week };
+}
 
 async function processGame(
     ev: EspnEvent, season: number, week: number, espnIDtoGsis: Map<string, string>
@@ -180,11 +202,12 @@ async function processGame(
             const { is_final: _drop, ...rest } = r;
             return { ...rest, updated_at: new Date().toISOString() };
         });
-        for (const r of persist) {
-            await supa.from("player_games").upsert(r, {
-                onConflict: "player_id,season,week", ignoreDuplicates: false
-            });
-        }
+        // One batched upsert; a failure here throws so the live rows stay put
+        // and the game is retried next minute rather than silently lost.
+        const { error: persistErr } = await supa.from("player_games").upsert(persist, {
+            onConflict: "player_id,season,week", ignoreDuplicates: false
+        });
+        if (persistErr) throw new Error(`persist final: ${persistErr.message}`);
         await supa.from("live_scores")
             .delete()
             .in("player_id", rows.map(r => r.player_id))
@@ -246,26 +269,13 @@ async function maybeRedZoneAlert(summary: EspnSummary, eventID: string) {
 
 // ----------- Fetch helpers -----------
 
+// One RPC (jsonb {espn_id: gsis}) instead of paging players_cache 1000 rows
+// at a time. This used to run before the scoreboard check — five DB round
+// trips a minute, all year, whether or not a game was on.
 async function loadEspnMap(): Promise<Map<string, string>> {
-    const out = new Map<string, string>();
-    // Paginate through all players_cache rows that have an espn_id.
-    let from = 0;
-    const page = 1000;
-    while (true) {
-        const { data, error } = await supa
-            .from("players_cache")
-            .select("id, espn_id")
-            .not("espn_id", "is", null)
-            .range(from, from + page - 1);
-        if (error) throw new Error(`load espn map: ${error.message}`);
-        if (!data || data.length === 0) break;
-        for (const r of data as { id: string; espn_id: string }[]) {
-            out.set(String(r.espn_id), r.id);
-        }
-        if (data.length < page) break;
-        from += page;
-    }
-    return out;
+    const { data, error } = await supa.rpc("espn_id_map");
+    if (error) throw new Error(`load espn map: ${error.message}`);
+    return new Map(Object.entries((data ?? {}) as Record<string, string>));
 }
 
 async function loadProcessedEventIDs(eventIDs: string[]): Promise<Set<string>> {
@@ -280,14 +290,14 @@ async function fetchScoreboard(): Promise<EspnScoreboard | null> {
     // ESPN's scoreboard endpoint defaults to "today's slate" when no params
     // are passed; for live monitoring we want exactly that.
     const url = `${ESPN_BASE}/scoreboard`;
-    const resp = await fetch(url, { headers: { "User-Agent": "fantasy-football-ios" } });
+    const resp = await fetch(url, { headers: ESPN_HEADERS, signal: AbortSignal.timeout(ESPN_TIMEOUT_MS) });
     if (!resp.ok) throw new Error(`scoreboard HTTP ${resp.status}`);
     return await resp.json();
 }
 
 async function fetchSummary(eventID: string): Promise<EspnSummary> {
     const url = `${ESPN_BASE}/summary?event=${eventID}`;
-    const resp = await fetch(url, { headers: { "User-Agent": "fantasy-football-ios" } });
+    const resp = await fetch(url, { headers: ESPN_HEADERS, signal: AbortSignal.timeout(ESPN_TIMEOUT_MS) });
     if (!resp.ok) throw new Error(`summary HTTP ${resp.status}`);
     return await resp.json();
 }

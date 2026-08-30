@@ -25,6 +25,37 @@ The app's season picker reads the `available_seasons` view (union of the
 becomes selectable for league/draft setup as soon as its schedule is synced —
 before any games are played.
 
+## Operational notes (added 2026-08-29)
+
+After the 2026-08-28 outage (DB stalled on the Nano instance; the per-minute
+cron jobs then stacked on top of it for ~12 h and Auth could not sign anyone
+in), the cron-driven functions were hardened:
+
+- **Cron gating** — `draft_tick_minute`, `dispatch_push_minute` and
+  `sync_espn_live_minute` only invoke their function when there is work
+  (`… where exists (…)` in the job command), so nothing fires while the DB
+  is under pressure. `cleanup_cron_history` prunes `cron.job_run_details` to
+  7 days (it had grown to 447k rows).
+- **Overlap guard** — `_shared/jobs.ts` `withJobLock()` claims a row in
+  `public.job_runs` via `claim_job()`; a second invocation while the first is
+  still running exits immediately. Stale claims expire after 2 minutes.
+- **Fetch deadlines** — `fetchWithTimeout()` gives every supabase-js call a
+  15 s deadline; ESPN calls get 10 s.
+- **One-call RPCs** — `draft_pool()`, `draft_season_totals(season)` and
+  `espn_id_map()` (jsonb, service_role only) replace paginated PostgREST pulls.
+- **ESPN relay** — ESPN 403s the edge runtime's egress. `sync_espn_live`
+  reads `ESPN_RELAY_BASE` / `ESPN_RELAY_KEY` (Edge Function secrets) and goes
+  through a small authenticated relay on the Pi (`https://tarsa.net/espn-relay`,
+  source in the Pi's `tarsa-fantasy-ops` folder). Unset → direct ESPN, which
+  works for local `supabase functions serve`.
+- **RLS** — every `auth.uid()` / `auth.role()` in a policy is wrapped as
+  `(select …)` so it is evaluated once per query, not per row
+  (`20260829150300_rls_initplan_rewrite.sql`).
+
+Still open: `live_scores` is delivered via `postgres_changes`, which costs one
+RLS evaluation per changed row **per subscriber** — switch to Broadcast
+(`realtime.send`) before scale matters.
+
 ## One-time setup
 
 ### 1. Install the Supabase CLI
